@@ -26,6 +26,7 @@ from log_manager import log_manager
 from template_manager import template_manager
 from scheduler import task_scheduler
 from batch_operations import batch_operations
+from production_security import SupabaseAuthMiddleware
 
 
 # ============ FastAPI 应用 ============
@@ -68,12 +69,31 @@ async def lifespan(app: FastAPI):
     print("🛴 定时任务调度器和健康监控已停止")
 
 
-app = FastAPI(title="Telegram 账号管理后台", lifespan=lifespan)
+is_production = os.getenv("APP_ENV", "development").lower() == "production"
+allowed_origins = [
+    origin.strip()
+    for origin in os.getenv("ALLOWED_ORIGINS", "http://localhost:8080").split(",")
+    if origin.strip()
+]
+if is_production and ("*" in allowed_origins or not allowed_origins):
+    raise RuntimeError("Production ALLOWED_ORIGINS must contain exact trusted origins")
+
+app = FastAPI(
+    title="Open-Teleset",
+    lifespan=lifespan,
+    docs_url=None if is_production else "/docs",
+    redoc_url=None if is_production else "/redoc",
+)
+
+# Middleware executes in reverse registration order. Authentication is added first
+# so CORS can still respond to preflight requests without weakening API access.
+if is_production:
+    app.add_middleware(SupabaseAuthMiddleware)
 
 # 配置 CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -112,6 +132,18 @@ class BatchImportRequest(BaseModel):
 
 
 # ============ API 端点 ============
+
+@app.get("/healthz")
+async def healthz():
+    """Process liveness endpoint; does not expose account data."""
+    return {"status": "ok"}
+
+
+@app.get("/readyz")
+async def readyz():
+    """Readiness endpoint used by the container platform."""
+    return {"status": "ready"}
+
 
 @app.get("/")
 async def root():
@@ -914,7 +946,14 @@ manager = ConnectionManager()
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    """WebSocket 实时推送"""
+    """WebSocket real-time updates.
+
+    Production WebSockets stay disabled until a one-time authenticated ticket
+    flow is implemented. This prevents bearer tokens from leaking through URLs.
+    """
+    if is_production:
+        await websocket.close(code=1008, reason="Authenticated WebSocket pending")
+        return
     await manager.connect(websocket)
 
     try:
