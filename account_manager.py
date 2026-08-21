@@ -14,10 +14,15 @@ import qrcode
 from io import BytesIO
 import base64
 
+from session_crypto import SessionCipher
 
-API_ID = 2040
-API_HASH = "b18441a1ff607e10a989891a5462e627"
-ACCOUNTS_DIR = "./accounts"
+
+API_ID = int(os.getenv("TELEGRAM_API_ID", "0"))
+API_HASH = os.getenv("TELEGRAM_API_HASH", "")
+IS_PRODUCTION = os.getenv("APP_ENV", "development").lower() == "production"
+if IS_PRODUCTION and (not API_ID or not API_HASH):
+    raise RuntimeError("TELEGRAM_API_ID and TELEGRAM_API_HASH are required")
+ACCOUNTS_DIR = os.getenv("ACCOUNTS_DIR", "./accounts")
 CONFIG_FILE = os.path.join(ACCOUNTS_DIR, "config.json")
 
 
@@ -26,6 +31,7 @@ class AccountManager:
 
     def __init__(self):
         self.accounts: Dict[str, Dict] = {}
+        self._session_cipher = SessionCipher() if IS_PRODUCTION else None
         self.clients: Dict[str, TelegramClient] = {}
         self.qr_sessions: Dict[str, Dict] = {}  # QR登录会话
         self.phone_sessions: Dict[str, Dict] = {}  # 手机号登录会话
@@ -41,12 +47,23 @@ class AccountManager:
         if os.path.exists(CONFIG_FILE):
             with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
                 self.accounts = json.load(f)
+            if self._session_cipher:
+                for account in self.accounts.values():
+                    stored = account.get("session_string")
+                    if stored:
+                        account["session_string"] = self._session_cipher.decrypt(stored)
 
     def _save_config(self):
         """保存账号配置"""
         self._ensure_dir()
-        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-            json.dump(self.accounts, f, ensure_ascii=False, indent=2)
+        stored_accounts = json.loads(json.dumps(self.accounts))
+        if self._session_cipher:
+            for account in stored_accounts.values():
+                session = account.get("session_string")
+                if session:
+                    account["session_string"] = self._session_cipher.encrypt(session)
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(stored_accounts, f, ensure_ascii=False, indent=2)
 
     def list_accounts(self) -> List[Dict]:
         """
