@@ -15,8 +15,10 @@ from typing import List, Dict, Optional, Union, Any
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
-from telethon import TelegramClient, functions, utils
+from telethon import TelegramClient, functions, types, utils
 from telethon.sessions import StringSession
+
+from account_manager import account_manager
 from telethon.tl.types import (
     User, Chat, Channel,
     ChatAdminRights, ChatBannedRights,
@@ -27,8 +29,10 @@ from telethon.tl.types import (
 load_dotenv()
 
 # 配置
-API_ID = int(os.getenv("TELEGRAM_API_ID", "2040"))
-API_HASH = os.getenv("TELEGRAM_API_HASH", "b18441a1ff607e10a989891a5462e627")
+API_ID = int(os.getenv("TELEGRAM_API_ID", "0"))
+API_HASH = os.getenv("TELEGRAM_API_HASH", "")
+if not API_ID or not API_HASH:
+    raise RuntimeError("TELEGRAM_API_ID and TELEGRAM_API_HASH are required")
 SESSION_FILE = os.getenv("SESSION_FILE", ".telegram_session")
 
 # 允许嵌套事件循环
