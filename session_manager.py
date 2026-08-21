@@ -11,10 +11,15 @@ from telethon import TelegramClient
 from telethon.sessions import StringSession
 from dotenv import load_dotenv
 
+from session_crypto import SessionCipher
+
 load_dotenv()
 
-API_ID = int(os.getenv("TELEGRAM_API_ID", "2040"))
-API_HASH = os.getenv("TELEGRAM_API_HASH", "b18441a1ff607e10a989891a5462e627")
+API_ID = int(os.getenv("TELEGRAM_API_ID", "0"))
+API_HASH = os.getenv("TELEGRAM_API_HASH", "")
+IS_PRODUCTION = os.getenv("APP_ENV", "development").lower() == "production"
+if IS_PRODUCTION and (not API_ID or not API_HASH):
+    raise RuntimeError("TELEGRAM_API_ID and TELEGRAM_API_HASH are required")
 SESSION_FILE = os.getenv("SESSION_FILE", ".telegram_session")
 USER_DATA_FILE = ".telegram_user_data.json"
 
@@ -23,6 +28,7 @@ class SessionManager:
     """管理 Telegram 会话"""
 
     def __init__(self):
+        self._session_cipher = SessionCipher() if IS_PRODUCTION else None
         self.client: Optional[TelegramClient] = None
         self.session_string: Optional[str] = None
         self.user_data: Optional[Dict[str, Any]] = None
@@ -32,13 +38,19 @@ class SessionManager:
         """从文件加载 session"""
         if os.path.exists(SESSION_FILE):
             with open(SESSION_FILE, "r") as f:
-                return f.read().strip()
+                stored = f.read().strip()
+                return self._session_cipher.decrypt(stored) if self._session_cipher else stored
         return None
 
     def save_session(self, session_string: str) -> None:
         """保存 session 到文件"""
         with open(SESSION_FILE, "w") as f:
-            f.write(session_string)
+            stored = (
+                self._session_cipher.encrypt(session_string)
+                if self._session_cipher
+                else session_string
+            )
+            f.write(stored)
         self.session_string = session_string
 
     def load_user_data(self) -> Optional[Dict[str, Any]]:
