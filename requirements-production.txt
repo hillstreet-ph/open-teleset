@@ -1,5 +1,5 @@
 -r requirements.txt
-cryptography>=43.0.0,<46
+cryptography>=50.0.0,<51
 PyJWT[crypto]>=2.9.0,<3
 asyncpg>=0.30.0,<1
 redis>=5.2.0,<7
