@@ -31,7 +31,7 @@ load_dotenv()
 # 配置
 API_ID = int(os.getenv("TELEGRAM_API_ID", "0"))
 API_HASH = os.getenv("TELEGRAM_API_HASH", "")
-if not API_ID or not API_HASH:
+if os.getenv("APP_ENV", "development").lower() == "production" and (not API_ID or not API_HASH):
     raise RuntimeError("TELEGRAM_API_ID and TELEGRAM_API_HASH are required")
 SESSION_FILE = os.getenv("SESSION_FILE", ".telegram_session")
 
