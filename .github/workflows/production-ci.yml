@@ -59,4 +59,4 @@ jobs:
           fetch-depth: 0
       - name: Scan repository history with Gitleaks CLI
         run: |
-          docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.28.0             git /repo --redact --no-banner
+          docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.28.0             dir /repo --redact --no-banner --verbose
