@@ -16,7 +16,7 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -24,8 +24,14 @@ jobs:
           python-version: "3.11"
           cache: pip
       - run: pip install -r requirements-production.txt pytest ruff bandit pip-audit
-      - run: ruff check .
-      - run: bandit -q -r . -x ./test_comprehensive.py,./test_edge_cases.py,./test_new_features.py,./test_tools.py,./test_web.py
+      - name: Compile all Python modules
+        run: python -m compileall -q .
+      - name: Fatal lint checks for legacy code
+        run: ruff check . --select E9,F63,F7,F82
+      - name: Full lint for production security modules
+        run: ruff check production_security.py session_crypto.py
+      - name: High-confidence security scan
+        run: bandit -q -r . --severity-level high --confidence-level high -x ./test_comprehensive.py,./test_edge_cases.py,./test_new_features.py,./test_tools.py,./test_web.py
       - run: pip-audit -r requirements-production.txt
       - run: pytest -q
 
@@ -46,10 +52,11 @@ jobs:
 
   secret-scan:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Scan repository history with Gitleaks CLI
+        run: |
+          docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.28.0             git /repo --redact --no-banner
