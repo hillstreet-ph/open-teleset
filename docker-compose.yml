@@ -22,16 +22,16 @@ services:
       # Dashboard 配置
       - DASHBOARD_PORT=8080
       - DASHBOARD_HOST=0.0.0.0
-      # Telegram API（可选，使用内置凭证可留空）
-      - TELEGRAM_API_ID=${TELEGRAM_API_ID:-2040}
-      - TELEGRAM_API_HASH=${TELEGRAM_API_HASH:-b18441a1ff607e10a989891a5462e627}
+      # Telegram API credentials are required and must come from the environment.
+      - TELEGRAM_API_ID=${TELEGRAM_API_ID:?required}
+      - TELEGRAM_API_HASH=${TELEGRAM_API_HASH:?required}
       # 日志级别
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     restart: unless-stopped
     networks:
       - telegram-mcp-network
     healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/api/accounts').read()"]
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz').read()"]
       interval: 30s
       timeout: 10s
       retries: 3
