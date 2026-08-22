@@ -5,32 +5,43 @@ on:
     branches: [main]
     paths:
       - "static/**"
-      - "deploy/cloudflare-pages/**"
+      - ".github/workflows/cloudflare-pages.yml"
   workflow_dispatch:
 
 jobs:
   pages:
     runs-on: ubuntu-latest
+    environment: production
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
+
       - name: Prepare Pages artifact
         run: |
           mkdir -p cf-pages
           cp -r static/* cf-pages/
-          echo "open-teleset dashboard" > cf-pages/README.txt
+          # Prefer dashboard as site root
+          if [ -f cf-pages/dashboard.html ] && [ ! -f cf-pages/index.html ]; then
+            cp cf-pages/dashboard.html cf-pages/index.html
+          fi
+          # Drop large zip archives from Pages publish
+          find cf-pages -name '*.zip' -delete || true
+
       - name: Publish to Cloudflare Pages
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
+          set -e
           if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
-            echo "CF secrets missing — skip Pages publish"
-            exit 0
+            echo "CF secrets missing"
+            exit 1
           fi
           npm install -g wrangler@3
-          npx wrangler pages deploy cf-pages \
+          wrangler pages deploy cf-pages \
             --project-name=open-teleset-dashboard \
-            --commit-dirty=true || echo "Create Pages project 'open-teleset-dashboard' in CF dashboard first"
+            --branch=main \
+            --commit-dirty=true
