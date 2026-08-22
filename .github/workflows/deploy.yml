@@ -1,0 +1,111 @@
+name: CI · Migrate · Deploy
+
+on:
+  push:
+    branches: [main, master, prod-setup]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      skip_deploy:
+        description: "Skip Cloudflare deploy"
+        type: boolean
+        default: false
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Install dependencies
+        run: |
+          pip install -r requirements-prod.txt
+          pip install pytest pytest-asyncio ruff
+      - name: Lint
+        run: ruff check src scripts || true
+      - name: Crypto unit tests
+        env:
+          SESSION_ENCRYPTION_KEY: ${{ secrets.SESSION_ENCRYPTION_KEY }}
+        run: |
+          export SESSION_ENCRYPTION_KEY="${SESSION_ENCRYPTION_KEY:-$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')}"
+          PYTHONPATH=src pytest tests/ -q --tb=short
+
+  migrate:
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install migrate deps
+        run: pip install asyncpg python-dotenv
+      - name: Apply Supabase migrations
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          if [ -z "${DATABASE_URL}" ]; then
+            echo "DATABASE_URL secret not set — skipping migrations"
+            exit 0
+          fi
+          python scripts/apply_migrations.py
+
+  build:
+    needs: migrate
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Docker image
+        run: docker build -f deploy/Dockerfile -t open-teleset:ci .
+      - name: Smoke image
+        run: docker run --rm open-teleset:ci python -c "print('image ok')"
+
+  deploy-cloudflare:
+    needs: build
+    if: |
+      github.event_name != 'pull_request' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') &&
+      (github.event_name != 'workflow_dispatch' || inputs.skip_deploy == false)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install Wrangler
+        run: npm install -g wrangler@3
+      - name: Deploy Worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -z "${CLOUDFLARE_API_TOKEN}" ] || [ -z "${CLOUDFLARE_ACCOUNT_ID}" ]; then
+            echo "Cloudflare secrets not set — skip CF deploy"
+            exit 0
+          fi
+          if [ -f deploy/wrangler.toml ]; then
+            wrangler deploy --config deploy/wrangler.toml
+          else
+            echo "Add deploy/wrangler.toml (see wrangler.toml.example)"
+          fi
+
+  summary:
+    needs: [test, migrate, build]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Status
+        run: |
+          echo "### open-teleset CI" >> $GITHUB_STEP_SUMMARY
+          echo "- Test: ${{ needs.test.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Migrate: ${{ needs.migrate.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Build: ${{ needs.build.result }}" >> $GITHUB_STEP_SUMMARY
