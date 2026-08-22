@@ -1,0 +1,27 @@
+# Supabase local/linked project config (no secrets)
+# Link with: supabase link --project-ref YOUR_REF
+
+[project]
+id = "open-teleset"
+
+[api]
+enabled = true
+
+[db]
+major_version = 15
+
+[auth]
+enabled = true
+site_url = "http://localhost:8080"
+additional_redirect_urls = ["https://localhost:8080"]
+enable_signup = true
+
+[auth.email]
+enable_signup = true
+enable_confirmations = false
+
+# OAuth providers: enable in Dashboard → Authentication → Providers
+# (Google, GitHub, etc.) — client IDs live in Supabase secrets, not git.
+
+[functions]
+enabled = true

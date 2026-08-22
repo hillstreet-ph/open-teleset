@@ -1,0 +1,30 @@
+name: Promote development → main
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type promote to open PR from development to main"
+        required: true
+
+jobs:
+  open-pr:
+    if: github.event.inputs.confirm == 'promote'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Create promotion PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr create \
+            --base main \
+            --head development \
+            --title "Promote development → main" \
+            --body "Automated promotion PR. Review CI before merge." \
+            || echo "PR may already exist"
