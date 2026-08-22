@@ -15,7 +15,7 @@ from typing import List, Dict, Optional, Union, Any
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
-from telethon import TelegramClient, functions, types, utils
+from telethon import TelegramClient, functions, types
 from telethon.sessions import StringSession
 
 from account_manager import account_manager
