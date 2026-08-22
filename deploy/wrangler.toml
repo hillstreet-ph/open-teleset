@@ -1,0 +1,6 @@
+name = "open-teleset"
+main = "deploy/cloudflare-worker.js"
+compatibility_date = "2024-11-01"
+
+[vars]
+APP_ENV = "production"
