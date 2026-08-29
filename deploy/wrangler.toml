@@ -1,5 +1,5 @@
 name = "open-teleset"
-main = "deploy/cloudflare-worker.js"
+main = "cloudflare-worker.js"
 compatibility_date = "2024-11-01"
 account_id = "c0e6bd9a7249856cb8497e7fe340e7ce"
 
