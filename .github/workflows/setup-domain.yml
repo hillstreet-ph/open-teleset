@@ -203,28 +203,13 @@ jobs:
             --commit-dirty=true
           echo "✅ Dashboard deployed → https://open-teleset.site"
 
-      - name: "📝 Set CLOUDFLARE_ZONE_ID secret for future runs"
-        if: steps.zones.outputs.zone_id != ''
+      - name: "📝 Output zone ID (set CLOUDFLARE_ZONE_ID manually if needed)"
+        if: always()
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ZONE_ID: ${{ steps.zones.outputs.zone_id }}
         run: |
-          # Encode and store zone_id as a repo secret
-          PUB_KEY=$(curl -sL "https://api.github.com/repos/${{ github.repository }}/actions/secrets/public-key" \
-            -H "Authorization: token ${GITHUB_TOKEN}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['key'],d['key_id'])")
-          PUB=$(echo $PUB_KEY | awk '{print $1}')
-          KID=$(echo $PUB_KEY | awk '{print $2}')
-          ENC=$(python3 -c "
-          from nacl.public import PublicKey, SealedBox
-          from nacl.encoding import Base64Encoder
-          import base64, sys
-          pk=PublicKey('$PUB'.encode(), Base64Encoder())
-          enc=SealedBox(pk).encrypt('${ZONE_ID}'.encode())
-          print(base64.b64encode(enc).decode())")
-          curl -sX PUT "https://api.github.com/repos/${{ github.repository }}/actions/secrets/CLOUDFLARE_ZONE_ID" \
-            -H "Authorization: token ${GITHUB_TOKEN}" \
-            -H "Content-Type: application/json" \
-            -d "{\"encrypted_value\":\"${ENC}\",\"key_id\":\"${KID}\"}" | python3 -c "import sys; print('Zone ID saved to secrets' if not sys.stdin.read().strip() else 'Done')"
+          echo "Zone ID discovered: ${ZONE_ID:-not found}"
+          echo "If needed, add CLOUDFLARE_ZONE_ID=${ZONE_ID} as a GitHub repo secret"
 
       - name: "✅ Summary"
         run: |
