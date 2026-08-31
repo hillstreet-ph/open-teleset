@@ -12,8 +12,8 @@ major_version = 15
 
 [auth]
 enabled = true
-site_url = "http://localhost:8080"
-additional_redirect_urls = ["https://localhost:8080"]
+site_url = "https://open-teleset.site"
+additional_redirect_urls = ["https://open-teleset.site", "https://open-teleset.site/dashboard.html", "https://open-teleset-dashboard.pages.dev", "http://localhost:8080"]
 enable_signup = true
 
 [auth.email]

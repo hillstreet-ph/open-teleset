@@ -1,0 +1,286 @@
+name: 🌐 Setup open-teleset.site Domain
+
+on:
+  push:
+    paths: [".github/workflows/setup-domain.yml"]
+  workflow_dispatch:
+
+env:
+  DOMAIN: open-teleset.site
+  PAGES_PROJECT: open-teleset-dashboard
+  PAGES_CNAME: open-teleset-dashboard.pages.dev
+  WORKER_NAME: open-teleset
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: "🔍 Discover zones & find open-teleset.site"
+        id: zones
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          python3 - << 'PYEOF'
+          import requests, json, os, sys
+
+          TOKEN   = os.environ["CF_TOKEN"]
+          ACCOUNT = os.environ["CF_ACCOUNT"]
+          DOMAIN  = "open-teleset.site"
+          HEADERS = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
+
+          print("=== All zones in account ===")
+          r = requests.get("https://api.cloudflare.com/client/v4/zones?per_page=50", headers=HEADERS)
+          d = r.json()
+          if not d.get("success"):
+              print("Bearer auth result:", json.dumps(d, indent=2)[:400])
+              sys.exit(0)
+
+          zones = d.get("result", [])
+          zone_id = None
+          for z in zones:
+              mark = " ← TARGET" if z["name"] == DOMAIN else ""
+              print(f"  {z['name']:35s}  id={z['id']}  status={z['status']}{mark}")
+              if z["name"] == DOMAIN:
+                  zone_id = z["id"]
+
+          if zone_id:
+              print(f"\n✅ Zone found: {DOMAIN} → id={zone_id}")
+              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                  f.write(f"zone_id={zone_id}\n")
+                  f.write(f"zone_found=true\n")
+          else:
+              print(f"\n⚠️  Zone {DOMAIN} not found. Need to create it or check domain registration.")
+              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                  f.write(f"zone_id=\n")
+                  f.write(f"zone_found=false\n")
+          PYEOF
+
+      - name: "🌍 Create zone for open-teleset.site (if not exists)"
+        if: steps.zones.outputs.zone_found == 'false'
+        id: create_zone
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          python3 - << 'PYEOF'
+          import requests, json, os
+
+          TOKEN   = os.environ["CF_TOKEN"]
+          ACCOUNT = os.environ["CF_ACCOUNT"]
+          HEADERS = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
+
+          print("Creating zone open-teleset.site ...")
+          r = requests.post(
+              "https://api.cloudflare.com/client/v4/zones",
+              headers=HEADERS,
+              json={"name": "open-teleset.site", "account": {"id": ACCOUNT}, "jump_start": True}
+          )
+          d = r.json()
+          print(json.dumps(d, indent=2)[:800])
+          if d.get("success"):
+              zone_id = d["result"]["id"]
+              ns = d["result"].get("name_servers", [])
+              print(f"\n✅ Zone created: id={zone_id}")
+              print(f"🔑 Nameservers to set at registrar: {ns}")
+              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                  f.write(f"zone_id={zone_id}\n")
+          else:
+              errors = d.get("errors", [])
+              print(f"Zone creation result: {errors}")
+              # Zone might exist under a different auth scope — get zone_id from errors
+              for e in errors:
+                  if "1061" in str(e.get("code", "")):
+                      print("Zone already exists — need to check via dashboard")
+          PYEOF
+
+      - name: "📡 Set DNS records for open-teleset.site"
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ZONE_ID: ${{ steps.zones.outputs.zone_id || steps.create_zone.outputs.zone_id }}
+        run: |
+          if [ -z "${ZONE_ID}" ]; then
+            echo "⚠️  No zone_id available — skipping DNS setup"
+            echo "Manual step needed: add CNAME @ → open-teleset-dashboard.pages.dev in Cloudflare DNS"
+            exit 0
+          fi
+
+          python3 - << 'PYEOF'
+          import requests, json, os
+
+          TOKEN   = os.environ["CF_TOKEN"]
+          ZONE_ID = os.environ["ZONE_ID"]
+          PAGES   = "open-teleset-dashboard.pages.dev"
+          HEADERS = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
+
+          records = [
+              {"type":"CNAME","name":"@","content":PAGES,"proxied":True,"comment":"Pages root"},
+              {"type":"CNAME","name":"www","content":PAGES,"proxied":True,"comment":"Pages www"},
+          ]
+
+          # First list existing records
+          ex = requests.get(f"https://api.cloudflare.com/client/v4/zones/{ZONE_ID}/dns_records?per_page=100", headers=HEADERS)
+          existing = {(r["type"], r["name"].split(".")[0] if r["name"] != "@" else "@"): r["id"]
+                      for r in ex.json().get("result", [])}
+          print(f"Existing records: {list(existing.keys())}")
+
+          for rec in records:
+              name_key = (rec["type"], rec["name"])
+              if name_key in existing:
+                  rid = existing[name_key]
+                  r = requests.patch(
+                      f"https://api.cloudflare.com/client/v4/zones/{ZONE_ID}/dns_records/{rid}",
+                      headers=HEADERS, json=rec
+                  )
+                  print(f"PATCH {rec['name']:5s} CNAME → {rec['content']}: {r.status_code}")
+              else:
+                  r = requests.post(
+                      f"https://api.cloudflare.com/client/v4/zones/{ZONE_ID}/dns_records",
+                      headers=HEADERS, json=rec
+                  )
+                  print(f"POST  {rec['name']:5s} CNAME → {rec['content']}: {r.status_code}")
+              if not r.json().get("success"):
+                  print("  Error:", r.json().get("errors"))
+              else:
+                  print(f"  ✅ {rec['name']} → {rec['content']} (proxied)")
+          PYEOF
+
+      - name: "📄 Add open-teleset.site custom domain to Cloudflare Pages"
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          python3 - << 'PYEOF'
+          import requests, json, os
+
+          TOKEN   = os.environ["CF_TOKEN"]
+          ACCOUNT = os.environ["CF_ACCOUNT"]
+          PROJECT = "open-teleset-dashboard"
+          DOMAINS = ["open-teleset.site", "www.open-teleset.site"]
+          HEADERS = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
+
+          base = f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT}/pages/projects/{PROJECT}/domains"
+
+          # List existing custom domains
+          ex = requests.get(base, headers=HEADERS)
+          print(f"Existing Pages domains: {[d.get('name') for d in ex.json().get('result',[]) or []]}")
+
+          for domain in DOMAINS:
+              r = requests.post(base, headers=HEADERS, json={"name": domain})
+              d = r.json()
+              if d.get("success"):
+                  status = d.get("result", {}).get("status", "?")
+                  print(f"✅ Added Pages domain: {domain} (status={status})")
+              elif any(e.get("code") == 8000014 for e in d.get("errors",[])):
+                  print(f"ℹ️  {domain} already attached to Pages")
+              else:
+                  print(f"⚠️  {domain}: {d.get('errors','')}")
+          PYEOF
+
+      - name: "🚀 Deploy Cloudflare Worker with domain routes"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          npm install -g wrangler@latest
+          wrangler deploy
+          echo "✅ Worker deployed to open-teleset.site/api/* and open-teleset.site/health"
+
+      - name: "📋 Deploy static dashboard to Cloudflare Pages"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          mkdir -p cf-pages
+          cp -r static/* cf-pages/
+          find cf-pages -name '*.zip' -delete || true
+          wrangler pages deploy cf-pages \
+            --project-name=open-teleset-dashboard \
+            --branch=main \
+            --commit-dirty=true
+          echo "✅ Dashboard deployed → https://open-teleset.site"
+
+      - name: "📝 Set CLOUDFLARE_ZONE_ID secret for future runs"
+        if: steps.zones.outputs.zone_id != ''
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ZONE_ID: ${{ steps.zones.outputs.zone_id }}
+        run: |
+          # Encode and store zone_id as a repo secret
+          PUB_KEY=$(curl -sL "https://api.github.com/repos/${{ github.repository }}/actions/secrets/public-key" \
+            -H "Authorization: token ${GITHUB_TOKEN}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['key'],d['key_id'])")
+          PUB=$(echo $PUB_KEY | awk '{print $1}')
+          KID=$(echo $PUB_KEY | awk '{print $2}')
+          ENC=$(python3 -c "
+          from nacl.public import PublicKey, SealedBox
+          from nacl.encoding import Base64Encoder
+          import base64, sys
+          pk=PublicKey('$PUB'.encode(), Base64Encoder())
+          enc=SealedBox(pk).encrypt('${ZONE_ID}'.encode())
+          print(base64.b64encode(enc).decode())")
+          curl -sX PUT "https://api.github.com/repos/${{ github.repository }}/actions/secrets/CLOUDFLARE_ZONE_ID" \
+            -H "Authorization: token ${GITHUB_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "{\"encrypted_value\":\"${ENC}\",\"key_id\":\"${KID}\"}" | python3 -c "import sys; print('Zone ID saved to secrets' if not sys.stdin.read().strip() else 'Done')"
+
+      - name: "✅ Summary"
+        run: |
+          echo ""
+          echo "========================================"
+          echo "  open-teleset.site Setup Summary"
+          echo "========================================"
+          echo "  🌐 Domain:    https://open-teleset.site"
+          echo "  📄 Pages:     https://open-teleset-dashboard.pages.dev"
+          echo "  ⚡ Worker:    open-teleset.hillstreet-ph.workers.dev"
+          echo "  🗄️  Supabase:  wkewimymzbhgbkumlxmg.supabase.co"
+          echo "  🐳 Docker:    openclose8/open-teleset:latest"
+          echo ""
+          echo "  DNS propagation: 1–48 hours after nameserver update"
+          echo "========================================"
+
+  update-supabase-auth:
+    runs-on: ubuntu-latest
+    needs: setup
+    environment: production
+    steps:
+      - name: "🔐 Update Supabase auth redirect URLs for open-teleset.site"
+        env:
+          SUPABASE_TOKEN: ${{ secrets.SUPABASE_TOKEN }}
+        run: |
+          python3 - << 'PYEOF'
+          import requests, json, os
+
+          TOKEN   = os.environ.get("SUPABASE_TOKEN", "")
+          PROJECT = "wkewimymzbhgbkumlxmg"
+          HEADERS = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
+
+          if not TOKEN:
+              print("⚠️  SUPABASE_TOKEN not set — skipping auth config update")
+              print("    Add sbp_... token as SUPABASE_TOKEN secret to enable auto-config")
+              exit(0)
+
+          update = {
+              "site_url": "https://open-teleset.site",
+              "additional_redirect_urls": ",".join([
+                  "https://open-teleset.site",
+                  "https://open-teleset.site/dashboard.html",
+                  "https://www.open-teleset.site",
+                  "https://open-teleset-dashboard.pages.dev",
+                  "http://localhost:8080"
+              ])
+          }
+
+          r = requests.patch(
+              f"https://api.supabase.com/v1/projects/{PROJECT}/config/auth",
+              headers=HEADERS, json=update
+          )
+          if r.ok:
+              upd = r.json()
+              print(f"✅ Supabase site_url:         {upd.get('site_url')}")
+              print(f"✅ Supabase redirect_urls:    {upd.get('additional_redirect_urls','')[:80]}")
+          else:
+              print(f"❌ Auth update failed: {r.status_code} {r.text[:200]}")
+          PYEOF

@@ -40,8 +40,64 @@ jobs:
             echo "CF secrets missing"
             exit 1
           fi
-          npm install -g wrangler@3
+          npm install -g wrangler@latest
           wrangler pages deploy cf-pages \
             --project-name=open-teleset-dashboard \
             --branch=main \
             --commit-dirty=true
+
+      - name: Add custom domain open-teleset.site to Pages project
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          # Attach open-teleset.site as custom domain on the Pages project
+          # This is idempotent — safe to re-run; 409 = already exists
+          HTTP=$(curl -s -o /tmp/cf_pages_domain.json -w "%{http_code}" \
+            -X POST "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/pages/projects/open-teleset-dashboard/domains" \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d '{"name":"open-teleset.site"}')
+          cat /tmp/cf_pages_domain.json | python3 -c "import sys,json; d=json.load(sys.stdin); print('✅ Custom domain:',d.get('result',{}).get('name','—'),'status:', d.get('result',{}).get('status','—'))" 2>/dev/null || true
+          echo "Pages domain API → HTTP $HTTP"
+          # 200=created, 409=already exists — both are fine
+          [[ "$HTTP" == "200" || "$HTTP" == "409" ]] && echo "✅ Domain configured" || echo "⚠️  HTTP $HTTP (zone may need manual Cloudflare DNS setup)"
+
+      - name: Configure DNS CNAME for open-teleset.site → Pages
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+        run: |
+          if [ -z "${CLOUDFLARE_ZONE_ID}" ]; then
+            echo "⚠️  CLOUDFLARE_ZONE_ID not set — skipping DNS CNAME creation"
+            echo "    Add the zone ID for open-teleset.site as CLOUDFLARE_ZONE_ID secret"
+            echo "    Then create: CNAME @ → open-teleset-dashboard.pages.dev (proxied)"
+            exit 0
+          fi
+          # Create or update root CNAME  @ → open-teleset-dashboard.pages.dev
+          HTTP=$(curl -s -o /tmp/cf_dns.json -w "%{http_code}" \
+            -X POST "https://api.cloudflare.com/client/v4/zones/${CLOUDFLARE_ZONE_ID}/dns_records" \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "type": "CNAME",
+              "name": "@",
+              "content": "open-teleset-dashboard.pages.dev",
+              "proxied": true,
+              "comment": "open-teleset Pages custom domain"
+            }')
+          echo "DNS CNAME API → HTTP $HTTP"
+          cat /tmp/cf_dns.json | python3 -c "import sys,json; d=json.load(sys.stdin); e=d.get('errors',[]); print('Errors:',e) if e else print('✅ CNAME created/updated')" 2>/dev/null || true
+          
+          # Also create www CNAME
+          curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${CLOUDFLARE_ZONE_ID}/dns_records" \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "type": "CNAME",
+              "name": "www",
+              "content": "open-teleset-dashboard.pages.dev",
+              "proxied": true,
+              "comment": "www redirect to open-teleset Pages"
+            }' > /dev/null || true
+          echo "✅ www CNAME attempted"

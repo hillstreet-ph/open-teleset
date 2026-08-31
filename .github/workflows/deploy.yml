@@ -92,7 +92,7 @@ jobs:
         with:
           node-version: "20"
       - name: Install Wrangler
-        run: npm install -g wrangler@3
+        run: npm install -g wrangler@latest
       - name: Deploy Worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -126,7 +126,7 @@ jobs:
           mkdir -p cf-pages
           cp -r static/* cf-pages/
           find cf-pages -name '*.zip' -delete || true
-          npm install -g wrangler@3
+          npm install -g wrangler@latest
           wrangler pages deploy cf-pages \
             --project-name=open-teleset-dashboard \
             --branch=main \
@@ -146,4 +146,5 @@ jobs:
           echo "- Worker: ${{ needs.deploy-cloudflare.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- Pages: ${{ needs.pages.result }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Dashboard: https://open-teleset-dashboard.pages.dev" >> $GITHUB_STEP_SUMMARY
+          echo "Dashboard: https://open-teleset.site" >> $GITHUB_STEP_SUMMARY
+          echo "Pages fallback: https://open-teleset-dashboard.pages.dev" >> $GITHUB_STEP_SUMMARY
