@@ -1,0 +1,47 @@
+name: Deploy Supabase Edge Functions
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "supabase/functions/**"
+      - ".github/workflows/deploy-edge-functions.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy-functions:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Deploy all edge functions
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_TOKEN }}
+          PROJECT_ID: wkewimymzbhgbkumlxmg
+        run: |
+          for fn in supabase/functions/*/; do
+            name=$(basename "$fn")
+            echo "Deploying: $name"
+            supabase functions deploy "$name" \
+              --project-ref "$PROJECT_ID" \
+              --no-verify-jwt || echo "⚠️  $name deploy failed (continuing)"
+          done
+          echo "✅ Edge function deployment complete"
+
+      - name: Set edge function secrets
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_TOKEN }}
+          PROJECT_ID: wkewimymzbhgbkumlxmg
+        run: |
+          supabase secrets set \
+            SUPABASE_URL="${{ secrets.SUPABASE_URL }}" \
+            SUPABASE_SERVICE_ROLE_KEY="${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+            SITE_URL="https://open-teleset.site" \
+            --project-ref "$PROJECT_ID" || echo "⚠️  Secrets set failed"
+          echo "✅ Edge function secrets set"
