@@ -3,22 +3,12 @@ main = "cloudflare-worker.js"
 compatibility_date = "2024-11-01"
 account_id = "c0e6bd9a7249856cb8497e7fe340e7ce"
 
-# Custom domain routes for open-teleset.site
-[[routes]]
-pattern = "open-teleset.site/api/*"
-zone_name = "open-teleset.site"
-
-[[routes]]
-pattern = "open-teleset.site/health"
-zone_name = "open-teleset.site"
-
 [vars]
 APP_ENV = "production"
 SITE_URL = "https://open-teleset.site"
 R2_BUCKET = "open-teleset"
 R2_BUCKET_ASSETS = "open-teleset-assets"
 
-# R2 bindings (S3 API still needs R2 Access Key ID + Secret in secrets)
 [[r2_buckets]]
 binding = "BUCKET"
 bucket_name = "open-teleset"

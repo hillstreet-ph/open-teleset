@@ -3,13 +3,30 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <meta name="description" content="open-teleset — Telegram multi-account manager"/>
-  <title>open-teleset</title>
-  <meta http-equiv="refresh" content="0;url=/dashboard.html"/>
-  <link rel="canonical" href="/dashboard.html"/>
+  <meta name="description" content="open-teleset — Telegram Multi-Account Manager"/>
+  <meta name="keywords" content="telegram, multi-account, manager, bot, automation"/>
+  <meta property="og:title" content="open-teleset"/>
+  <meta property="og:description" content="Telegram Multi-Account Manager with scheduling, bulk messaging and AI tools"/>
+  <meta property="og:url" content="https://open-teleset.site"/>
+  <title>open-teleset · Telegram Multi-Account Manager</title>
+  <link rel="canonical" href="https://open-teleset.site/dashboard.html"/>
+  <script src="/config.js"></script>
+  <script>
+    // Redirect immediately to dashboard
+    window.location.replace("/dashboard.html");
+  </script>
+  <style>
+    body { margin:0; background:#1a1a2e; display:flex; align-items:center; justify-content:center; min-height:100vh; font-family:system-ui,sans-serif; }
+    .loader { text-align:center; color:#e0e0e0; }
+    .spinner { width:48px; height:48px; border:3px solid rgba(102,126,234,.3); border-top-color:#667eea; border-radius:50%; animation:spin .8s linear infinite; margin:0 auto 20px; }
+    @keyframes spin { to { transform:rotate(360deg); } }
+    a { color:#667eea; }
+  </style>
 </head>
 <body>
-  <p>Loading <a href="/dashboard.html">open-teleset dashboard</a>…</p>
-  <script src="/config.js"></script>
+  <div class="loader">
+    <div class="spinner"></div>
+    <p>Loading <a href="/dashboard.html">open-teleset</a>…</p>
+  </div>
 </body>
 </html>
