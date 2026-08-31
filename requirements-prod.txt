@@ -1,5 +1,6 @@
 # open-teleset production dependencies
-# Runtime
+
+# Core runtime
 mcp[cli]>=1.8.0
 telethon>=1.42.0
 fastapi>=0.104.0
@@ -12,8 +13,9 @@ qrcode>=7.4.0
 pillow>=10.0.0
 aiohttp>=3.9.0
 httpx>=0.27.0
-PyJWT>=2.8.0
-PyJWKClient>=0.5.0
+
+# Auth / JWT (PyJWKClient is a class inside PyJWT >= 2.x)
+PyJWT[crypto]>=2.8.0
 
 # Data layer
 asyncpg>=0.29.0
@@ -23,6 +25,3 @@ cryptography>=42.0.0
 # Cloud / Storage
 boto3>=1.34.0
 redis>=5.0.0
-
-# Security
-bandit>=1.7.0
