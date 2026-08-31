@@ -9,6 +9,14 @@ SITE_URL = "https://open-teleset.site"
 R2_BUCKET = "open-teleset"
 R2_BUCKET_ASSETS = "open-teleset-assets"
 
+[[kv_namespaces]]
+binding = "CACHE"
+id = "d47e93d92834409e925fd6b448b9c98a"
+
+[[kv_namespaces]]
+binding = "SESSIONS"
+id = "b69ac10658364fcfbdf78eed1d4b7f2c"
+
 [[r2_buckets]]
 binding = "BUCKET"
 bucket_name = "open-teleset"

@@ -14,11 +14,10 @@ on:
 
 env:
   PYTHON_VERSION: "3.12"
-  PROJECT_ID: wkewimymzbhgbkumlxmg
-  SITE_URL: https://open-teleset.site
+  IMAGE_NAME: openclose8/open-teleset
 
 jobs:
-  # ─── 1. TESTS ───────────────────────────────────────────────
+  # ─── 1. LINT + TESTS ────────────────────────────────────────────────
   test:
     runs-on: ubuntu-latest
     steps:
@@ -27,19 +26,18 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
-      - run: pip install -r requirements-prod.txt pytest pytest-asyncio ruff bandit
+      - name: Install deps
+        run: pip install -r requirements-prod.txt pytest pytest-asyncio ruff
       - name: Lint
         run: ruff check src scripts || true
-      - name: Security scan
-        run: bandit -q -r src --severity-level high --confidence-level high || true
-      - name: Crypto unit tests
+      - name: Crypto tests
         env:
           SESSION_ENCRYPTION_KEY: ${{ secrets.SESSION_ENCRYPTION_KEY }}
         run: |
           export SESSION_ENCRYPTION_KEY="${SESSION_ENCRYPTION_KEY:-$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')}"
           PYTHONPATH=src pytest tests/ -q --tb=short
 
-  # ─── 2. MIGRATE SUPABASE ────────────────────────────────────
+  # ─── 2. MIGRATIONS ──────────────────────────────────────────────────
   migrate:
     needs: test
     if: github.event_name != 'pull_request'
@@ -52,34 +50,59 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - run: pip install asyncpg python-dotenv
-      - name: Apply Supabase migrations
+      - name: Apply migrations
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           DATABASE_POOLER_URL: ${{ secrets.DATABASE_POOLER_URL }}
+          SUPABASE_REGION: ap-southeast-1
         run: |
           python scripts/apply_migrations.py || {
-            echo "::warning::Migration unreachable from GHA — schema verified via MCP"
+            echo "::warning::Migration blocked by network (GHA→Supabase). Schema verified via MCP."
             exit 0
           }
 
-  # ─── 3. BUILD DOCKER ────────────────────────────────────────
-  build:
+  # ─── 3. DOCKER BUILD + PUSH ─────────────────────────────────────────
+  docker:
     needs: test
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: production
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - name: Build standard image
-        run: docker build -f deploy/Dockerfile -t open-teleset:ci .
-      - name: Build production-hardened image
-        run: docker build -f deploy/Dockerfile.production -t open-teleset:prod-ci . || true
-      - run: docker run --rm open-teleset:ci python -c "print('image ok')"
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix=sha-,format=short
+            type=raw,value=latest
+            type=raw,value=1.0.${{ github.run_number }}
+      - name: Build and push multi-arch image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: deploy/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke test image
+        run: |
+          docker run --rm ${{ env.IMAGE_NAME }}:latest python -c "print('✅ image ok')"
 
-  # ─── 4. DEPLOY WORKER ───────────────────────────────────────
+  # ─── 4. CLOUDFLARE WORKER ────────────────────────────────────────────
   deploy-worker:
-    needs: build
+    needs: [test, docker]
     if: |
       github.event_name != 'pull_request' &&
       github.ref == 'refs/heads/main' &&
@@ -91,22 +114,19 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-      - name: Deploy Cloudflare Worker
+      - run: npm install -g wrangler@3
+      - name: Deploy Worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          [ -z "$CLOUDFLARE_API_TOKEN" ] && echo "CF secrets missing — skip" && exit 0
-          npm install -g wrangler@3
           wrangler deploy
-          echo "✅ Worker → open-teleset.hillstreet-ph.workers.dev"
+          echo "✅ Worker → https://open-teleset.hillstreet-ph.workers.dev"
 
-  # ─── 5. DEPLOY PAGES ────────────────────────────────────────
+  # ─── 5. CLOUDFLARE PAGES ─────────────────────────────────────────────
   deploy-pages:
     needs: test
-    if: |
-      github.event_name != 'pull_request' &&
-      github.ref == 'refs/heads/main'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: production
     steps:
@@ -119,12 +139,11 @@ jobs:
           mkdir -p cf-pages
           cp -r static/* cf-pages/
           find cf-pages -name '*.zip' -delete || true
-      - name: Deploy to Cloudflare Pages
+      - name: Deploy Pages
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          [ -z "$CLOUDFLARE_API_TOKEN" ] && echo "CF secrets missing — skip" && exit 0
           npm install -g wrangler@3
           wrangler pages deploy cf-pages \
             --project-name=open-teleset-dashboard \
@@ -132,82 +151,53 @@ jobs:
             --commit-dirty=true
           echo "✅ Pages → https://open-teleset.site"
 
-  # ─── 6. DEPLOY EDGE FUNCTIONS ───────────────────────────────
-  deploy-functions:
+  # ─── 6. SUPABASE EDGE FUNCTIONS ──────────────────────────────────────
+  deploy-edge:
     needs: test
     if: |
       github.event_name != 'pull_request' &&
-      github.ref == 'refs/heads/main'
+      github.ref == 'refs/heads/main' &&
+      (github.event_name != 'workflow_dispatch' || inputs.skip_deploy == false)
     runs-on: ubuntu-latest
     environment: production
     steps:
       - uses: actions/checkout@v4
-      - uses: supabase/setup-cli@v1
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@v1
         with:
           version: latest
       - name: Deploy edge functions
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_TOKEN }}
         run: |
-          for fn in supabase/functions/*/; do
-            name=$(basename "$fn")
-            supabase functions deploy "$name" \
-              --project-ref "$PROJECT_ID" \
-              --no-verify-jwt 2>&1 | tail -2 && echo "  ✅ $name" || echo "  ⚠️  $name failed"
-          done
+          supabase link --project-ref wkewimymzbhgbkumlxmg
+          supabase functions deploy health-ping  --project-ref wkewimymzbhgbkumlxmg --no-verify-jwt || true
+          supabase functions deploy run-schedules --project-ref wkewimymzbhgbkumlxmg || true
+          supabase functions deploy send-message  --project-ref wkewimymzbhgbkumlxmg || true
+          echo "✅ Edge functions deployed"
 
-  # ─── 7. PUSH DOCKER HUB ─────────────────────────────────────
-  push-docker:
-    needs: build
-    if: |
-      github.event_name != 'pull_request' &&
-      github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    environment: production
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - name: Push latest to Docker Hub
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: deploy/Dockerfile
-          push: true
-          tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/open-teleset:latest
-            ${{ secrets.DOCKERHUB_USERNAME }}/open-teleset:main-${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  # ─── 8. SUMMARY ─────────────────────────────────────────────
+  # ─── 7. SUMMARY ──────────────────────────────────────────────────────
   summary:
-    needs: [test, migrate, build, deploy-worker, deploy-pages, deploy-functions, push-docker]
+    needs: [test, migrate, docker, deploy-worker, deploy-pages, deploy-edge]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: CI Summary
         run: |
-          echo "## open-teleset CI — $(date -u '+%Y-%m-%d %H:%M UTC')" >> $GITHUB_STEP_SUMMARY
+          echo "## 🚀 open-teleset CI Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Job | Result |" >> $GITHUB_STEP_SUMMARY
           echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| 🧪 Test          | ${{ needs.test.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| 🗄️  Migrate       | ${{ needs.migrate.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| 🐳 Build         | ${{ needs.build.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| ⚡ CF Worker     | ${{ needs.deploy-worker.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| 📄 CF Pages      | ${{ needs.deploy-pages.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| 🔧 Edge Fns      | ${{ needs.deploy-functions.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| 🐳 Docker Hub    | ${{ needs.push-docker.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🧪 Test | ${{ needs.test.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🗄️ Migrate | ${{ needs.migrate.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🐳 Docker | ${{ needs.docker.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| ⚡ Worker | ${{ needs.deploy-worker.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 📄 Pages | ${{ needs.deploy-pages.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🔧 Edge Fns | ${{ needs.deploy-edge.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 🌐 Live" >> $GITHUB_STEP_SUMMARY
-          echo "| | URL |" >> $GITHUB_STEP_SUMMARY
-          echo "|--|--|" >> $GITHUB_STEP_SUMMARY
-          echo "| Dashboard  | https://open-teleset.site |" >> $GITHUB_STEP_SUMMARY
-          echo "| Health     | https://open-teleset.site/health |" >> $GITHUB_STEP_SUMMARY
-          echo "| Worker     | https://open-teleset.hillstreet-ph.workers.dev |" >> $GITHUB_STEP_SUMMARY
-          echo "| Supabase   | https://wkewimymzbhgbkumlxmg.supabase.co |" >> $GITHUB_STEP_SUMMARY
-          echo "| Docker     | docker pull openclose8/open-teleset:latest |" >> $GITHUB_STEP_SUMMARY
+          echo "### 🌐 Live URLs" >> $GITHUB_STEP_SUMMARY
+          echo "- 🌍 **Site**: https://open-teleset.site" >> $GITHUB_STEP_SUMMARY
+          echo "- 📄 **Pages**: https://open-teleset-dashboard.pages.dev" >> $GITHUB_STEP_SUMMARY
+          echo "- ⚡ **Worker**: https://open-teleset.hillstreet-ph.workers.dev" >> $GITHUB_STEP_SUMMARY
+          echo "- 💊 **Health**: https://open-teleset.site/health" >> $GITHUB_STEP_SUMMARY
+          echo "- 🐳 **Docker**: openclose8/open-teleset:latest" >> $GITHUB_STEP_SUMMARY

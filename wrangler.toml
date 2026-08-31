@@ -1,3 +1,7 @@
+# open-teleset — Cloudflare Worker configuration
+# Domain: https://open-teleset.site
+# Worker: open-teleset.hillstreet-ph.workers.dev
+
 name = "open-teleset"
 main = "deploy/cloudflare-worker.js"
 compatibility_date = "2024-11-01"
@@ -9,7 +13,16 @@ SITE_URL = "https://open-teleset.site"
 R2_BUCKET = "open-teleset"
 R2_BUCKET_ASSETS = "open-teleset-assets"
 
-# R2 bindings
+# KV Namespaces
+[[kv_namespaces]]
+binding = "CACHE"
+id = "d47e93d92834409e925fd6b448b9c98a"
+
+[[kv_namespaces]]
+binding = "SESSIONS"
+id = "b69ac10658364fcfbdf78eed1d4b7f2c"
+
+# R2 Buckets
 [[r2_buckets]]
 binding = "BUCKET"
 bucket_name = "open-teleset"
@@ -22,6 +35,6 @@ bucket_name = "open-teleset-prod"
 binding = "BUCKET_ASSETS"
 bucket_name = "open-teleset-assets"
 
-# NOTE: Domain routes for open-teleset.site are managed by setup-domain.yml workflow.
-# Keeping routes here would require the zone to be fully active at deploy time;
-# the dedicated setup-domain workflow handles this independently.
+# Secrets (set via: wrangler secret put <NAME>)
+# ORIGIN              — backend URL (Railway/VPS)
+# SESSION_ENCRYPTION_KEY — Fernet key for sessions
