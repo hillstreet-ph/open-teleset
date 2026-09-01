@@ -26,7 +26,7 @@ export default {
     if (url.pathname === "/api/health" || url.pathname === "/health") {
       if (env.ORIGIN) {
         try {
-          const r = await fetch(`${env.ORIGIN}/api/health`, {
+          const r = await fetch(`${env.ORIGIN}/health`, {
             headers: { Accept: "application/json" },
             cf: { cacheTtl: 0 },
           });
