@@ -7,6 +7,7 @@
     <script src="/config.js"></script>
     <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
     <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -312,16 +313,110 @@
         .copyable-account-id:hover .copy-icon {
             opacity: 0.8;
         }
+
+        /* Auth Screen Styles */
+        .auth-screen { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f172a 100%); padding: 2rem; }
+        .auth-card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 16px; padding: 2.5rem; width: 100%; max-width: 420px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5); }
+        .auth-card h1 { font-size: 1.75rem; font-weight: 700; margin-bottom: 0.5rem; background: linear-gradient(135deg, #3b82f6, #8b5cf6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+        .auth-card .subtitle { color: var(--text-dim); margin-bottom: 2rem; font-size: 0.9rem; }
+        .auth-card .form-group { margin-bottom: 1rem; }
+        .auth-card label { display: block; font-size: 0.85rem; font-weight: 500; margin-bottom: 0.4rem; color: var(--text-secondary); }
+        .auth-card input[type="email"], .auth-card input[type="password"], .auth-card input[type="text"] { width: 100%; padding: 0.7rem 1rem; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 0.95rem; transition: border-color 0.2s; box-sizing: border-box; }
+        .auth-card input:focus { outline: none; border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,0.1); }
+        .auth-card .btn { width: 100%; padding: 0.75rem; font-size: 1rem; font-weight: 600; border-radius: 8px; cursor: pointer; transition: all 0.2s; border: none; }
+        .auth-card .btn-primary { background: linear-gradient(135deg, #3b82f6, #2563eb); color: white; }
+        .auth-card .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(59,130,246,0.4); }
+        .auth-card .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+        .auth-divider { display: flex; align-items: center; margin: 1.5rem 0; color: var(--text-dim); font-size: 0.8rem; }
+        .auth-divider::before, .auth-divider::after { content: ''; flex: 1; border-bottom: 1px solid var(--border); }
+        .auth-divider span { padding: 0 1rem; }
+        .btn-oauth { width: 100%; padding: 0.7rem; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 0.9rem; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 0.5rem; transition: all 0.2s; margin-bottom: 0.75rem; }
+        .btn-oauth:hover { background: var(--hover); border-color: #3b82f6; }
+        .btn-oauth svg { width: 20px; height: 20px; }
+        .auth-toggle { text-align: center; margin-top: 1.5rem; color: var(--text-dim); font-size: 0.85rem; }
+        .auth-toggle a { color: #3b82f6; cursor: pointer; text-decoration: none; font-weight: 500; }
+        .auth-toggle a:hover { text-decoration: underline; }
+        .auth-error { background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3); color: #fca5a5; padding: 0.75rem 1rem; border-radius: 8px; font-size: 0.85rem; margin-bottom: 1rem; }
+        .auth-success { background: rgba(34,197,94,0.1); border: 1px solid rgba(34,197,94,0.3); color: #86efac; padding: 0.75rem 1rem; border-radius: 8px; font-size: 0.85rem; margin-bottom: 1rem; }
+        .user-menu { display: flex; align-items: center; gap: 0.75rem; }
+        .user-menu .user-info { display: flex; flex-direction: column; align-items: flex-end; }
+        .user-menu .user-name { font-size: 0.85rem; font-weight: 500; color: var(--text); }
+        .user-menu .user-role { font-size: 0.7rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; }
+        .btn-logout { padding: 0.4rem 0.8rem; background: transparent; border: 1px solid var(--border); border-radius: 6px; color: var(--text-secondary); font-size: 0.8rem; cursor: pointer; transition: all 0.2s; }
+        .btn-logout:hover { background: rgba(239,68,68,0.1); border-color: rgba(239,68,68,0.3); color: #fca5a5; }
+        .auth-loading { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f172a 100%); }
+        .spinner { width: 40px; height: 40px; border: 3px solid var(--border); border-top-color: #3b82f6; border-radius: 50%; animation: spin 0.8s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .password-reset-link { display: block; text-align: right; font-size: 0.8rem; color: #3b82f6; cursor: pointer; margin-top: 0.25rem; }
+        .password-reset-link:hover { text-decoration: underline; }
     </style>
 </head>
 <body>
     <div id="app">
+        <!-- Auth Loading -->
+        <div v-if="authLoading" class="auth-loading">
+            <div class="spinner"></div>
+        </div>
+
+        <!-- Login/Signup Screen -->
+        <div v-else-if="!user" class="auth-screen">
+            <div class="auth-card">
+                <h1>{{ authMode === 'login' ? 'Welcome Back' : 'Create Account' }}</h1>
+                <p class="subtitle">{{ authMode === 'login' ? 'Sign in to your Open-Teleset dashboard' : 'Get started with Open-Teleset' }}</p>
+                <div v-if="authError" class="auth-error">{{ authError }}</div>
+                <div v-if="authSuccess" class="auth-success">{{ authSuccess }}</div>
+                <form @submit.prevent="authMode === 'login' ? signIn() : signUp()">
+                    <div v-if="authMode === 'signup'" class="form-group">
+                        <label>Display Name</label>
+                        <input type="text" v-model="authDisplayName" placeholder="Your name" />
+                    </div>
+                    <div class="form-group">
+                        <label>Email</label>
+                        <input type="email" v-model="authEmail" placeholder="you@example.com" required />
+                    </div>
+                    <div class="form-group">
+                        <label>Password</label>
+                        <input type="password" v-model="authPassword" placeholder="••••••••" required minlength="6" />
+                        <a v-if="authMode === 'login'" class="password-reset-link" @click.prevent="sendPasswordReset">Forgot password?</a>
+                    </div>
+                    <button type="submit" class="btn btn-primary" :disabled="authSubmitting">
+                        {{ authSubmitting ? 'Please wait...' : (authMode === 'login' ? 'Sign In' : 'Create Account') }}
+                    </button>
+                </form>
+                <div class="auth-divider"><span>or continue with</span></div>
+                <button class="btn-oauth" @click="signInWithOAuth('google')">
+                    <svg viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
+                    Google
+                </button>
+                <button class="btn-oauth" @click="signInWithOAuth('github')">
+                    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
+                    GitHub
+                </button>
+                <div class="auth-toggle">
+                    <span v-if="authMode === 'login'">Don't have an account? <a @click.prevent="authMode = 'signup'; authError = ''; authSuccess = ''">Sign up</a></span>
+                    <span v-else>Already have an account? <a @click.prevent="authMode = 'login'; authError = ''; authSuccess = ''">Sign in</a></span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Authenticated Dashboard -->
+        <template v-else>
+
         <div class="header">
             <h1>📱 Telegram Multi-Account Manager</h1>
-            <div class="header-stats">
-                <span>📊 Total accounts: {{ accounts.length }}</span>
-                <span>🟢 Online: {{ onlineCount }}</span>
-                <span>🔴 Offline: {{ offlineCount }}</span>
+            <div style="display:flex; align-items:center; gap:1.5rem;">
+                <div class="header-stats">
+                    <span>📊 Total accounts: {{ accounts.length }}</span>
+                    <span>🟢 Online: {{ onlineCount }}</span>
+                    <span>🔴 Offline: {{ offlineCount }}</span>
+                </div>
+                <div class="user-menu">
+                    <div class="user-info">
+                        <span class="user-name">{{ userProfile.display_name || user.email }}</span>
+                        <span class="user-role">{{ userProfile.app_role || 'user' }}</span>
+                    </div>
+                    <button class="btn-logout" @click="signOut">Logout</button>
+                </div>
             </div>
         </div>
 
@@ -1257,14 +1352,34 @@
 
         <!-- Toast -->
         <div v-if="toast.show" class="toast" :class="{ error: toast.error }">{{ toast.message }}</div>
+        </template>
     </div>
 
     <script>
+        // Supabase client
+        const _supabase = supabase.createClient(
+            window.OPEN_TELESET_CONFIG?.supabaseUrl || 'https://wkewimymzbhgbkumlxmg.supabase.co',
+            window.OPEN_TELESET_CONFIG?.supabaseAnonKey || ''
+        )
+
         const { createApp } = Vue
 
         createApp({
             data() {
                 return {
+                    // Auth state
+                    authLoading: true,
+                    authMode: 'login',
+                    authEmail: '',
+                    authPassword: '',
+                    authDisplayName: '',
+                    authError: '',
+                    authSuccess: '',
+                    authSubmitting: false,
+                    user: null,
+                    session: null,
+                    userProfile: {},
+                    // App state
                     tab: 'accounts',
                     accounts: [],
                     globalProxy: null,
@@ -1592,6 +1707,87 @@
                 }
             },
             methods: {
+                // === Auth Methods ===
+                async initAuth() {
+                    try {
+                        const { data: { session } } = await _supabase.auth.getSession()
+                        if (session) {
+                            this.session = session
+                            this.user = session.user
+                            this.setAxiosAuth(session.access_token)
+                            await this.loadProfile()
+                            this.loadDashboardData()
+                        }
+                    } catch (e) { console.error('Auth init error:', e) }
+                    this.authLoading = false
+                    _supabase.auth.onAuthStateChange((event, session) => {
+                        this.session = session
+                        this.user = session?.user || null
+                        if (session) {
+                            this.setAxiosAuth(session.access_token)
+                            if (event === 'SIGNED_IN') { this.loadProfile(); this.loadDashboardData() }
+                        } else { this.setAxiosAuth(null); this.userProfile = {} }
+                    })
+                },
+                setAxiosAuth(token) {
+                    if (token) { axios.defaults.headers.common['Authorization'] = 'Bearer ' + token }
+                    else { delete axios.defaults.headers.common['Authorization'] }
+                },
+                async loadProfile() {
+                    try {
+                        const { data, error } = await _supabase.from('profiles').select('display_name, app_role').eq('id', this.user.id).single()
+                        if (data) { this.userProfile = data }
+                    } catch (e) { console.error('Profile load error:', e) }
+                },
+                async signIn() {
+                    this.authError = ''; this.authSuccess = ''; this.authSubmitting = true
+                    try {
+                        const { error } = await _supabase.auth.signInWithPassword({ email: this.authEmail, password: this.authPassword })
+                        if (error) throw error
+                    } catch (e) { this.authError = e.message || 'Sign in failed' }
+                    this.authSubmitting = false
+                },
+                async signUp() {
+                    this.authError = ''; this.authSuccess = ''; this.authSubmitting = true
+                    try {
+                        const { error } = await _supabase.auth.signUp({
+                            email: this.authEmail, password: this.authPassword,
+                            options: { data: { display_name: this.authDisplayName } }
+                        })
+                        if (error) throw error
+                        this.authSuccess = 'Account created! Check your email for verification.'
+                    } catch (e) { this.authError = e.message || 'Sign up failed' }
+                    this.authSubmitting = false
+                },
+                async signInWithOAuth(provider) {
+                    try {
+                        const { error } = await _supabase.auth.signInWithOAuth({
+                            provider,
+                            options: { redirectTo: window.location.origin + '/dashboard' }
+                        })
+                        if (error) throw error
+                    } catch (e) { this.authError = e.message || 'OAuth sign in failed' }
+                },
+                async sendPasswordReset() {
+                    if (!this.authEmail) { this.authError = 'Enter your email first'; return }
+                    this.authError = ''; this.authSubmitting = true
+                    try {
+                        const { error } = await _supabase.auth.resetPasswordForEmail(this.authEmail, { redirectTo: window.location.origin + '/dashboard' })
+                        if (error) throw error
+                        this.authSuccess = 'Password reset email sent!'
+                    } catch (e) { this.authError = e.message || 'Reset failed' }
+                    this.authSubmitting = false
+                },
+                async signOut() {
+                    await _supabase.auth.signOut()
+                    this.user = null; this.session = null; this.userProfile = {}
+                    this.setAxiosAuth(null)
+                },
+                loadDashboardData() {
+                    this.loadAccounts(); this.loadProxies(); this.loadHealth()
+                    this.loadStats(); this.loadTemplates()
+                },
+                // === App Methods ===
                 showToast(msg, error = false) {
                     this.toast = { show: true, message: msg, error }
                     setTimeout(() => this.toast.show = false, 3000)
@@ -2311,17 +2507,9 @@
                 }
             },
             mounted() {
-                this.loadAccounts()
-                this.loadProxies()
-                this.loadHealth()
-                this.loadStats()
-                this.loadTemplates()
-                this.loadSchedules()
-                this.loadLogs()
-                this.updateScheduleStats()
+                this.initAuth()
                 setInterval(() => {
-                    this.loadAccounts()
-                    this.loadHealth()
+                    if (this.user) { this.loadAccounts(); this.loadHealth() }
                 }, 30000)
             }
         }).mount('#app')
