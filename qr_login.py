@@ -8,9 +8,9 @@ import asyncio
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 
-# 内置公开凭据
-API_ID = 2040
-API_HASH = "b18441a1ff607e10a989891a5462e627"
+# 从环境变量读取凭据，保留默认值用于开发
+API_ID = int(os.getenv("TELEGRAM_API_ID", "2040"))
+API_HASH = os.getenv("TELEGRAM_API_HASH", "b18441a1ff607e10a989891a5462e627")
 SESSION_FILE = ".telegram_session"
 
 
