@@ -70,13 +70,21 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Telegram 账号管理后台", lifespan=lifespan)
 
-# 配置 CORS
+# 配置 CORS — production-hardened origins
+_ALLOWED_ORIGINS = [
+    "https://open-teleset.site",
+    "https://www.open-teleset.site",
+    "https://open-teleset-dashboard.pages.dev",
+]
+if os.getenv("APP_ENV") != "production":
+    _ALLOWED_ORIGINS += ["http://localhost:8080", "http://127.0.0.1:8080"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "apikey", "x-client-info"],
 )
 
 # 挂载静态文件
@@ -110,6 +118,38 @@ class AssignProxyRequest(BaseModel):
 class BatchImportRequest(BaseModel):
     accounts: List[dict]
 
+
+# ============ Production health endpoints ============
+
+@app.get("/health")
+@app.get("/healthz")
+async def health_check():
+    """Liveness probe — Docker HEALTHCHECK / Zeabur / Cloudflare Worker."""
+    return JSONResponse(content={
+        "status": "ok",
+        "service": "open-teleset",
+        "ts": datetime.utcnow().isoformat() + "Z",
+    })
+
+
+@app.get("/readyz")
+async def readiness_check():
+    """Readiness probe — checks critical dependencies are reachable."""
+    checks: dict = {"service": True}
+    try:
+        from src.open_teleset.db.client import init_pool
+        pool = await init_pool()
+        async with pool.acquire() as conn:
+            await conn.fetchval("SELECT 1")
+        checks["database"] = True
+    except Exception:
+        checks["database"] = False
+
+    all_ok = all(checks.values())
+    return JSONResponse(
+        content={"status": "ok" if all_ok else "degraded", "checks": checks},
+        status_code=200 if all_ok else 503,
+    )
 
 # ============ API 端点 ============
 
