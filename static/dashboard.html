@@ -429,6 +429,9 @@
                 <div class="tab" :class="{ active: tab === 'logs' }" @click="tab = 'logs'">📋 Logs</div>
                 <div class="tab" :class="{ active: tab === 'templates' }" @click="tab = 'templates'">💬 Templates</div>
                 <div class="tab" :class="{ active: tab === 'schedule' }" @click="tab = 'schedule'">📅 Schedule</div>
+                <div class="tab" :class="{ active: tab === 'scraper' }" @click="tab = 'scraper'">🔍 Scraper</div>
+                <div class="tab" :class="{ active: tab === 'adder' }" @click="tab = 'adder'">➕ Adder</div>
+                <div class="tab" :class="{ active: tab === 'bulksend' }" @click="tab = 'bulksend'">📨 BulkSend</div>
             </div>
 
             <!-- Accounts -->
@@ -866,6 +869,173 @@
                     </div>
                 </div>
             </div>
+
+            <!-- ============ Scraper Tab ============ -->
+            <div v-show="tab === 'scraper'">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>🔍 Member Scraper</h3>
+                    </div>
+                    <p style="color: #999; margin-bottom: 20px;">Scrape members from any Telegram channel or group</p>
+
+                    <div class="form-group">
+                        <label>Account</label>
+                        <select class="form-control" v-model="scraper.accountId">
+                            <option value="">-- Select account --</option>
+                            <option v-for="acc in accounts" :key="acc.id" :value="acc.id">
+                                {{ acc.phone || acc.id }} {{ acc.username ? '(@' + acc.username + ')' : '' }}
+                            </option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Target (channel/group username or ID)</label>
+                        <input class="form-control" v-model="scraper.target" placeholder="e.g. @mychannel or -1001234567890">
+                    </div>
+                    <div style="display: flex; gap: 15px;">
+                        <div class="form-group" style="flex:1;">
+                            <label>Max Members</label>
+                            <input class="form-control" type="number" v-model.number="scraper.limit" min="1" max="10000">
+                        </div>
+                        <div class="form-group" style="flex:1;">
+                            <label>Filter Bots</label>
+                            <select class="form-control" v-model="scraper.filterBots">
+                                <option :value="true">Yes</option>
+                                <option :value="false">No</option>
+                            </select>
+                        </div>
+                    </div>
+                    <button class="btn btn-primary" @click="runScraper" :disabled="scraper.loading || !scraper.accountId || !scraper.target">
+                        {{ scraper.loading ? '⏳ Scraping...' : '🔍 Scrape Members' }}
+                    </button>
+
+                    <!-- Results -->
+                    <div v-if="scraper.results.length" style="margin-top: 20px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                            <h4 style="margin:0;">Scraped: {{ scraper.results.length }} members</h4>
+                            <button class="btn btn-outline" @click="copyScrapedUsernames" style="font-size: 0.85em;">📋 Copy Usernames</button>
+                        </div>
+                        <div style="max-height: 400px; overflow-y: auto; border: 1px solid rgba(255,255,255,0.1); border-radius: 8px;">
+                            <table style="width: 100%; border-collapse: collapse;">
+                                <thead>
+                                    <tr style="background: rgba(255,255,255,0.05); position: sticky; top: 0;">
+                                        <th style="padding: 8px 12px; text-align: left;">#</th>
+                                        <th style="padding: 8px 12px; text-align: left;">ID</th>
+                                        <th style="padding: 8px 12px; text-align: left;">Username</th>
+                                        <th style="padding: 8px 12px; text-align: left;">Name</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr v-for="(m, idx) in scraper.results" :key="m.id" style="border-top: 1px solid rgba(255,255,255,0.05);">
+                                        <td style="padding: 6px 12px; color: #888;">{{ idx + 1 }}</td>
+                                        <td style="padding: 6px 12px;">{{ m.id }}</td>
+                                        <td style="padding: 6px 12px; color: #667eea;">{{ m.username || '—' }}</td>
+                                        <td style="padding: 6px 12px;">{{ m.first_name }} {{ m.last_name }}</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ============ Adder Tab ============ -->
+            <div v-show="tab === 'adder'">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>➕ Member Adder</h3>
+                    </div>
+                    <p style="color: #999; margin-bottom: 20px;">Add members to a Telegram channel or group</p>
+
+                    <div class="form-group">
+                        <label>Account</label>
+                        <select class="form-control" v-model="adder.accountId">
+                            <option value="">-- Select account --</option>
+                            <option v-for="acc in accounts" :key="acc.id" :value="acc.id">
+                                {{ acc.phone || acc.id }} {{ acc.username ? '(@' + acc.username + ')' : '' }}
+                            </option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Destination (channel/group to add members to)</label>
+                        <input class="form-control" v-model="adder.destTarget" placeholder="e.g. @mydestchannel">
+                    </div>
+                    <div class="form-group">
+                        <label>Source (optional — scrape members from this channel first)</label>
+                        <input class="form-control" v-model="adder.sourceTarget" placeholder="e.g. @sourcechannel (leave empty to use usernames below)">
+                    </div>
+                    <div class="form-group">
+                        <label>Usernames (one per line — used if no source above)</label>
+                        <textarea class="form-control" v-model="adder.usernames" rows="5" placeholder="user1&#10;user2&#10;user3" :disabled="!!adder.sourceTarget"></textarea>
+                    </div>
+                    <div style="display: flex; gap: 15px;">
+                        <div class="form-group" style="flex:1;">
+                            <label>Max Members to Add</label>
+                            <input class="form-control" type="number" v-model.number="adder.limit" min="1" max="200">
+                        </div>
+                        <div class="form-group" style="flex:1;">
+                            <label>Delay Between Adds (sec)</label>
+                            <input class="form-control" type="number" v-model.number="adder.delay" min="5" max="120" step="5">
+                        </div>
+                    </div>
+                    <button class="btn btn-primary" @click="runAdder" :disabled="adder.loading || !adder.accountId || !adder.destTarget">
+                        {{ adder.loading ? '⏳ Adding...' : '➕ Add Members' }}
+                    </button>
+
+                    <!-- Results -->
+                    <div v-if="adder.resultMsg" style="margin-top: 15px; padding: 12px; border-radius: 8px; background: rgba(255,255,255,0.05);">
+                        <span v-html="adder.resultMsg"></span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ============ BulkSend Tab ============ -->
+            <div v-show="tab === 'bulksend'">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>📨 Bulk Personal Sender</h3>
+                    </div>
+                    <p style="color: #999; margin-bottom: 20px;">Send a personal message from one account to many individual users</p>
+
+                    <div class="form-group">
+                        <label>Account</label>
+                        <select class="form-control" v-model="bulksend.accountId">
+                            <option value="">-- Select account --</option>
+                            <option v-for="acc in accounts" :key="acc.id" :value="acc.id">
+                                {{ acc.phone || acc.id }} {{ acc.username ? '(@' + acc.username + ')' : '' }}
+                            </option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Message</label>
+                        <textarea class="form-control" v-model="bulksend.message" rows="4" placeholder="Type your message here..."></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label>Targets (usernames or IDs, one per line)</label>
+                        <textarea class="form-control" v-model="bulksend.targets" rows="5" placeholder="user1&#10;user2&#10;@username3"></textarea>
+                    </div>
+                    <div style="display: flex; gap: 15px;">
+                        <div class="form-group" style="flex:1;">
+                            <label>Delay Between Sends (sec)</label>
+                            <input class="form-control" type="number" v-model.number="bulksend.delay" min="1" max="60" step="1">
+                        </div>
+                        <div class="form-group" style="flex:1;">
+                            <label>Use Scraped List</label>
+                            <button class="btn btn-outline" @click="fillBulksendFromScraper" :disabled="!scraper.results.length" style="width:100%; margin-top: 2px;">
+                                {{ scraper.results.length ? '📋 Fill ' + scraper.results.length + ' users' : 'No scraped data' }}
+                            </button>
+                        </div>
+                    </div>
+                    <button class="btn btn-primary" @click="runBulkSend" :disabled="bulksend.loading || !bulksend.accountId || !bulksend.message || !bulksend.targets">
+                        {{ bulksend.loading ? '⏳ Sending...' : '📨 Send Messages' }}
+                    </button>
+
+                    <!-- Results -->
+                    <div v-if="bulksend.resultMsg" style="margin-top: 15px; padding: 12px; border-radius: 8px; background: rgba(255,255,255,0.05);">
+                        <span v-html="bulksend.resultMsg"></span>
+                    </div>
+                </div>
+            </div>
+
         </div>
 
         <!-- QR/Phone Login Modal -->
@@ -1635,6 +1805,35 @@
                         autoDedup: true,
                         validateUsernames: true
                     },
+                    // Scraper
+                    scraper: {
+                        accountId: '',
+                        target: '',
+                        limit: 200,
+                        filterBots: true,
+                        loading: false,
+                        results: [],
+                    },
+                    // Adder
+                    adder: {
+                        accountId: '',
+                        destTarget: '',
+                        sourceTarget: '',
+                        usernames: '',
+                        limit: 50,
+                        delay: 35,
+                        loading: false,
+                        resultMsg: '',
+                    },
+                    // BulkSend
+                    bulksend: {
+                        accountId: '',
+                        message: '',
+                        targets: '',
+                        delay: 3,
+                        loading: false,
+                        resultMsg: '',
+                    },
                     // Pagination
                     accountPage: 1,
                     accountPageSize: 10,
@@ -1652,6 +1851,78 @@
                     // Toast
                     toast: { show: false, message: '', error: false }
                 }
+                // ---- Scraper ----
+                async runScraper() {
+                    this.scraper.loading = true;
+                    this.scraper.results = [];
+                    try {
+                        const res = await axios.post('/api/scraper/members', {
+                            account_id: this.scraper.accountId,
+                            target: this.scraper.target,
+                            limit: this.scraper.limit,
+                            filter_bots: this.scraper.filterBots,
+                        });
+                        this.scraper.results = res.data.members || [];
+                    } catch (e) {
+                        alert('Scrape failed: ' + (e.response?.data?.detail || e.message));
+                    } finally {
+                        this.scraper.loading = false;
+                    }
+                },
+                copyScrapedUsernames() {
+                    const unames = this.scraper.results.filter(m => m.username).map(m => m.username).join('\n');
+                    navigator.clipboard.writeText(unames);
+                    alert('Copied ' + this.scraper.results.filter(m => m.username).length + ' usernames');
+                },
+                // ---- Adder ----
+                async runAdder() {
+                    this.adder.loading = true;
+                    this.adder.resultMsg = '';
+                    try {
+                        const payload = {
+                            account_id: this.adder.accountId,
+                            dest_target: this.adder.destTarget,
+                            limit: this.adder.limit,
+                            delay: this.adder.delay,
+                        };
+                        if (this.adder.sourceTarget) {
+                            payload.source_target = this.adder.sourceTarget;
+                        } else if (this.adder.usernames.trim()) {
+                            payload.usernames = this.adder.usernames.trim().split('\n').map(u => u.trim()).filter(Boolean);
+                        }
+                        const res = await axios.post('/api/members/add', payload);
+                        const d = res.data;
+                        this.adder.resultMsg = `✅ Added: <b>${d.added}</b> | Failed: <b>${d.failed}</b> | Total: <b>${d.total}</b>`;
+                    } catch (e) {
+                        this.adder.resultMsg = '❌ ' + (e.response?.data?.detail || e.message);
+                    } finally {
+                        this.adder.loading = false;
+                    }
+                },
+                // ---- BulkSend ----
+                async runBulkSend() {
+                    this.bulksend.loading = true;
+                    this.bulksend.resultMsg = '';
+                    try {
+                        const targets = this.bulksend.targets.trim().split('\n').map(t => t.trim()).filter(Boolean);
+                        const res = await axios.post('/api/bulk/send-personal', {
+                            account_id: this.bulksend.accountId,
+                            message: this.bulksend.message,
+                            targets: targets,
+                            delay: this.bulksend.delay,
+                        });
+                        const d = res.data;
+                        this.bulksend.resultMsg = `✅ Sent: <b>${d.sent}</b> | Failed: <b>${d.failed}</b> | Total: <b>${d.total}</b>`;
+                    } catch (e) {
+                        this.bulksend.resultMsg = '❌ ' + (e.response?.data?.detail || e.message);
+                    } finally {
+                        this.bulksend.loading = false;
+                    }
+                },
+                fillBulksendFromScraper() {
+                    const unames = this.scraper.results.filter(m => m.username).map(m => m.username).join('\n');
+                    this.bulksend.targets = unames;
+                },
             },
             computed: {
                 onlineCount() { return this.accounts.filter(a => a.status === 'online').length },

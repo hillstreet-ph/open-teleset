@@ -231,53 +231,131 @@ class TaskScheduler:
                     log_manager.add_log("定时任务", account_id, "获取客户端失败", "error")
                     return False
 
-                # 合并发送目标
-                targets = []
-                for fid in friend_ids:
-                    targets.append({"type": "id", "value": fid})
-                for username in stranger_usernames:
-                    targets.append({"type": "username", "value": username})
-                
-                # 如果没有指定目标，发送到 Saved Messages
-                if not targets:
-                    targets = [{"type": "id", "value": "me"}]
-                
-                success_count = 0
-                fail_count = 0
-                
-                for i, target in enumerate(targets):
+                # ---- Action: scrape_members ----
+                if action == "scrape_members":
+                    scrape_target = schedule.get("scrape_target", "")
+                    scrape_limit = schedule.get("scrape_limit", 200)
+                    filter_bots = schedule.get("filter_bots", True)
+                    if not scrape_target:
+                        log_manager.add_log("定时任务", account_id, "scrape_members: no target specified", "error")
+                        return False
                     try:
-                        # 获取目标实体
-                        target_value = target["value"]
-                        entity = await client.get_entity(target_value)
-                        
-                        # 发送消息
-                        # ai_execute 暂时和 send_message 一样（AI优化需要用户自己调用MCP）
-                        await client.send_message(entity, message)
-                        success_count += 1
-                        
-                        log_manager.add_log("定时任务", account_id, 
-                            f"发送成功: {target_value}", "success")
-                        
-                        # 发送间隔（除了最后一条）
-                        if i < len(targets) - 1:
-                            await asyncio.sleep(interval / 1000)
-                            
+                        entity = await client.get_entity(scrape_target)
+                        participants = await client.get_participants(entity, limit=scrape_limit)
+                        members = []
+                        for p in participants:
+                            if filter_bots and p.bot:
+                                continue
+                            members.append({
+                                "id": p.id,
+                                "username": p.username or "",
+                                "first_name": p.first_name or "",
+                                "last_name": p.last_name or "",
+                            })
+                        schedule["last_scrape_result"] = {
+                            "target": scrape_target,
+                            "total": len(members),
+                            "members": members,
+                            "scraped_at": datetime.now().isoformat(),
+                        }
+                        log_manager.add_log("定时任务", account_id,
+                            f"Scraped {len(members)} members from {scrape_target}", "success")
+                        results.append({"account": account_id, "success": True, "scraped": len(members)})
                     except Exception as e:
-                        fail_count += 1
-                        log_manager.add_log("定时任务", account_id, 
-                            f"发送失败 {target_value}: {str(e)}", "error")
-                
-                results.append({
-                    "account": account_id, 
-                    "success": success_count > 0,
-                    "sent": success_count,
-                    "failed": fail_count
-                })
-                
-                log_manager.add_log("定时任务", account_id, 
-                    f"执行完成: {schedule['name']} (成功{success_count}/失败{fail_count})", 
-                    "success" if fail_count == 0 else "warning")
+                        log_manager.add_log("定时任务", account_id,
+                            f"Scrape failed for {scrape_target}: {str(e)}", "error")
+                        results.append({"account": account_id, "success": False, "error": str(e)})
+
+                # ---- Action: add_members ----
+                elif action == "add_members":
+                    from telethon import functions as tl_functions
+                    dest_target = schedule.get("dest_target", "")
+                    source_target = schedule.get("source_target", "")
+                    add_usernames = schedule.get("add_usernames", [])
+                    add_limit = schedule.get("add_limit", 50)
+                    add_delay = schedule.get("add_delay", 35)
+                    if not dest_target:
+                        log_manager.add_log("定时任务", account_id, "add_members: no dest_target specified", "error")
+                        return False
+                    user_list = []
+                    if add_usernames:
+                        user_list = add_usernames[:add_limit]
+                    elif source_target:
+                        src_entity = await client.get_entity(source_target)
+                        parts = await client.get_participants(src_entity, limit=add_limit)
+                        user_list = [p.username for p in parts if not p.bot and p.username]
+                    if not user_list:
+                        log_manager.add_log("定时任务", account_id, "add_members: no users to add", "warning")
+                        results.append({"account": account_id, "success": True, "added": 0})
+                    else:
+                        dest_entity = await client.get_entity(dest_target)
+                        added = 0
+                        failed_add = 0
+                        for idx, uname in enumerate(user_list):
+                            try:
+                                user_entity = await client.get_entity(uname)
+                                await client(tl_functions.channels.InviteToChannelRequest(
+                                    channel=dest_entity, users=[user_entity]))
+                                added += 1
+                                log_manager.add_log("定时任务", account_id, f"Added {uname} to {dest_target}", "success")
+                            except Exception as e:
+                                failed_add += 1
+                                log_manager.add_log("定时任务", account_id, f"Failed to add {uname}: {str(e)}", "error")
+                            if idx < len(user_list) - 1:
+                                await asyncio.sleep(add_delay)
+                        results.append({"account": account_id, "success": added > 0, "added": added, "failed": failed_add})
+                        log_manager.add_log("定时任务", account_id,
+                            f"Add members done: {added} added, {failed_add} failed", "success" if failed_add == 0 else "warning")
+
+                # ---- Action: send_message / ai_execute / default ----
+                else:
+                    # 合并发送目标
+                    targets = []
+                    for fid in friend_ids:
+                        targets.append({"type": "id", "value": fid})
+                    for username in stranger_usernames:
+                        targets.append({"type": "username", "value": username})
+                    
+                    # 如果没有指定目标，发送到 Saved Messages
+                    if not targets:
+                        targets = [{"type": "id", "value": "me"}]
+                    
+                    success_count = 0
+                    fail_count = 0
+                    
+                    for i, target in enumerate(targets):
+                        try:
+                            # 获取目标实体
+                            target_value = target["value"]
+                            entity = await client.get_entity(target_value)
+                            
+                            # 发送消息
+                            # ai_execute 暂时和 send_message 一样（AI优化需要用户自己调用MCP）
+                            await client.send_message(entity, message)
+                            success_count += 1
+                            
+                            log_manager.add_log("定时任务", account_id, 
+                                f"发送成功: {target_value}", "success")
+                            
+                            # 发送间隔（除了最后一条）
+                            if i < len(targets) - 1:
+                                await asyncio.sleep(interval / 1000)
+                                
+                        except Exception as e:
+                            fail_count += 1
+                            log_manager.add_log("定时任务", account_id, 
+                                f"发送失败 {target_value}: {str(e)}", "error")
+                    
+                    results.append({
+                        "account": account_id, 
+                        "success": success_count > 0,
+                        "sent": success_count,
+                        "failed": fail_count
+                    })
+                    
+                    log_manager.add_log("定时任务", account_id, 
+                        f"执行完成: {schedule['name']} (成功{success_count}/失败{fail_count})", 
+                        "success" if fail_count == 0 else "warning")
 
             except Exception as e:
                 log_manager.add_log("定时任务", account_id, f"执行失败: {str(e)}", "error")
