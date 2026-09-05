@@ -26,6 +26,7 @@ from log_manager import log_manager
 from template_manager import template_manager
 from scheduler import task_scheduler
 from batch_operations import batch_operations
+from telegram_ops import telegram_ops_router
 
 
 # ============ FastAPI 应用 ============
@@ -89,6 +90,7 @@ app.add_middleware(
 
 # 挂载静态文件
 app.mount("/static", StaticFiles(directory="static"), name="static")
+app.include_router(telegram_ops_router)
 
 
 # ============ 数据模型 ============
