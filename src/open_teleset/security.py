@@ -9,13 +9,13 @@ from typing import Any
 
 import httpx
 import jwt
+from jwt import PyJWKClient
 from fastapi import Request
-# PyJWKClient is part of PyJWT[crypto] — imported via jwt.PyJWKClient
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
 from starlette.responses import JSONResponse, Response
 
-PUBLIC_PATHS = frozenset({"/healthz", "/readyz"})
+PUBLIC_PATHS = frozenset({"/health", "/healthz", "/readyz", "/"})
 PRIVILEGED_PATHS = (
     "/api/accounts/batch-import",
     "/api/batch/delete-accounts",
