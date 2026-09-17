@@ -2,7 +2,7 @@
 window.OPEN_TELESET_CONFIG = {
   appName: "open-teleset",
   locale: "en",
-  supabaseUrl: "https://wkewimymzbhgbkumlxmg.supabase.co",
+  supabaseUrl: "https://hoseohvgoiarxluxqwqv.supabase.co",
   supabaseAnonKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndrZXdpbXltemJoZ2JrdW1seG1nIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODczMTUyMzQsImV4cCI6MjEwMjg5MTIzNH0.wv3fnA-OBMaQWvRHRQ4zA_M3NsUzKoMTQJjTLzikspM",
   apiBase: "https://open-teleset.hillstreet-ph.workers.dev",
   pagesOrigin: "https://open-teleset.site"
