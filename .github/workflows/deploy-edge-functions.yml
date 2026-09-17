@@ -23,7 +23,7 @@ jobs:
       - name: Deploy all edge functions
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_TOKEN }}
-          PROJECT_ID: wkewimymzbhgbkumlxmg
+          PROJECT_ID: hoseohvgoiarxluxqwqv
         run: |
           for fn in supabase/functions/*/; do
             name=$(basename "$fn")
@@ -37,7 +37,7 @@ jobs:
       - name: Set edge function secrets
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_TOKEN }}
-          PROJECT_ID: wkewimymzbhgbkumlxmg
+          PROJECT_ID: hoseohvgoiarxluxqwqv
         run: |
           supabase secrets set \
             SUPABASE_URL="${{ secrets.SUPABASE_URL }}" \
