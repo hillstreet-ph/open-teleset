@@ -13,7 +13,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
-from telethon import functions, types, utils
+from telethon import functions, utils
 
 from account_manager import account_manager
 from log_manager import log_manager

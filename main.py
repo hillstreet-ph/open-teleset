@@ -17,7 +17,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 from telethon import TelegramClient, functions, types, utils
 from telethon.sessions import StringSession
-from outreach_policy import dispatch_outreach, valid_bounds
+from outreach_policy import dispatch_outreach
 from telethon.tl.types import (
     User, Chat, Channel,
     ChatAdminRights, ChatBannedRights,

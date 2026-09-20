@@ -13,12 +13,13 @@ def status(path):
         return error.code, None
 
 
-for attempt in range(30):
+for _ in range(30):
     try:
         code, body = status("/health")
         if code == 200 and body.get("service") == "open-teleset":
             break
     except (OSError, ValueError):
+        # Startup can briefly refuse connections; retain the bounded retry delay.
         pass
     time.sleep(1)
 else:

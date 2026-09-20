@@ -8,7 +8,6 @@ from pydantic import ValidationError
 from telethon.tl.types import PeerUser
 
 import outreach_policy as policy_module
-from outreach_policy import OutreachPolicy, OutreachDenied, dispatch_outreach, hash_identifier
 import telegram_ops
 import scheduler
 import batch_operations
@@ -21,17 +20,17 @@ def policy(tmp_path, monkeypatch):
     document = {
         "version": 1,
         "approvals": {action: {"action": action, "expires_at": "2099-01-01T00:00:00Z",
-                                 "account_hashes": [hash_identifier("account")]} for action in policy_module.ACTIONS},
-        "consents": [{"subject_hash": hash_identifier(user), "actions": sorted(policy_module.ACTIONS),
+                                 "account_hashes": [policy_module.hash_identifier("account")]} for action in policy_module.ACTIONS},
+        "consents": [{"subject_hash": policy_module.hash_identifier(user), "actions": sorted(policy_module.ACTIONS),
                       "source": "explicit", "granted_at": "2020-01-01T00:00:00Z",
-                      "expires_at": "2099-01-01T00:00:00Z", "account_hashes": [hash_identifier("account")]}
+                      "expires_at": "2099-01-01T00:00:00Z", "account_hashes": [policy_module.hash_identifier("account")]}
                      for user in (111, 222)],
         "suppressions": [],
     }
     def save():
         path.write_text(json.dumps(document))
     save()
-    evaluator = OutreachPolicy(str(path))
+    evaluator = policy_module.OutreachPolicy(str(path))
     for module in (policy_module, telegram_ops, scheduler, batch_operations):
         monkeypatch.setattr(module, "outreach_policy", evaluator)
     monkeypatch.setenv("OUTREACH_RATE_DB", str(tmp_path / "rate.sqlite3"))
@@ -47,7 +46,7 @@ def policy(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("field,value", [("active", "true"), ("active", 1), ("active", None)])
 def test_malformed_suppression_denies(policy, field, value):
-    policy.data["suppressions"] = [{"subject_hash": hash_identifier(111), field: value}]
+    policy.data["suppressions"] = [{"subject_hash": policy_module.hash_identifier(111), field: value}]
     policy.save()
     decision = policy.evaluator.authorize(action="personal_send", subject=111, account_id="account", approval_id="personal_send")
     assert not decision.allowed and decision.reason == "policy_unavailable"
@@ -64,13 +63,13 @@ def test_malformed_actions_deny(policy, value):
 async def test_recheck_optout_after_rate_wait(policy, monkeypatch):
     send = AsyncMock()
     kwargs = dict(action="personal_send", subject=111, account_id="account", approval_id="personal_send", send=send)
-    await dispatch_outreach(**kwargs)
+    await policy_module.dispatch_outreach(**kwargs)
     async def revoke(_):
-        policy.data["suppressions"] = [{"subject_hash": hash_identifier(111), "active": True}]
+        policy.data["suppressions"] = [{"subject_hash": policy_module.hash_identifier(111), "active": True}]
         policy.save()
     monkeypatch.setattr(asyncio, "sleep", revoke)
-    with pytest.raises(OutreachDenied, match="suppressed"):
-        await dispatch_outreach(**kwargs)
+    with pytest.raises(policy_module.OutreachDenied, match="suppressed"):
+        await policy_module.dispatch_outreach(**kwargs)
     assert send.await_count == 1
 
 
@@ -79,8 +78,8 @@ async def test_failed_attempt_is_still_rate_limited(policy):
     send = AsyncMock(side_effect=[RuntimeError("private message"), None])
     kwargs = dict(action="member_add", subject=111, account_id="account", approval_id="member_add", send=send)
     with pytest.raises(RuntimeError):
-        await dispatch_outreach(**kwargs)
-    await dispatch_outreach(**kwargs)
+        await policy_module.dispatch_outreach(**kwargs)
+    await policy_module.dispatch_outreach(**kwargs)
     assert policy.sleeps == [35]
 
 
@@ -93,7 +92,7 @@ def test_member_bounds_are_not_bypassable(kwargs):
 @pytest.mark.asyncio
 async def test_bulk_honors_mid_batch_suppression(policy, monkeypatch):
     async def sent(*args, **kwargs):
-        policy.data["suppressions"] = [{"subject_hash": hash_identifier(222), "active": True}]
+        policy.data["suppressions"] = [{"subject_hash": policy_module.hash_identifier(222), "active": True}]
         policy.save()
     client = SimpleNamespace(get_entity=AsyncMock(side_effect=lambda value: PeerUser(int(value))),
                              send_message=AsyncMock(side_effect=sent))

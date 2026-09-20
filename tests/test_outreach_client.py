@@ -11,7 +11,6 @@ from telethon.sessions import StringSession
 
 import outreach_policy as policy_module
 from outreach_client import ConsentTelegramClient, outreach_context
-from outreach_policy import OutreachDenied, OutreachPolicy, hash_identifier
 
 
 @pytest.fixture
@@ -20,13 +19,13 @@ def guarded(tmp_path, monkeypatch):
         "version": 1,
         "approvals": {
             action: {"action": action, "expires_at": "2099-01-01T00:00:00Z",
-                     "account_hashes": [hash_identifier("account")]}
+                     "account_hashes": [policy_module.hash_identifier("account")]}
             for action in policy_module.ACTIONS
         },
         "consents": [{
-            "subject_hash": hash_identifier(111), "actions": sorted(policy_module.ACTIONS),
+            "subject_hash": policy_module.hash_identifier(111), "actions": sorted(policy_module.ACTIONS),
             "source": "explicit", "granted_at": "2020-01-01T00:00:00Z",
-            "expires_at": "2099-01-01T00:00:00Z", "account_hashes": [hash_identifier("account")],
+            "expires_at": "2099-01-01T00:00:00Z", "account_hashes": [policy_module.hash_identifier("account")],
         }],
         "suppressions": [],
     }
@@ -36,7 +35,7 @@ def guarded(tmp_path, monkeypatch):
         path.write_text(json.dumps(document))
 
     save()
-    monkeypatch.setattr(policy_module, "outreach_policy", OutreachPolicy(str(path)))
+    monkeypatch.setattr(policy_module, "outreach_policy", policy_module.OutreachPolicy(str(path)))
     monkeypatch.setenv("OUTREACH_RATE_DB", str(tmp_path / "rates.sqlite3"))
     now = [1000.0]
     sleeps = []
@@ -83,7 +82,7 @@ def test_constructor_forces_retries_and_flood_sleep_off():
     functions.InvokeWithoutUpdatesRequest(message()),
 ])
 async def test_native_outreach_requires_trusted_context(guarded, rpc):
-    with pytest.raises(OutreachDenied, match="outreach_context_required"):
+    with pytest.raises(policy_module.OutreachDenied, match="outreach_context_required"):
         await guarded.client._call(None, rpc)
     guarded.native.assert_not_awaited()
 
@@ -98,7 +97,7 @@ async def test_read_rpc_and_literal_saved_messages_are_available_without_context
 @pytest.mark.asyncio
 async def test_saved_messages_exception_does_not_override_another_subject_context(guarded, monkeypatch):
     monkeypatch.setattr(guarded.client, "get_me", AsyncMock(return_value=SimpleNamespace(id=222)))
-    with context(subject=111), pytest.raises(OutreachDenied, match="outreach_recipient_mismatch"):
+    with context(subject=111), pytest.raises(policy_module.OutreachDenied, match="outreach_recipient_mismatch"):
         await guarded.client._call(None, message(types.InputPeerSelf()))
     guarded.native.assert_not_awaited()
 
@@ -108,7 +107,7 @@ async def test_valid_context_sends_once_and_is_cleared_afterward(guarded):
     with context():
         assert await guarded.client._call(None, message()) == "sent"
     assert guarded.native.await_count == 1
-    with pytest.raises(OutreachDenied, match="outreach_context_required"):
+    with pytest.raises(policy_module.OutreachDenied, match="outreach_context_required"):
         await guarded.client._call(None, message())
 
 
@@ -128,7 +127,7 @@ async def test_call_does_not_restore_automatic_retry_or_flood_sleep(guarded):
     {"subject": 222}, {"account_id": "other-account"}, {"action": "member_add"},
 ])
 async def test_context_cannot_be_reused_for_wrong_peer_account_or_action(guarded, scope):
-    with context(**scope), pytest.raises(OutreachDenied, match="mismatch"):
+    with context(**scope), pytest.raises(policy_module.OutreachDenied, match="mismatch"):
         await guarded.client._call(None, message())
     guarded.native.assert_not_awaited()
 
@@ -139,14 +138,14 @@ async def test_upload_time_optout_is_rechecked_before_send_rpc(guarded):
         await guarded.client._call(None, functions.messages.UploadMediaRequest(
             types.InputPeerUser(111, 1), types.InputMediaEmpty()
         ))
-        guarded.data["suppressions"] = [{"subject_hash": hash_identifier(111), "active": True}]
+        guarded.data["suppressions"] = [{"subject_hash": policy_module.hash_identifier(111), "active": True}]
         guarded.save()
         with context():
             await guarded.client._call(None, functions.messages.SendMediaRequest(
                 types.InputPeerUser(111, 1), types.InputMediaEmpty(), "test"
             ))
 
-    with pytest.raises(OutreachDenied, match="suppressed"):
+    with pytest.raises(policy_module.OutreachDenied, match="suppressed"):
         await policy_module.dispatch_outreach(
             action="personal_send", subject=111, account_id="account",
             approval_id="personal_send", send=upload_and_send,
@@ -174,7 +173,7 @@ async def test_album_larger_than_ten_is_denied(guarded):
     request = functions.messages.SendMultiMediaRequest(
         types.InputPeerUser(111, 1), [types.InputSingleMedia(types.InputMediaEmpty(), "test")] * 11
     )
-    with context(), pytest.raises(OutreachDenied, match="album_rpc_bounds_exceeded"):
+    with context(), pytest.raises(policy_module.OutreachDenied, match="album_rpc_bounds_exceeded"):
         await guarded.client._call(None, request)
     guarded.native.assert_not_awaited()
 
@@ -186,7 +185,7 @@ async def test_member_rpc_has_one_recipient_and_uses_member_context(guarded):
             types.InputChannel(1, 1), [types.InputUser(111, 1)]
         ))
     assert guarded.native.await_count == 1
-    with context("member_add"), pytest.raises(OutreachDenied, match="one_member_per_rpc_required"):
+    with context("member_add"), pytest.raises(policy_module.OutreachDenied, match="one_member_per_rpc_required"):
         await guarded.client._call(None, functions.messages.CreateChatRequest(
             [types.InputUser(111, 1), types.InputUser(222, 1)], "test"
         ))
@@ -195,7 +194,7 @@ async def test_member_rpc_has_one_recipient_and_uses_member_context(guarded):
 
 @pytest.mark.asyncio
 async def test_native_future_schedule_is_denied_even_with_context(guarded):
-    with context(), pytest.raises(OutreachDenied, match="native_schedule_cannot_revalidate"):
+    with context(), pytest.raises(policy_module.OutreachDenied, match="native_schedule_cannot_revalidate"):
         await guarded.client._call(None, message(schedule_date=datetime(2099, 1, 1, tzinfo=timezone.utc)))
     guarded.native.assert_not_awaited()
 
@@ -211,6 +210,6 @@ async def test_request_recipient_cannot_change_during_rate_wait(guarded, monkeyp
         guarded.clock[0] += delay
 
     monkeypatch.setattr(policy_module.asyncio, "sleep", mutate)
-    with context(), pytest.raises(OutreachDenied, match="outreach_recipient_mismatch"):
+    with context(), pytest.raises(policy_module.OutreachDenied, match="outreach_recipient_mismatch"):
         await guarded.client._call(None, request)
     assert guarded.native.await_count == 1
