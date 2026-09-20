@@ -16,6 +16,9 @@ env:
   PYTHON_VERSION: "3.12"
   IMAGE_NAME: hillstreet/open-teleset
 
+permissions:
+  contents: read
+
 jobs:
   # ─── 1. LINT + TESTS ────────────────────────────────────────────
   test:
