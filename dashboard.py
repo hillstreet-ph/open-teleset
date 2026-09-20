@@ -851,7 +851,8 @@ async def batch_send_message_api(request: dict):
     chat_id = request.get("chat_id")
     message = request.get("message")
     account_ids = request.get("account_ids")
-    delay = request.get("delay", 2.0)
+    delay = request.get("delay", 3.0)
+    approval_id = request.get("approval_id")
 
     if not chat_id or not message:
         raise HTTPException(status_code=400, detail="缺少必要参数")
@@ -860,7 +861,8 @@ async def batch_send_message_api(request: dict):
         chat_id=chat_id,
         message=message,
         account_ids=account_ids,
-        delay=delay
+        delay=delay,
+        approval_id=approval_id,
     )
     return result
 
@@ -872,7 +874,8 @@ async def batch_send_template_api(request: dict):
     template_id = request.get("template_id")
     account_ids = request.get("account_ids")
     template_vars = request.get("template_vars", {})
-    delay = request.get("delay", 2.0)
+    delay = request.get("delay", 3.0)
+    approval_id = request.get("approval_id")
 
     if not chat_id or not template_id:
         raise HTTPException(status_code=400, detail="缺少必要参数")
@@ -882,7 +885,8 @@ async def batch_send_template_api(request: dict):
         template_id=template_id,
         account_ids=account_ids,
         template_vars=template_vars,
-        delay=delay
+        delay=delay,
+        approval_id=approval_id,
     )
     return result
 

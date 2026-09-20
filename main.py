@@ -27,8 +27,8 @@ from telethon.tl.types import (
 load_dotenv()
 
 # 配置
-API_ID = int(os.getenv("TELEGRAM_API_ID", "2040"))
-API_HASH = os.getenv("TELEGRAM_API_HASH", "b18441a1ff607e10a989891a5462e627")
+API_ID = int(os.getenv("TELEGRAM_API_ID", "0"))
+API_HASH = os.getenv("TELEGRAM_API_HASH", "")
 SESSION_FILE = os.getenv("SESSION_FILE", ".telegram_session")
 
 # 允许嵌套事件循环
@@ -127,6 +127,8 @@ async def get_client() -> TelegramClient:
         )
 
     if client is None:
+        if API_ID <= 0 or not API_HASH:
+            raise ValueError("Configure TELEGRAM_API_ID and TELEGRAM_API_HASH in the runtime secret store")
         client = TelegramClient(
             StringSession(session_string),
             API_ID,
@@ -137,6 +139,22 @@ async def get_client() -> TelegramClient:
         await client.connect()
 
     return client
+
+
+def get_default_account_id() -> str:
+    """Resolve the account identifier used for policy binding without exposing sessions."""
+    accounts_config = "./accounts/config.json"
+    if os.path.exists(accounts_config):
+        try:
+            with open(accounts_config, "r", encoding="utf-8") as handle:
+                accounts = json.load(handle)
+            if isinstance(accounts, dict):
+                for account_id, account_data in accounts.items():
+                    if isinstance(account_data, dict) and account_data.get("session_string"):
+                        return str(account_id)
+        except (OSError, json.JSONDecodeError):
+            pass
+    return os.getenv("OUTREACH_DEFAULT_ACCOUNT_ID", "default")
 
 
 def format_entity(entity) -> Dict[str, Any]:
@@ -816,7 +834,8 @@ async def get_admins(chat_id: Union[int, str]) -> str:
 @mcp.tool(annotations=ToolAnnotations(title="邀请进群", openWorldHint=True, destructiveHint=True, idempotentHint=True))
 async def invite_to_chat(
     chat_id: Union[int, str],
-    users: List[Union[int, str]]
+    users: List[Union[int, str]],
+    approval_id: str = None,
 ) -> str:
     """邀请用户加入群组
 
@@ -825,6 +844,22 @@ async def invite_to_chat(
         users: 用户 ID 或用户名列表
     """
     try:
+        if not users or len(users) > 10:
+            return "❌ Member-add safety bounds exceeded"
+        from outreach_policy import outreach_policy
+
+        account_id = get_default_account_id()
+        decisions = outreach_policy.authorize_many(
+            action="member_add",
+            subjects=users,
+            account_ids=[account_id],
+            approval_id=approval_id,
+        )
+        denied = next((decision for decision in decisions if not decision.allowed), None)
+        if denied:
+            logger.warning(denied.audit_summary())
+            return f"❌ Outreach denied: {denied.reason}"
+
         c = await get_client()
         entity = await c.get_entity(chat_id)
 
@@ -1458,7 +1493,8 @@ async def get_message_reactions(
 async def schedule_message(
     chat_id: Union[int, str],
     message: str,
-    timestamp: int
+    timestamp: int,
+    approval_id: str = None,
 ) -> str:
     """定时发送消息
 
@@ -1467,14 +1503,11 @@ async def schedule_message(
         message: 消息内容
         timestamp: 发送时间戳
     """
-    try:
-        c = await get_client()
-        entity = await c.get_entity(chat_id)
-
-        await c.send_message(entity, message, schedule=timestamp)
-        return f"✅ 消息已定时发送"
-    except Exception as e:
-        return log_and_format_error("schedule_message", e, chat_id=chat_id)
+    del chat_id, message, timestamp, approval_id
+    return (
+        "❌ Outreach denied: native_schedule_cannot_revalidate. "
+        "Use create_schedule so consent and suppression are rechecked at execution time."
+    )
 
 
 @mcp.tool(annotations=ToolAnnotations(title="发送位置", openWorldHint=True, destructiveHint=True))
@@ -3860,7 +3893,8 @@ async def create_schedule(
     month: int = None,
     day: int = None,
     second: int = 0,
-    interval: int = 2000
+    interval: int = 3000,
+    approval_id: str = None,
 ) -> str:
     """创建定时发送任务
     
@@ -3882,6 +3916,7 @@ async def create_schedule(
         创建结果
     """
     try:
+        from account_manager import account_manager
         from scheduler import task_scheduler
         import uuid
         
@@ -3929,7 +3964,8 @@ async def create_schedule(
             repeat=repeat,
             friend_ids=friend_ids,
             stranger_usernames=stranger_usernames,
-            interval=interval
+            interval=interval,
+            approval_id=approval_id,
         )
         
         if success:
@@ -4146,7 +4182,8 @@ async def get_pending_ai_tasks() -> str:
 )
 async def execute_ai_task(
     task_id: str,
-    polished_message: str
+    polished_message: str,
+    approval_id: str = None,
 ) -> str:
     """执行AI润色后的定时任务
     
@@ -4158,6 +4195,7 @@ async def execute_ai_task(
         执行结果
     """
     try:
+        from account_manager import account_manager
         from scheduler import task_scheduler
         import asyncio
         
@@ -4174,6 +4212,20 @@ async def execute_ai_task(
         
         if not account_id:
             return "❌ 没有可用账号"
+
+        from outreach_policy import hash_identifier, outreach_policy
+
+        policy_subjects = list(friend_ids) + list(stranger_usernames)
+        decisions = outreach_policy.authorize_many(
+            action="scheduled_send",
+            subjects=policy_subjects,
+            account_ids=[account_id],
+            approval_id=approval_id or schedule.get("approval_id"),
+        )
+        denied = next((decision for decision in decisions if not decision.allowed), None)
+        if denied:
+            log_manager.add_log("OutreachPolicy", "system", denied.audit_summary(), "warning")
+            return f"❌ Outreach denied: {denied.reason}"
         
         # 获取客户端
         client = await account_manager.get_client(account_id)
@@ -4200,14 +4252,16 @@ async def execute_ai_task(
                 entity = await client.get_entity(target_value)
                 await client.send_message(entity, polished_message)
                 success_count += 1
-                results.append(f"✅ {target_value}")
+                results.append(f"✅ subject:{hash_identifier(target_value)[:12]}")
                 
                 if i < len(targets) - 1:
                     await asyncio.sleep(interval / 1000)
                     
             except Exception as e:
                 fail_count += 1
-                results.append(f"❌ {target_value}: {str(e)}")
+                results.append(
+                    f"❌ subject:{hash_identifier(target_value)[:12]}: {type(e).__name__}"
+                )
         
         # 更新任务状态
         now_iso = datetime.now().isoformat()

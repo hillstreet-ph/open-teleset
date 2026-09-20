@@ -17,6 +17,7 @@ from telethon import functions, types
 
 from account_manager import account_manager
 from log_manager import log_manager
+from outreach_policy import outreach_policy
 from stats_tracker import stats_tracker
 
 
@@ -37,8 +38,9 @@ class AddMembersRequest(BaseModel):
     source_target: Optional[str] = None   # source channel/group (if scraping first)
     dest_target: str                       # destination channel/group
     usernames: Optional[List[str]] = None  # explicit list of usernames/IDs
-    limit: int = 50                        # max members to add per run
+    limit: int = 10                        # max members to add per run
     delay: float = 35.0                    # seconds between each add (Telegram rate limit)
+    approval_id: Optional[str] = None      # server-side approval reference
 
 
 class BulkSendRequest(BaseModel):
@@ -47,6 +49,20 @@ class BulkSendRequest(BaseModel):
     targets: List[str]           # list of usernames or user IDs
     delay: float = 3.0           # seconds between sends
     template_id: Optional[str] = None
+    approval_id: Optional[str] = None      # server-side approval reference
+
+
+def _enforce_outreach(action: str, subjects: List[str], account_id: str, approval_id: Optional[str]):
+    decisions = outreach_policy.authorize_many(
+        action=action,
+        subjects=subjects,
+        account_ids=[account_id],
+        approval_id=approval_id,
+    )
+    denied = next((decision for decision in decisions if not decision.allowed), None)
+    if denied:
+        log_manager.add_log("OutreachPolicy", account_id, denied.audit_summary(), "warning")
+        raise HTTPException(status_code=403, detail=f"Outreach denied: {denied.reason}")
 
 
 # ============ 1. Member Scraper ============
@@ -105,29 +121,30 @@ async def scrape_members(request: ScrapeRequest):
 async def add_members(request: AddMembersRequest):
     """
     Add members to a channel or group.
-    Supports either an explicit usernames list or scraping from a source first.
+    Only accepts explicit usernames with current consent. Scraped additions are denied.
     """
     try:
+        if request.source_target:
+            log_manager.add_log(
+                "OutreachPolicy", request.account_id,
+                "outreach_policy deny action=member_add reason=scraped_source_forbidden",
+                "warning",
+            )
+            raise HTTPException(
+                status_code=403,
+                detail="Outreach denied: scraped_source_forbidden",
+            )
+        if request.limit > 10 or request.delay < 35:
+            raise HTTPException(status_code=400, detail="Member-add safety bounds exceeded")
+        if not request.usernames:
+            raise HTTPException(status_code=400, detail="Explicit usernames are required")
+
+        user_list = request.usernames[:request.limit]
+        _enforce_outreach("member_add", user_list, request.account_id, request.approval_id)
+
         client = await account_manager.get_client(request.account_id)
         if not client:
             raise HTTPException(status_code=400, detail="Client unavailable — account not connected")
-
-        # Resolve the list of users to add
-        user_list: List[str] = []
-        if request.usernames:
-            user_list = request.usernames[:request.limit]
-        elif request.source_target:
-            # Scrape source first
-            source_entity = await client.get_entity(request.source_target)
-            participants = await client.get_participants(source_entity, limit=request.limit)
-            for p in participants:
-                if not p.bot and p.username:
-                    user_list.append(p.username)
-        else:
-            raise HTTPException(
-                status_code=400,
-                detail="Provide 'usernames' list or 'source_target' to scrape from",
-            )
 
         if not user_list:
             return {"success": True, "added": 0, "failed": 0, "results": [], "message": "No users to add"}
@@ -151,7 +168,7 @@ async def add_members(request: AddMembersRequest):
                 added += 1
                 log_manager.add_log(
                     "MemberAdder", request.account_id,
-                    f"Added {username} to {request.dest_target}", "success",
+                    "Approved member addition completed", "success",
                 )
             except Exception as e:
                 error_msg = str(e)
@@ -159,7 +176,7 @@ async def add_members(request: AddMembersRequest):
                 failed += 1
                 log_manager.add_log(
                     "MemberAdder", request.account_id,
-                    f"Failed to add {username}: {error_msg}", "error",
+                    f"Approved member addition failed: {type(e).__name__}", "error",
                 )
 
             # Rate-limit delay (except after the last one)
@@ -195,6 +212,17 @@ async def bulk_send_personal(request: BulkSendRequest):
     from MANY accounts to ONE chat.
     """
     try:
+        if not request.targets:
+            raise HTTPException(status_code=400, detail="At least one target is required")
+        if len(request.targets) > 20 or request.delay < 3:
+            raise HTTPException(status_code=400, detail="Bulk-send safety bounds exceeded")
+        _enforce_outreach(
+            "personal_send",
+            request.targets,
+            request.account_id,
+            request.approval_id,
+        )
+
         client = await account_manager.get_client(request.account_id)
         if not client:
             raise HTTPException(status_code=400, detail="Client unavailable — account not connected")
@@ -228,7 +256,7 @@ async def bulk_send_personal(request: BulkSendRequest):
                 stats_tracker.record_message_sent(request.account_id)
                 log_manager.add_log(
                     "BulkSend", request.account_id,
-                    f"Sent to {target}", "success",
+                    "Approved personal message sent", "success",
                 )
             except Exception as e:
                 error_msg = str(e)
@@ -236,7 +264,7 @@ async def bulk_send_personal(request: BulkSendRequest):
                 failed += 1
                 log_manager.add_log(
                     "BulkSend", request.account_id,
-                    f"Failed to send to {target}: {error_msg}", "error",
+                    f"Approved personal send failed: {type(e).__name__}", "error",
                 )
 
             # Delay between sends (except last)

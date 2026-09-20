@@ -14,6 +14,7 @@ from croniter import croniter
 from account_manager import account_manager
 from template_manager import template_manager
 from log_manager import log_manager
+from outreach_policy import outreach_policy
 
 
 ACCOUNTS_DIR = "./accounts"
@@ -71,9 +72,10 @@ class TaskScheduler:
         repeat: str = None,
         friend_ids: List = None,
         stranger_usernames: List = None,
-        interval: int = 2000,
+        interval: int = 3000,
         auto_dedup: bool = True,
         validate_usernames: bool = True,
+        approval_id: str = None,
         **kwargs  # 忽略其他未知参数
     ) -> bool:
         """
@@ -102,6 +104,35 @@ class TaskScheduler:
         # 统一账号列表参数（兼容 account_ids 和 accounts）
         accounts_list = account_ids or accounts
 
+        policy_action = None
+        policy_subjects = []
+        if action in {"send_message", "send_template", "ai_execute"}:
+            policy_action = "scheduled_send"
+            policy_subjects = list(friend_ids or []) + list(stranger_usernames or [])
+            if interval < 3000 or len(policy_subjects) > 20:
+                return False
+        elif action == "add_members":
+            policy_action = "member_add"
+            if kwargs.get("source_target"):
+                return False
+            policy_subjects = list(kwargs.get("add_usernames") or [])
+            if kwargs.get("add_limit", 50) > 10 or kwargs.get("add_delay", 35) < 35:
+                return False
+
+        if policy_action and policy_subjects:
+            if not accounts_list:
+                return False
+            decisions = outreach_policy.authorize_many(
+                action=policy_action,
+                subjects=policy_subjects,
+                account_ids=accounts_list,
+                approval_id=approval_id,
+            )
+            denied = next((decision for decision in decisions if not decision.allowed), None)
+            if denied:
+                log_manager.add_log("OutreachPolicy", "system", denied.audit_summary(), "warning")
+                return False
+
         self.schedules[schedule_id] = {
             "id": schedule_id,
             "schedule_id": schedule_id,  # 前端使用的字段名
@@ -127,7 +158,14 @@ class TaskScheduler:
             "stranger_usernames": stranger_usernames or [],
             "interval": interval,
             "auto_dedup": auto_dedup,
-            "validate_usernames": validate_usernames
+            "validate_usernames": validate_usernames,
+            "approval_id": approval_id,
+            "policy_action": policy_action,
+            "source_target": kwargs.get("source_target"),
+            "dest_target": kwargs.get("dest_target"),
+            "add_usernames": kwargs.get("add_usernames", []),
+            "add_limit": kwargs.get("add_limit", 10),
+            "add_delay": kwargs.get("add_delay", 35),
         }
 
         self._save_schedules()
@@ -224,6 +262,32 @@ class TaskScheduler:
                 log_manager.add_log("定时任务", "system", "没有可用账号", "error")
                 return False
 
+            policy_action = schedule.get("policy_action")
+            if policy_action:
+                if policy_action == "member_add":
+                    if schedule.get("source_target"):
+                        log_manager.add_log(
+                            "OutreachPolicy", "system",
+                            "outreach_policy deny action=member_add reason=scraped_source_forbidden",
+                            "warning",
+                        )
+                        return False
+                    policy_subjects = schedule.get("add_usernames", [])
+                else:
+                    policy_subjects = list(friend_ids) + list(stranger_usernames)
+                decisions = outreach_policy.authorize_many(
+                    action=policy_action,
+                    subjects=policy_subjects,
+                    account_ids=[account_id],
+                    approval_id=schedule.get("approval_id"),
+                )
+                denied = next((decision for decision in decisions if not decision.allowed), None)
+                if denied:
+                    log_manager.add_log("OutreachPolicy", "system", denied.audit_summary(), "warning")
+                    schedule["fail_count"] = schedule.get("fail_count", 0) + 1
+                    self._save_schedules()
+                    return False
+
             try:
                 # 获取客户端
                 client = await account_manager.get_client(account_id)
@@ -297,10 +361,10 @@ class TaskScheduler:
                                 await client(tl_functions.channels.InviteToChannelRequest(
                                     channel=dest_entity, users=[user_entity]))
                                 added += 1
-                                log_manager.add_log("定时任务", account_id, f"Added {uname} to {dest_target}", "success")
+                                log_manager.add_log("定时任务", account_id, "Approved member addition completed", "success")
                             except Exception as e:
                                 failed_add += 1
-                                log_manager.add_log("定时任务", account_id, f"Failed to add {uname}: {str(e)}", "error")
+                                log_manager.add_log("定时任务", account_id, f"Approved member addition failed: {type(e).__name__}", "error")
                             if idx < len(user_list) - 1:
                                 await asyncio.sleep(add_delay)
                         results.append({"account": account_id, "success": added > 0, "added": added, "failed": failed_add})
@@ -335,7 +399,7 @@ class TaskScheduler:
                             success_count += 1
                             
                             log_manager.add_log("定时任务", account_id, 
-                                f"发送成功: {target_value}", "success")
+                                "已批准的定时消息发送成功", "success")
                             
                             # 发送间隔（除了最后一条）
                             if i < len(targets) - 1:
@@ -344,7 +408,7 @@ class TaskScheduler:
                         except Exception as e:
                             fail_count += 1
                             log_manager.add_log("定时任务", account_id, 
-                                f"发送失败 {target_value}: {str(e)}", "error")
+                                f"已批准的定时消息发送失败: {type(e).__name__}", "error")
                     
                     results.append({
                         "account": account_id, 

@@ -598,7 +598,8 @@ def create_mcp_server():
         chat_id: str,
         message: str,
         account_ids: str = None,
-        delay: float = 2.0
+        delay: float = 3.0,
+        approval_id: str = None,
     ) -> str:
         """
         批量发送消息
@@ -619,7 +620,8 @@ def create_mcp_server():
                 chat_id=chat_id,
                 message=message,
                 account_ids=ids,
-                delay=delay
+                delay=delay,
+                approval_id=approval_id,
             )
             return json.dumps(result, ensure_ascii=False, indent=2)
         except Exception as e:
@@ -635,7 +637,8 @@ def create_mcp_server():
         template_id: str,
         account_ids: str = None,
         template_vars: str = None,
-        delay: float = 2.0
+        delay: float = 3.0,
+        approval_id: str = None,
     ) -> str:
         """
         批量发送模板消息
@@ -659,7 +662,8 @@ def create_mcp_server():
                 template_id=template_id,
                 account_ids=ids,
                 template_vars=vars_dict,
-                delay=delay
+                delay=delay,
+                approval_id=approval_id,
             )
             return json.dumps(result, ensure_ascii=False, indent=2)
         except Exception as e:
