@@ -22,6 +22,16 @@ duplicate automatic deployment; standalone jobs and tagged releases require the
 same commit to have passed main CI, container checks and migrations. The legacy lint step remains
 advisory; green tests alone do not prove a clean repository-wide lint audit.
 
+The existing `migrations/001`–`003` set belongs to the legacy standalone public
+schema. Its signup trigger assumes `public.profiles.email` and replaces shared
+Auth behavior, which is incompatible with the canonical operations database.
+The runner now rejects canonical/shared targets before any schema or migration
+ledger write, including when a legacy ledger already exists. It exits nonzero;
+it does not mark these migrations applied. Deployment stays blocked until a
+reviewed migration set and ledger isolated in `open_teleset`, matching database
+queries, and backup/rollback validation are ready. Do not remove shared-schema
+markers, point credentials elsewhere, or add fabricated ledger entries to pass.
+
 The manual `validate-heal.yml` provider preflight performs read-only checks and
 prints only configuration matches, secret-presence booleans, OAuth enablement,
 and service identifiers. It does not print credential values or modify providers.

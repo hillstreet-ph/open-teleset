@@ -16,6 +16,51 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT / ".env")
 
+# These databases host several applications. The legacy migration set below
+# owns public objects and an auth.users trigger, so it must never run there.
+SHARED_PROJECT_REFS = {"hoseohvgoiarxluxqwqv", "huadtiuuoiriqrjpjxhr"}
+SHARED_TARGET_QUERY = """
+select
+  exists (
+    select 1 from pg_namespace
+    where nspname in ('operations_shared', 'platform_shared', 'open_teleset')
+  ) or (
+    to_regclass('public.profiles') is not null
+    and not exists (
+      select 1 from information_schema.columns
+      where table_schema = 'public' and table_name = 'profiles'
+        and column_name = 'email'
+    )
+  )
+"""
+
+
+class MigrationSafetyError(RuntimeError):
+    """The legacy migration set cannot safely own this database's objects."""
+
+
+def _shared_project_configured(dsns: list[str]) -> bool:
+    for address in [*dsns, os.getenv("SUPABASE_URL", "")]:
+        parsed = urlparse(address)
+        host = parsed.hostname or ""
+        user = parsed.username or ""
+        if any(host in {f"{ref}.supabase.co", f"db.{ref}.supabase.co"}
+               or user.endswith(f".{ref}") for ref in SHARED_PROJECT_REFS):
+            return True
+    return False
+
+
+async def _validate_legacy_target(conn, dsns: list[str]) -> None:
+    # Read-only validation precedes even creation of the migration ledger.
+    # A prior legacy ledger does not authorize replacement of shared auth.
+    if _shared_project_configured(dsns) or await conn.fetchval(SHARED_TARGET_QUERY) is not False:
+        raise MigrationSafetyError(
+            "Legacy public migrations are blocked on shared or unverified targets. "
+            "Deploy reviewed open_teleset-scoped migrations and a project-scoped "
+            "ledger first; preserve shared profiles, roles and signup triggers. "
+            "No migration or ledger write was performed."
+        )
+
 
 def _ensure_sslmode(dsn: str) -> str:
     if "sslmode=" in dsn:
@@ -83,6 +128,11 @@ async def main() -> int:
 
     conn = await _connect(dsns)
     try:
+        try:
+            await _validate_legacy_target(conn, dsns)
+        except MigrationSafetyError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
         await conn.execute(
             """
             create table if not exists _schema_migrations (
