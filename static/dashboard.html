@@ -358,6 +358,26 @@
             <div class="spinner"></div>
         </div>
 
+        <div v-else-if="passwordRecovery" class="auth-screen">
+            <div class="auth-card">
+                <h1>Choose a new password</h1>
+                <p class="subtitle">Enter at least 8 characters to finish resetting your password.</p>
+                <div v-if="authError" class="auth-error" role="alert">{{ authError }}</div>
+                <form @submit.prevent="updatePassword">
+                    <div class="form-group">
+                        <label for="recovery-password">New password</label>
+                        <input id="recovery-password" type="password" v-model="newPassword" autocomplete="new-password" required minlength="8" />
+                    </div>
+                    <div class="form-group">
+                        <label for="recovery-confirm">Confirm new password</label>
+                        <input id="recovery-confirm" type="password" v-model="confirmPassword" autocomplete="new-password" required minlength="8" />
+                    </div>
+                    <button type="submit" class="btn btn-primary" :disabled="authSubmitting">{{ authSubmitting ? 'Updating...' : 'Update password' }}</button>
+                </form>
+                <button class="btn-oauth" @click="signOut" :disabled="authSubmitting" style="margin-top: 1rem;">Cancel and sign out</button>
+            </div>
+        </div>
+
         <!-- Login/Signup Screen -->
         <div v-else-if="!user" class="auth-screen">
             <div class="auth-card">
@@ -399,6 +419,16 @@
             </div>
         </div>
 
+        <div v-else-if="!accessReady" class="auth-screen">
+            <div class="auth-card">
+                <h1>{{ accessLoading ? 'Checking access' : 'Access unavailable' }}</h1>
+                <div v-if="authSuccess" class="auth-success">{{ authSuccess }}</div>
+                <p class="subtitle">{{ accessLoading ? 'Verifying your Open-Teleset administrator access.' : accessError }}</p>
+                <button class="btn btn-primary" @click="applySession(session)" :disabled="accessLoading">Retry</button>
+                <button class="btn-oauth" @click="signOut" style="margin-top: 1rem;">Sign out</button>
+            </div>
+        </div>
+
         <!-- Authenticated Dashboard -->
         <template v-else>
 
@@ -413,7 +443,7 @@
                 <div class="user-menu">
                     <div class="user-info">
                         <span class="user-name">{{ userProfile.display_name || user.email }}</span>
-                        <span class="user-role">{{ userProfile.app_role || 'user' }}</span>
+                        <span class="user-role">{{ verifiedRole }} · {{ liveStatus }}</span>
                     </div>
                     <button class="btn-logout" @click="signOut">Logout</button>
                 </div>
@@ -882,8 +912,8 @@
                         <label>Account</label>
                         <select class="form-control" v-model="scraper.accountId">
                             <option value="">-- Select account --</option>
-                            <option v-for="acc in accounts" :key="acc.id" :value="acc.id">
-                                {{ acc.phone || acc.id }} {{ acc.username ? '(@' + acc.username + ')' : '' }}
+                            <option v-for="acc in accounts" :key="acc.account_id" :value="acc.account_id">
+                                {{ acc.phone || acc.account_id }} {{ acc.username ? '(@' + acc.username + ')' : '' }}
                             </option>
                         </select>
                     </div>
@@ -950,8 +980,8 @@
                         <label>Account</label>
                         <select class="form-control" v-model="adder.accountId">
                             <option value="">-- Select account --</option>
-                            <option v-for="acc in accounts" :key="acc.id" :value="acc.id">
-                                {{ acc.phone || acc.id }} {{ acc.username ? '(@' + acc.username + ')' : '' }}
+                            <option v-for="acc in accounts" :key="acc.account_id" :value="acc.account_id">
+                                {{ acc.phone || acc.account_id }} {{ acc.username ? '(@' + acc.username + ')' : '' }}
                             </option>
                         </select>
                     </div>
@@ -960,30 +990,30 @@
                         <input class="form-control" v-model="adder.destTarget" placeholder="e.g. @mydestchannel">
                     </div>
                     <div class="form-group">
-                        <label>Source (optional — scrape members from this channel first)</label>
-                        <input class="form-control" v-model="adder.sourceTarget" placeholder="e.g. @sourcechannel (leave empty to use usernames below)">
-                    </div>
-                    <div class="form-group">
-                        <label>Usernames (one per line — used if no source above)</label>
-                        <textarea class="form-control" v-model="adder.usernames" rows="5" placeholder="user1&#10;user2&#10;user3" :disabled="!!adder.sourceTarget"></textarea>
+                        <label>Consenting recipients (usernames or IDs, one per line; maximum 10)</label>
+                        <textarea class="form-control" v-model="adder.usernames" rows="5" placeholder="user1&#10;user2&#10;user3"></textarea>
                     </div>
                     <div style="display: flex; gap: 15px;">
                         <div class="form-group" style="flex:1;">
                             <label>Max Members to Add</label>
-                            <input class="form-control" type="number" v-model.number="adder.limit" min="1" max="200">
+                            <input class="form-control" type="number" v-model.number="adder.limit" min="1" max="10">
                         </div>
                         <div class="form-group" style="flex:1;">
                             <label>Delay Between Adds (sec)</label>
-                            <input class="form-control" type="number" v-model.number="adder.delay" min="5" max="120" step="5">
+                            <input class="form-control" type="number" v-model.number="adder.delay" min="35" max="3600" step="5">
                         </div>
                     </div>
-                    <button class="btn btn-primary" @click="runAdder" :disabled="adder.loading || !adder.accountId || !adder.destTarget">
+                    <div class="form-group">
+                        <label>Approval reference</label>
+                        <input class="form-control" v-model.trim="adder.approvalId" placeholder="Approved member-add reference" autocomplete="off">
+                    </div>
+                    <button class="btn btn-primary" @click="runAdder" :disabled="adder.loading || !adder.accountId || !adder.destTarget || !adder.approvalId || !adder.usernames.trim()">
                         {{ adder.loading ? '⏳ Adding...' : '➕ Add Members' }}
                     </button>
 
                     <!-- Results -->
                     <div v-if="adder.resultMsg" style="margin-top: 15px; padding: 12px; border-radius: 8px; background: rgba(255,255,255,0.05);">
-                        <span v-html="adder.resultMsg"></span>
+                        <span>{{ adder.resultMsg }}</span>
                     </div>
                 </div>
             </div>
@@ -1000,8 +1030,8 @@
                         <label>Account</label>
                         <select class="form-control" v-model="bulksend.accountId">
                             <option value="">-- Select account --</option>
-                            <option v-for="acc in accounts" :key="acc.id" :value="acc.id">
-                                {{ acc.phone || acc.id }} {{ acc.username ? '(@' + acc.username + ')' : '' }}
+                            <option v-for="acc in accounts" :key="acc.account_id" :value="acc.account_id">
+                                {{ acc.phone || acc.account_id }} {{ acc.username ? '(@' + acc.username + ')' : '' }}
                             </option>
                         </select>
                     </div>
@@ -1010,28 +1040,26 @@
                         <textarea class="form-control" v-model="bulksend.message" rows="4" placeholder="Type your message here..."></textarea>
                     </div>
                     <div class="form-group">
-                        <label>Targets (usernames or IDs, one per line)</label>
+                        <label>Consenting recipients (usernames or IDs, one per line; maximum 20)</label>
                         <textarea class="form-control" v-model="bulksend.targets" rows="5" placeholder="user1&#10;user2&#10;@username3"></textarea>
                     </div>
                     <div style="display: flex; gap: 15px;">
                         <div class="form-group" style="flex:1;">
                             <label>Delay Between Sends (sec)</label>
-                            <input class="form-control" type="number" v-model.number="bulksend.delay" min="1" max="60" step="1">
+                            <input class="form-control" type="number" v-model.number="bulksend.delay" min="3" max="3600" step="1">
                         </div>
                         <div class="form-group" style="flex:1;">
-                            <label>Use Scraped List</label>
-                            <button class="btn btn-outline" @click="fillBulksendFromScraper" :disabled="!scraper.results.length" style="width:100%; margin-top: 2px;">
-                                {{ scraper.results.length ? '📋 Fill ' + scraper.results.length + ' users' : 'No scraped data' }}
-                            </button>
+                            <label>Approval reference</label>
+                            <input class="form-control" v-model.trim="bulksend.approvalId" placeholder="Approved personal-send reference" autocomplete="off">
                         </div>
                     </div>
-                    <button class="btn btn-primary" @click="runBulkSend" :disabled="bulksend.loading || !bulksend.accountId || !bulksend.message || !bulksend.targets">
+                    <button class="btn btn-primary" @click="runBulkSend" :disabled="bulksend.loading || !bulksend.accountId || !bulksend.message || !bulksend.targets || !bulksend.approvalId">
                         {{ bulksend.loading ? '⏳ Sending...' : '📨 Send Messages' }}
                     </button>
 
                     <!-- Results -->
                     <div v-if="bulksend.resultMsg" style="margin-top: 15px; padding: 12px; border-radius: 8px; background: rgba(255,255,255,0.05);">
-                        <span v-html="bulksend.resultMsg"></span>
+                        <span>{{ bulksend.resultMsg }}</span>
                     </div>
                 </div>
             </div>
@@ -1447,7 +1475,7 @@
                     <!-- StrangersSend -->
                     <div class="form-group" style="margin-top: 20px; padding-top: 20px; border-top: 1px solid rgba(255,255,255,0.1);">
                         <label style="display: flex; justify-content: space-between; align-items: center;">
-                            <span>📝 Stranger usernames (no friend required, max 5000)</span>
+                            <span>📝 Consenting recipients (maximum 20 total, including selected friends)</span>
                             <input type="file" ref="usernameFile" @change="importUsernames" accept=".txt,.csv" style="display: none;">
                             <button class="btn btn-sm btn-outline" @click="$refs.usernameFile.click()">📁 ImportFile</button>
                         </label>
@@ -1455,7 +1483,7 @@
                                   placeholder="One username per line, e.g.：&#10;username1&#10;username2&#10;@username3"></textarea>
                         <p style="font-size: 12px; color: #666; margin-top: 5px;">
                             Entered {{ strangerUsernameCount }} usernames
-                            <span v-if="strangerUsernameCount > 5000" style="color: #e74c3c;">（Over limit！）</span>
+                            <span v-if="strangerUsernameCount + newSchedule.selectedFriends.length > 20" style="color: #e74c3c;">（Over limit！）</span>
                         </p>
                     </div>
                     
@@ -1471,12 +1499,16 @@
                 <!-- Step 3: Send settings -->
                 <div v-if="scheduleStep === 3">
                     <div class="form-group">
+                        <label>Approval reference</label>
+                        <input class="form-control" v-model.trim="newSchedule.approvalId" placeholder="Approved scheduled-send reference" autocomplete="off">
+                    </div>
+                    <div class="form-group">
                         <label>Send interval</label>
                         <div style="display: flex; align-items: center; gap: 15px;">
-                            <input type="range" v-model="newSchedule.interval" min="500" max="50000" step="100" style="flex: 1;">
+                            <input type="range" v-model.number="newSchedule.interval" min="3000" max="50000" step="100" style="flex: 1;">
                             <span style="min-width: 100px; text-align: right;">{{ formatInterval(newSchedule.interval) }}</span>
                         </div>
-                        <p style="font-size: 12px; color: #666; margin-top: 5px;">Delay between messages (500 ms – 50 s）</p>
+                        <p style="font-size: 12px; color: #666; margin-top: 5px;">Delay between messages (3–50 seconds)</p>
                     </div>
                     
                     <div class="form-group">
@@ -1512,7 +1544,7 @@
                     
                     <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 25px;">
                         <button class="btn btn-outline" @click="scheduleStep = 2">Back</button>
-                        <button class="btn btn-primary" @click="addSchedule" :disabled="scheduleSubmitting">
+                        <button class="btn btn-primary" @click="addSchedule" :disabled="scheduleSubmitting || !newSchedule.approvalId">
                             {{ scheduleSubmitting ? 'CreateMed...' : 'Create schedule' }}
                         </button>
                     </div>
@@ -1532,6 +1564,26 @@
             window.OPEN_TELESET_CONFIG?.supabaseAnonKey || ''
         )
 
+        // Use one API origin and obtain the current token before every request.
+        const _apiOrigin = new URL(window.OPEN_TELESET_CONFIG?.apiBase || window.location.origin).origin
+        const _api = axios.create({ baseURL: _apiOrigin, timeout: 15000 })
+        _api.interceptors.request.use(async (config) => {
+            const target = new URL(config.url, _apiOrigin)
+            if (target.origin !== _apiOrigin || !target.pathname.startsWith('/api/')) {
+                throw new Error('Unexpected API destination')
+            }
+            if (target.protocol !== 'https:' && !['localhost', '127.0.0.1'].includes(target.hostname)) {
+                throw new Error('A secure API connection is required')
+            }
+            const { data: { session }, error } = await _supabase.auth.getSession()
+            if (error || !session?.access_token) throw new Error('Sign in to continue')
+            config.baseURL = _apiOrigin
+            config.url = target.pathname + target.search
+            config.headers = config.headers || {}
+            config.headers.Authorization = 'Bearer ' + session.access_token
+            return config
+        })
+
         const { createApp } = Vue
 
         createApp({
@@ -1546,9 +1598,23 @@
                     authError: '',
                     authSuccess: '',
                     authSubmitting: false,
+                    passwordRecovery: false,
+                    newPassword: '',
+                    confirmPassword: '',
                     user: null,
                     session: null,
                     userProfile: {},
+                    verifiedRole: '',
+                    accessReady: false,
+                    accessLoading: false,
+                    accessError: '',
+                    authRevision: 0,
+                    authSubscription: null,
+                    apiResponseInterceptor: null,
+                    statusSocket: null,
+                    socketRetry: null,
+                    dashboardPoll: null,
+                    liveStatus: 'Connecting',
                     // App state
                     tab: 'accounts',
                     accounts: [],
@@ -1801,7 +1867,8 @@
                         selectedAccount: '',
                         selectedFriends: [],
                         strangerUsernames: '',
-                        interval: 2000,
+                        interval: 3000,
+                        approvalId: '',
                         autoDedup: true,
                         validateUsernames: true
                     },
@@ -1818,9 +1885,9 @@
                     adder: {
                         accountId: '',
                         destTarget: '',
-                        sourceTarget: '',
                         usernames: '',
-                        limit: 50,
+                        limit: 10,
+                        approvalId: '',
                         delay: 35,
                         loading: false,
                         resultMsg: '',
@@ -1830,6 +1897,7 @@
                         accountId: '',
                         message: '',
                         targets: '',
+                        approvalId: '',
                         delay: 3,
                         loading: false,
                         resultMsg: '',
@@ -1851,78 +1919,6 @@
                     // Toast
                     toast: { show: false, message: '', error: false }
                 }
-                // ---- Scraper ----
-                async runScraper() {
-                    this.scraper.loading = true;
-                    this.scraper.results = [];
-                    try {
-                        const res = await axios.post('/api/scraper/members', {
-                            account_id: this.scraper.accountId,
-                            target: this.scraper.target,
-                            limit: this.scraper.limit,
-                            filter_bots: this.scraper.filterBots,
-                        });
-                        this.scraper.results = res.data.members || [];
-                    } catch (e) {
-                        alert('Scrape failed: ' + (e.response?.data?.detail || e.message));
-                    } finally {
-                        this.scraper.loading = false;
-                    }
-                },
-                copyScrapedUsernames() {
-                    const unames = this.scraper.results.filter(m => m.username).map(m => m.username).join('\n');
-                    navigator.clipboard.writeText(unames);
-                    alert('Copied ' + this.scraper.results.filter(m => m.username).length + ' usernames');
-                },
-                // ---- Adder ----
-                async runAdder() {
-                    this.adder.loading = true;
-                    this.adder.resultMsg = '';
-                    try {
-                        const payload = {
-                            account_id: this.adder.accountId,
-                            dest_target: this.adder.destTarget,
-                            limit: this.adder.limit,
-                            delay: this.adder.delay,
-                        };
-                        if (this.adder.sourceTarget) {
-                            payload.source_target = this.adder.sourceTarget;
-                        } else if (this.adder.usernames.trim()) {
-                            payload.usernames = this.adder.usernames.trim().split('\n').map(u => u.trim()).filter(Boolean);
-                        }
-                        const res = await axios.post('/api/members/add', payload);
-                        const d = res.data;
-                        this.adder.resultMsg = `✅ Added: <b>${d.added}</b> | Failed: <b>${d.failed}</b> | Total: <b>${d.total}</b>`;
-                    } catch (e) {
-                        this.adder.resultMsg = '❌ ' + (e.response?.data?.detail || e.message);
-                    } finally {
-                        this.adder.loading = false;
-                    }
-                },
-                // ---- BulkSend ----
-                async runBulkSend() {
-                    this.bulksend.loading = true;
-                    this.bulksend.resultMsg = '';
-                    try {
-                        const targets = this.bulksend.targets.trim().split('\n').map(t => t.trim()).filter(Boolean);
-                        const res = await axios.post('/api/bulk/send-personal', {
-                            account_id: this.bulksend.accountId,
-                            message: this.bulksend.message,
-                            targets: targets,
-                            delay: this.bulksend.delay,
-                        });
-                        const d = res.data;
-                        this.bulksend.resultMsg = `✅ Sent: <b>${d.sent}</b> | Failed: <b>${d.failed}</b> | Total: <b>${d.total}</b>`;
-                    } catch (e) {
-                        this.bulksend.resultMsg = '❌ ' + (e.response?.data?.detail || e.message);
-                    } finally {
-                        this.bulksend.loading = false;
-                    }
-                },
-                fillBulksendFromScraper() {
-                    const unames = this.scraper.results.filter(m => m.username).map(m => m.username).join('\n');
-                    this.bulksend.targets = unames;
-                },
             },
             computed: {
                 onlineCount() { return this.accounts.filter(a => a.status === 'online').length },
@@ -1978,37 +1974,236 @@
                 }
             },
             methods: {
+                // ---- Scraper ----
+                async runScraper() {
+                    this.scraper.loading = true;
+                    this.scraper.results = [];
+                    try {
+                        const res = await _api.post('/api/scraper/members', {
+                            account_id: this.scraper.accountId,
+                            target: this.scraper.target,
+                            limit: this.scraper.limit,
+                            filter_bots: this.scraper.filterBots,
+                        });
+                        this.scraper.results = res.data.members || [];
+                    } catch (e) {
+                        alert('Scrape failed: ' + (e.response?.data?.detail || e.message));
+                    } finally {
+                        this.scraper.loading = false;
+                    }
+                },
+                copyScrapedUsernames() {
+                    const unames = this.scraper.results.filter(m => m.username).map(m => m.username).join('\n');
+                    navigator.clipboard.writeText(unames);
+                    alert('Copied ' + this.scraper.results.filter(m => m.username).length + ' usernames');
+                },
+                // ---- Adder ----
+                async runAdder() {
+                    this.adder.loading = true;
+                    this.adder.resultMsg = '';
+                    try {
+                        const usernames = this.adder.usernames.trim().split('\n').map(u => u.trim()).filter(Boolean);
+                        if (!this.adder.approvalId || !usernames.length || usernames.length > 10 ||
+                            !Number.isInteger(this.adder.limit) || this.adder.limit < 1 || this.adder.limit > 10 ||
+                            !Number.isFinite(this.adder.delay) || this.adder.delay < 35 || this.adder.delay > 3600) {
+                            throw new Error('Provide an approval reference, 1–10 consenting recipients, and a delay of at least 35 seconds.');
+                        }
+                        const payload = {
+                            account_id: this.adder.accountId,
+                            dest_target: this.adder.destTarget,
+                            limit: this.adder.limit,
+                            delay: this.adder.delay,
+                            approval_id: this.adder.approvalId.trim(),
+                            usernames,
+                        };
+                        const res = await _api.post('/api/members/add', payload);
+                        const d = res.data;
+                        const outcome = d.success === true && !d.failed ? 'Completed' : 'Incomplete or denied';
+                        this.adder.resultMsg = `${outcome}: added ${d.added || 0}, failed ${d.failed || 0}, total ${d.total || 0}.`;
+                        if (d.error) this.adder.resultMsg += ' ' + d.error;
+                    } catch (e) {
+                        this.adder.resultMsg = '❌ ' + (e.response?.data?.detail || e.message);
+                    } finally {
+                        this.adder.loading = false;
+                    }
+                },
+                // ---- BulkSend ----
+                async runBulkSend() {
+                    this.bulksend.loading = true;
+                    this.bulksend.resultMsg = '';
+                    try {
+                        const targets = this.bulksend.targets.trim().split('\n').map(t => t.trim()).filter(Boolean);
+                        if (!this.bulksend.approvalId || !targets.length || targets.length > 20 ||
+                            !Number.isFinite(this.bulksend.delay) || this.bulksend.delay < 3 || this.bulksend.delay > 3600) {
+                            throw new Error('Provide an approval reference, 1–20 consenting recipients, and a delay of at least 3 seconds.');
+                        }
+                        const res = await _api.post('/api/bulk/send-personal', {
+                            account_id: this.bulksend.accountId,
+                            message: this.bulksend.message,
+                            targets: targets,
+                            delay: this.bulksend.delay,
+                            approval_id: this.bulksend.approvalId.trim(),
+                        });
+                        const d = res.data;
+                        const outcome = d.success === true && !d.failed ? 'Completed' : 'Incomplete or denied';
+                        this.bulksend.resultMsg = `${outcome}: sent ${d.sent || 0}, failed ${d.failed || 0}, total ${d.total || 0}.`;
+                        if (d.error) this.bulksend.resultMsg += ' ' + d.error;
+                    } catch (e) {
+                        this.bulksend.resultMsg = '❌ ' + (e.response?.data?.detail || e.message);
+                    } finally {
+                        this.bulksend.loading = false;
+                    }
+                },
                 // === Auth Methods ===
                 async initAuth() {
-                    try {
-                        const { data: { session } } = await _supabase.auth.getSession()
-                        if (session) {
-                            this.session = session
-                            this.user = session.user
-                            this.setAxiosAuth(session.access_token)
-                            await this.loadProfile()
-                            this.loadDashboardData()
+                    this.apiResponseInterceptor = _api.interceptors.response.use(
+                        response => response,
+                        error => {
+                            if (error.response?.status === 401 || (error.response?.status === 403 &&
+                                error.response?.data?.detail === 'Administrator authentication required')) {
+                                this.accessReady = false
+                                this.accessError = error.response.status === 403
+                                    ? 'Administrator access is required. Ask an administrator to approve your Open-Teleset access.'
+                                    : 'Your access could not be verified. Retry or sign in again.'
+                                this.disconnectStatusSocket()
+                                this.clearPrivateData()
+                            }
+                            return Promise.reject(error)
                         }
-                    } catch (e) { console.error('Auth init error:', e) }
-                    this.authLoading = false
-                    _supabase.auth.onAuthStateChange((event, session) => {
+                    )
+                    const { data: { subscription } } = _supabase.auth.onAuthStateChange((event, session) => {
                         this.session = session
                         this.user = session?.user || null
-                        if (session) {
-                            this.setAxiosAuth(session.access_token)
-                            if (event === 'SIGNED_IN') { this.loadProfile(); this.loadDashboardData() }
-                        } else { this.setAxiosAuth(null); this.userProfile = {} }
+                        this.setAxiosAuth(session?.access_token)
+                        if (event === 'PASSWORD_RECOVERY') {
+                            this.passwordRecovery = true
+                            this.newPassword = ''; this.confirmPassword = ''
+                            this.authError = ''; this.authSuccess = ''
+                            this.authRevision++
+                            this.accessReady = false; this.accessLoading = false
+                            this.authLoading = false
+                            this.disconnectStatusSocket()
+                            this.clearPrivateData()
+                            return
+                        }
+                        if (event === 'SIGNED_OUT') {
+                            this.passwordRecovery = false
+                            this.newPassword = ''; this.confirmPassword = ''
+                        }
+                        // Supabase auth callbacks must not await another auth call.
+                        setTimeout(() => {
+                            if (this.session === session) this.applySession(session)
+                        }, 0)
                     })
+                    this.authSubscription = subscription
+                    try {
+                        const { data: { session }, error } = await _supabase.auth.getSession()
+                        if (error) throw error
+                        await this.applySession(session)
+                    } catch (_) {
+                        this.authError = 'Unable to restore your session. Please sign in again.'
+                    } finally {
+                        this.authLoading = false
+                    }
+                },
+                async applySession(session) {
+                    const revision = ++this.authRevision
+                    this.session = session
+                    this.user = session?.user || null
+                    this.setAxiosAuth(session?.access_token)
+                    this.accessReady = false
+                    this.accessError = ''
+                    this.disconnectStatusSocket()
+                    this.clearPrivateData()
+                    if (!session || this.passwordRecovery) { this.accessLoading = false; return }
+                    this.accessLoading = true
+                    try {
+                        const { data } = await _api.get('/api/auth/me')
+                        if (revision !== this.authRevision) return
+                        this.verifiedRole = data.role
+                        this.accessReady = true
+                        this.loadProfile()
+                        this.loadDashboardData()
+                        this.connectStatusSocket(revision)
+                    } catch (error) {
+                        if (revision !== this.authRevision) return
+                        this.accessError = error.response?.status === 403
+                            ? 'Administrator access is required. Ask an administrator to approve your Open-Teleset access.'
+                            : 'Your access could not be verified. Retry or sign in again.'
+                    } finally {
+                        if (revision === this.authRevision) this.accessLoading = false
+                    }
                 },
                 setAxiosAuth(token) {
-                    if (token) { axios.defaults.headers.common['Authorization'] = 'Bearer ' + token }
-                    else { delete axios.defaults.headers.common['Authorization'] }
+                    if (token) { _api.defaults.headers.common.Authorization = 'Bearer ' + token }
+                    else { delete _api.defaults.headers.common.Authorization }
+                },
+                clearPrivateData() {
+                    this.accounts = []; this.proxies = []; this.logs = []
+                    this.globalProxy = null; this.health = {}; this.stats = {}
+                    this.templates = []; this.schedules = []; this.topAccounts = []
+                    this.userProfile = {}; this.verifiedRole = ''
                 },
                 async loadProfile() {
+                    const userId = this.user?.id
+                    if (!userId) return
                     try {
-                        const { data, error } = await _supabase.from('profiles').select('display_name, app_role').eq('id', this.user.id).single()
-                        if (data) { this.userProfile = data }
-                    } catch (e) { console.error('Profile load error:', e) }
+                        const { data } = await _supabase.from('profiles').select('display_name').eq('id', userId).single()
+                        if (this.user?.id === userId && data) this.userProfile = data
+                    } catch (_) { /* Display name is optional; API authorization is server-owned. */ }
+                },
+                disconnectStatusSocket() {
+                    clearTimeout(this.socketRetry)
+                    this.socketRetry = null
+                    const socket = this.statusSocket
+                    this.statusSocket = null
+                    if (socket) {
+                        socket.onclose = null
+                        socket.close()
+                    }
+                    this.liveStatus = 'Disconnected'
+                },
+                async connectStatusSocket(revision = this.authRevision) {
+                    if (!this.accessReady || revision !== this.authRevision) return
+                    this.disconnectStatusSocket()
+                    try {
+                        const { data: { session }, error } = await _supabase.auth.getSession()
+                        if (error || !session?.access_token || !this.accessReady || revision !== this.authRevision) return
+                        const url = new URL('/ws', _apiOrigin)
+                        url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+                        const socket = new WebSocket(url.toString(), ['open-teleset.v1', 'bearer.' + session.access_token])
+                        this.statusSocket = socket
+                        this.liveStatus = 'Connecting'
+                        socket.onopen = () => {
+                            if (this.statusSocket === socket) this.liveStatus = 'Live'
+                        }
+                        socket.onmessage = (event) => {
+                            if (this.statusSocket !== socket || !this.accessReady) return
+                            try {
+                                const update = JSON.parse(event.data)
+                                if (update.type === 'status_update') {
+                                    this.accounts = update.accounts || []
+                                    this.health = update.health || {}
+                                    this.stats = update.stats || {}
+                                }
+                            } catch (_) { this.liveStatus = 'Updates unavailable' }
+                        }
+                        socket.onerror = () => { this.liveStatus = 'Refreshing periodically' }
+                        socket.onclose = (event) => {
+                            if (this.statusSocket !== socket) return
+                            this.statusSocket = null
+                            this.liveStatus = 'Refreshing periodically'
+                            if (event.code === 1008) {
+                                this.accessReady = false
+                                this.accessError = 'Your access expired or changed. Retry to verify your current access.'
+                                this.clearPrivateData()
+                                return
+                            }
+                            if (this.accessReady && revision === this.authRevision) {
+                                this.socketRetry = setTimeout(() => this.connectStatusSocket(revision), 5000)
+                            }
+                        }
+                    } catch (_) { this.liveStatus = 'Refreshing periodically' }
                 },
                 async signIn() {
                     this.authError = ''; this.authSuccess = ''; this.authSubmitting = true
@@ -2041,7 +2236,7 @@
                 },
                 async sendPasswordReset() {
                     if (!this.authEmail) { this.authError = 'Enter your email first'; return }
-                    this.authError = ''; this.authSubmitting = true
+                    this.authError = ''; this.authSuccess = ''; this.authSubmitting = true
                     try {
                         const { error } = await _supabase.auth.resetPasswordForEmail(this.authEmail, { redirectTo: window.location.origin + '/dashboard' })
                         if (error) throw error
@@ -2049,12 +2244,58 @@
                     } catch (e) { this.authError = e.message || 'Reset failed' }
                     this.authSubmitting = false
                 },
+                async updatePassword() {
+                    if (this.authSubmitting || !this.passwordRecovery) return
+                    this.authError = ''; this.authSuccess = ''
+                    if (this.newPassword.length < 8) {
+                        this.authError = 'Use at least 8 characters.'; return
+                    }
+                    if (this.newPassword !== this.confirmPassword) {
+                        this.authError = 'The passwords do not match.'; return
+                    }
+                    this.authSubmitting = true
+                    let passwordUpdated = false
+                    try {
+                        const { data: { session }, error: sessionError } = await _supabase.auth.getSession()
+                        if (sessionError || !session || session.user.id !== this.user?.id) {
+                            throw new Error('Your reset session has expired. Request a new password reset email.')
+                        }
+                        const { error } = await _supabase.auth.updateUser({ password: this.newPassword })
+                        if (error) throw error
+                        passwordUpdated = true
+                        this.newPassword = ''; this.confirmPassword = ''
+                        const { data, error: refreshError } = await _supabase.auth.refreshSession()
+                        if (refreshError || !data?.session) throw new Error('Session refresh failed')
+                        this.passwordRecovery = false
+                        this.authSuccess = 'Password updated successfully.'
+                        await this.applySession(data.session)
+                        if (this.accessReady) this.showToast(this.authSuccess)
+                    } catch (error) {
+                        if (passwordUpdated) {
+                            await this.signOut()
+                            this.authMode = 'login'
+                            this.authSuccess = 'Password updated. Sign in with your new password.'
+                        } else {
+                            this.authError = error.message || 'Unable to update your password. Please retry.'
+                        }
+                    } finally {
+                        this.authSubmitting = false
+                    }
+                },
                 async signOut() {
-                    await _supabase.auth.signOut()
-                    this.user = null; this.session = null; this.userProfile = {}
+                    this.authRevision++
+                    this.passwordRecovery = false
+                    this.newPassword = ''; this.confirmPassword = ''
+                    this.disconnectStatusSocket()
+                    this.accessReady = false
+                    this.user = null; this.session = null
+                    this.clearPrivateData()
                     this.setAxiosAuth(null)
+                    const { error } = await _supabase.auth.signOut()
+                    if (error) this.authError = 'Sign out could not be completed. Please retry.'
                 },
                 loadDashboardData() {
+                    if (!this.accessReady) return
                     this.loadAccounts(); this.loadProxies(); this.loadHealth()
                     this.loadStats(); this.loadTemplates()
                 },
@@ -2072,50 +2313,50 @@
 
                 async loadAccounts() {
                     try {
-                        const res = await axios.get('/api/accounts')
+                        const res = await _api.get('/api/accounts')
                         this.accounts = res.data.accounts || []
-                    } catch (e) { console.error(e) }
+                    } catch (e) { console.error('API request failed') }
                 },
 
                 async loadProxies() {
                     try {
-                        const res = await axios.get('/api/proxies')
+                        const res = await _api.get('/api/proxies')
                         this.globalProxy = res.data.global
                         this.proxies = Object.entries(res.data.proxies || {}).map(([id, p]) => ({ id, ...p }))
-                    } catch (e) { console.error(e) }
+                    } catch (e) { console.error('API request failed') }
                 },
 
                 async loadTemplates() {
                     try {
-                        const res = await axios.get('/api/templates')
+                        const res = await _api.get('/api/templates')
                         this.templates = res.data.templates || []
-                    } catch (e) { console.error(e) }
+                    } catch (e) { console.error('API request failed') }
                 },
 
                 async loadSchedules() {
                     try {
-                        const res = await axios.get('/api/schedules')
+                        const res = await _api.get('/api/schedules')
                         this.schedules = Object.values(res.data.schedules || {})
                         this.updateScheduleStats()
-                    } catch (e) { console.error(e) }
+                    } catch (e) { console.error('API request failed') }
                 },
 
                 async loadLogs() {
                     try {
-                        const res = await axios.get('/api/logs?limit=100')
+                        const res = await _api.get('/api/logs?limit=100')
                         this.logs = (res.data.logs || []).map(log => ({
                             action: log.action,
                             account: log.account,
                             detail: log.detail,
                             time: new Date(log.timestamp || log.time).toLocaleTimeString()
                         }))
-                    } catch (e) { console.error(e) }
+                    } catch (e) { console.error('API request failed') }
                 },
 
                 async clearLogs() {
                     if (!confirm('Clear all logs??')) return
                     try {
-                        await axios.post('/api/logs/clear')
+                        await _api.post('/api/logs/clear')
                         this.logs = []
                         this.showToast('LogsClear')
                     } catch (e) {
@@ -2125,20 +2366,20 @@
 
                 async loadHealth() {
                     try {
-                        const res = await axios.get('/api/health/report')
+                        const res = await _api.get('/api/health/report')
                         this.health = res.data.report || {}
                         this.healthDetails = res.data.report?.details || {}
                         this.riskAccounts = res.data.report?.risk_accounts || []
-                    } catch (e) { console.error(e) }
+                    } catch (e) { console.error('API request failed') }
                 },
 
                 async loadStats() {
                     try {
-                        const res = await axios.get('/api/stats/summary')
+                        const res = await _api.get('/api/stats/summary')
                         this.stats = res.data.summary || {}
-                        const topRes = await axios.get('/api/stats/top', { params: { by: 'uses', limit: 5, period: 'today' } })
+                        const topRes = await _api.get('/api/stats/top', { params: { by: 'uses', limit: 5, period: 'today' } })
                         this.topAccounts = topRes.data.top_accounts || []
-                    } catch (e) { console.error(e) }
+                    } catch (e) { console.error('API request failed') }
                 },
 
                 // QR & Phone Login
@@ -2184,7 +2425,7 @@
                         if (this.loginProxyMode === 'select' && this.loginProxyId) {
                             payload.proxy_id = this.loginProxyId
                         }
-                        const res = await axios.post('/api/accounts/generate-qr', payload)
+                        const res = await _api.post('/api/accounts/generate-qr', payload)
                         if (res.data.success) {
                             this.qrCode = res.data.qr_code
                             this.qrStatus = 'waiting'
@@ -2205,7 +2446,7 @@
                     this.qrPolling = setInterval(async () => {
                         this.qrRemaining -= 1
                         try {
-                            const res = await axios.get(`/api/accounts/${this.qrAccountId}/qr-status`)
+                            const res = await _api.get(`/api/accounts/${this.qrAccountId}/qr-status`)
                             if (res.data.status === 'success') {
                                 this.qrStatus = 'success'
                                 this.stopQrPolling()
@@ -2220,7 +2461,7 @@
                                 this.qrStatus = 'timeout'
                                 this.stopQrPolling()
                             }
-                        } catch (e) { console.error(e) }
+                        } catch (e) { console.error('API request failed') }
                     }, 1000)
                 },
 
@@ -2246,7 +2487,7 @@
                     this.twoFaLoading = true
                     this.twoFaError = ''
                     try {
-                        const res = await axios.post(`/api/accounts/${this.qrAccountId}/2fa-password`, {
+                        const res = await _api.post(`/api/accounts/${this.qrAccountId}/2fa-password`, {
                             password: this.twoFaPassword
                         })
                         if (res.data.success) {
@@ -2280,7 +2521,7 @@
                         if (this.loginProxyMode === 'select' && this.loginProxyId) {
                             payload.proxy_id = this.loginProxyId
                         }
-                        const res = await axios.post('/api/accounts/send-code', payload)
+                        const res = await _api.post('/api/accounts/send-code', payload)
                         if (res.data.success) {
                             this.phoneStep = 'code'
                             this.addLog('Send code', fullPhone + (this.loginProxyId ? ` (Proxy: ${this.loginProxyId})` : ''))
@@ -2298,7 +2539,7 @@
                     this.phoneLoading = true
                     this.phoneError = ''
                     try {
-                        const res = await axios.post('/api/accounts/verify-code', {
+                        const res = await _api.post('/api/accounts/verify-code', {
                             account_id: this.phoneAccountId,
                             code: this.phoneData.code
                         })
@@ -2324,7 +2565,7 @@
                     this.phoneLoading = true
                     this.phoneError = ''
                     try {
-                        const res = await axios.post(`/api/accounts/${this.phoneAccountId}/phone-2fa`, {
+                        const res = await _api.post(`/api/accounts/${this.phoneAccountId}/phone-2fa`, {
                             password: this.phoneData.password
                         })
                         if (res.data.success) {
@@ -2344,7 +2585,7 @@
 
                 async cancelPhoneLogin() {
                     try {
-                        await axios.delete(`/api/accounts/${this.phoneAccountId}/phone-login`)
+                        await _api.delete(`/api/accounts/${this.phoneAccountId}/phone-login`)
                         this.closeQrModal()
                     } catch (e) {
                         this.closeQrModal()
@@ -2355,7 +2596,7 @@
                 async deleteAccount(id) {
                     if (!confirm(`Delete account? ${id}?`)) return
                     try {
-                        await axios.delete(`/api/accounts/${id}`)
+                        await _api.delete(`/api/accounts/${id}`)
                         this.showToast('AccountDelete')
                         this.addLog('DeleteAccount', id)
                         this.loadAccounts()
@@ -2366,7 +2607,7 @@
 
                 async exportSession(id) {
                     try {
-                        const res = await axios.get(`/api/accounts/${id}/export-session`)
+                        const res = await _api.get(`/api/accounts/${id}/export-session`)
                         this.exportData = { id, session: res.data.session_string }
                         this.showExportModal = true
                         this.addLog('ExportSession', id)
@@ -2408,7 +2649,7 @@
 
                 async importSession() {
                     try {
-                        await axios.post('/api/accounts/add-session', {
+                        await _api.post('/api/accounts/add-session', {
                             account_id: this.importData.id,
                             session_string: this.importData.session
                         })
@@ -2425,7 +2666,7 @@
                 // Proxy
                 async setGlobalProxy() {
                     try {
-                        await axios.post('/api/proxies/set-global', this.newGlobal)
+                        await _api.post('/api/proxies/set-global', this.newGlobal)
                         this.showToast('Global proxy saved')
                         this.addLog('Set global proxy', `${this.newGlobal.host}:${this.newGlobal.port}`)
                         this.newGlobal = { protocol: 'socks5', host: '', port: 1080, username: '', password: '' }
@@ -2437,7 +2678,7 @@
 
                 async removeGlobalProxy() {
                     try {
-                        await axios.delete('/api/proxies/global')
+                        await _api.delete('/api/proxies/global')
                         this.showToast('Global proxy removed')
                         this.addLog('Remove global proxy', '-')
                         this.loadProxies()
@@ -2449,7 +2690,7 @@
                 async testGlobalProxy() {
                     this.testing = true
                     try {
-                        const res = await axios.post('/api/proxies/test')
+                        const res = await _api.post('/api/proxies/test')
                         const result = res.data.results?.global
                         if (result?.success) {
                             this.showToast(`Connected! Response: ${result.response_time.toFixed(0)}ms`)
@@ -2464,7 +2705,7 @@
 
                 async addProxy() {
                     try {
-                        await axios.post('/api/proxies/add', {
+                        await _api.post('/api/proxies/add', {
                             proxy_id: this.newProxy.id,
                             protocol: this.newProxy.protocol,
                             host: this.newProxy.host,
@@ -2484,7 +2725,7 @@
                 async deleteProxy(id) {
                     if (!confirm(`Delete proxy? ${id}?`)) return
                     try {
-                        await axios.delete(`/api/proxies/${id}`)
+                        await _api.delete(`/api/proxies/${id}`)
                         this.showToast('ProxyDelete')
                         this.addLog('DeleteProxy', id)
                         this.loadProxies()
@@ -2495,7 +2736,7 @@
 
                 async testProxy(id) {
                     try {
-                        const res = await axios.post('/api/proxies/test', null, { params: { proxy_id: id } })
+                        const res = await _api.post('/api/proxies/test', null, { params: { proxy_id: id } })
                         const result = res.data.result
                         if (result?.success) {
                             this.showToast(`Connected! Response: ${result.response_time.toFixed(0)}ms`)
@@ -2517,7 +2758,7 @@
                 // Templates
                 async addTemplate() {
                     try {
-                        await axios.post('/api/templates', {
+                        await _api.post('/api/templates', {
                             content: this.newTemplate.content
                         })
                         this.showToast('Template added')
@@ -2526,14 +2767,14 @@
                         this.newTemplate = { content: '' }
                         await this.loadTemplates()
                     } catch (e) {
-                        this.showToast(e.response?.data?.detail || 'Add failed', true)
+                        this.showToast(e.response?.data?.detail || e.message || 'Add failed', true)
                     }
                 },
 
                 async addQuickTemplate(name, content) {
                     const template_id = 'tpl_' + Date.now()
                     try {
-                        await axios.post('/api/templates', {
+                        await _api.post('/api/templates', {
                             template_id,
                             name,
                             content,
@@ -2551,7 +2792,7 @@
                     if (!confirm('Delete this template??')) return
                     const tpl = this.templates[i]
                     try {
-                        await axios.delete(`/api/templates/${tpl.template_id || tpl.id}`)
+                        await _api.delete(`/api/templates/${tpl.template_id || tpl.id}`)
                         this.showToast('TemplateDelete')
                         this.addLog('DeleteTemplate', tpl.name)
                         await this.loadTemplates()
@@ -2584,7 +2825,8 @@
                         selectedAccount: '',
                         selectedFriends: [],
                         strangerUsernames: '',
-                        interval: 2000,
+                        interval: 3000,
+                        approvalId: '',
                         autoDedup: true,
                         validateUsernames: true
                     }
@@ -2609,7 +2851,7 @@
                     this.loadingFriends = true
                     this.newSchedule.selectedFriends = []
                     try {
-                        const res = await axios.get(`/api/accounts/${this.newSchedule.selectedAccount}/friends`)
+                        const res = await _api.get(`/api/accounts/${this.newSchedule.selectedAccount}/friends`)
                         this.accountFriends = res.data.friends || []
                     } catch (e) {
                         this.showToast('Failed to load friends list', true)
@@ -2661,15 +2903,15 @@
                             strangers = [...new Set(strangers)]
                         }
                         
-                        // Limit 5000
-                        if (strangers.length > 5000) {
-                            strangers = strangers.slice(0, 5000)
-                            this.showToast('Usernames truncated to 5000', true)
-                        }
                     }
                     
                     try {
-                        await axios.post('/api/schedules', {
+                        const count = this.newSchedule.selectedFriends.length + strangers.length
+                        if (!this.newSchedule.approvalId || count < 1 || count > 20 ||
+                            !Number.isFinite(this.newSchedule.interval) || this.newSchedule.interval < 3000) {
+                            throw new Error('Provide an approval reference, 1–20 consenting recipients, and an interval of at least 3 seconds.')
+                        }
+                        const result = await _api.post('/api/schedules', {
                             schedule_id,
                             name: `ScheduleSend_${schedule_id}`,
                             execute_time: {
@@ -2687,16 +2929,18 @@
                             friend_ids: this.newSchedule.selectedFriends,
                             stranger_usernames: strangers,
                             interval: this.newSchedule.interval,
+                            approval_id: this.newSchedule.approvalId.trim(),
                             auto_dedup: this.newSchedule.autoDedup,
                             validate_usernames: this.newSchedule.validateUsernames,
                             enabled: true
                         })
+                        if (result.data.success !== true) throw new Error(result.data.error || 'Schedule was not created')
                         this.showToast('Schedule added')
                         this.addLog('Add schedule', schedule_id)
                         this.closeScheduleModal()
                         await this.loadSchedules()
                     } catch (e) {
-                        this.showToast(e.response?.data?.detail || 'Add failed', true)
+                        this.showToast(e.response?.data?.detail || e.message || 'Add failed', true)
                     }
                     this.scheduleSubmitting = false
                 },
@@ -2704,7 +2948,7 @@
                 async toggleSchedule(i) {
                     const sched = this.schedules[i]
                     try {
-                        await axios.post(`/api/schedules/${sched.schedule_id}/toggle`)
+                        await _api.post(`/api/schedules/${sched.schedule_id}/toggle`)
                         sched.enabled = !sched.enabled
                         this.showToast(sched.enabled ? 'ScheduleEnable' : 'ScheduleDisable')
                         this.updateScheduleStats()
@@ -2717,7 +2961,7 @@
                     if (!confirm('Delete this schedule??')) return
                     const sched = this.schedules[i]
                     try {
-                        await axios.delete(`/api/schedules/${sched.schedule_id}`)
+                        await _api.delete(`/api/schedules/${sched.schedule_id}`)
                         this.showToast('ScheduleDelete')
                         this.addLog('Delete schedule', sched.name)
                         await this.loadSchedules()
@@ -2779,9 +3023,16 @@
             },
             mounted() {
                 this.initAuth()
-                setInterval(() => {
-                    if (this.user) { this.loadAccounts(); this.loadHealth() }
+                this.dashboardPoll = setInterval(() => {
+                    if (this.accessReady) { this.loadAccounts(); this.loadHealth() }
                 }, 30000)
+            },
+            beforeUnmount() {
+                this.authRevision++
+                this.disconnectStatusSocket()
+                clearInterval(this.dashboardPoll)
+                this.authSubscription?.unsubscribe()
+                if (this.apiResponseInterceptor !== null) _api.interceptors.response.eject(this.apiResponseInterceptor)
             }
         }).mount('#app')
     </script>

@@ -14,7 +14,7 @@ on:
 
 env:
   PYTHON_VERSION: "3.12"
-  IMAGE_NAME: openclose8/open-teleset
+  IMAGE_NAME: hillstreet/open-teleset
 
 jobs:
   # ─── 1. LINT + TESTS ────────────────────────────────────────────
@@ -30,20 +30,35 @@ jobs:
         run: pip install -r requirements-prod.txt pytest pytest-asyncio ruff
       - name: Lint
         run: ruff check src scripts || true
-      - name: Crypto tests
-        env:
-          SESSION_ENCRYPTION_KEY: ${{ secrets.SESSION_ENCRYPTION_KEY }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Edge boundary tests
+        run: node --test tests/test_edge_functions.mjs
+      - name: Python tests
         run: |
-          export SESSION_ENCRYPTION_KEY="${SESSION_ENCRYPTION_KEY:-$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')}"
+          export SESSION_ENCRYPTION_KEY="$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
           PYTHONPATH=src pytest tests/ -q --tb=short
+
+  container-test:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build runtime image
+        run: docker build -f deploy/Dockerfile -t open-teleset-test .
+      - name: Verify startup and anonymous access boundary
+        run: |
+          docker run -d --name teleset-test -p 8080:8080 open-teleset-test
+          trap 'docker rm -f teleset-test >/dev/null' EXIT
+          python scripts/container_smoke.py
 
   # ─── 2. MIGRATIONS ──────────────────────────────────────────────
   migrate:
-    needs: test
+    needs: [test, container-test]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     environment: production
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -56,14 +71,11 @@ jobs:
           DATABASE_POOLER_URL: ${{ secrets.DATABASE_POOLER_URL }}
           SUPABASE_REGION: ap-southeast-1
         run: |
-          python scripts/apply_migrations.py || {
-            echo "::warning::Migration blocked by network (GHA→Supabase). Schema verified via MCP."
-            exit 0
-          }
+          python scripts/apply_migrations.py
 
   # ─── 3. DOCKER BUILD + PUSH ─────────────────────────────────────
   docker:
-    needs: test
+    needs: [test, container-test, migrate]
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: production
@@ -102,7 +114,7 @@ jobs:
 
   # ─── 4. CLOUDFLARE WORKER ────────────────────────────────────────
   deploy-worker:
-    needs: [test, docker]
+    needs: [test, docker, migrate]
     if: |
       github.event_name != 'pull_request' &&
       github.ref == 'refs/heads/main' &&
@@ -126,18 +138,13 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          SESSION_KEY: ${{ secrets.SESSION_ENCRYPTION_KEY }}
         run: |
           echo "https://open-teleset-prod.zeabur.app" | wrangler secret put ORIGIN
           echo "✅ ORIGIN → Zeabur backend"
-          if [ -n "$SESSION_KEY" ]; then
-            echo "$SESSION_KEY" | wrangler secret put SESSION_ENCRYPTION_KEY
-            echo "✅ SESSION_ENCRYPTION_KEY set"
-          fi
 
   # ─── 5. CLOUDFLARE PAGES ─────────────────────────────────────────
   deploy-pages:
-    needs: test
+    needs: [test, container-test, migrate]
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: production
@@ -165,7 +172,7 @@ jobs:
 
   # ─── 6. SUPABASE EDGE FUNCTIONS ──────────────────────────────────
   deploy-edge:
-    needs: test
+    needs: [test, container-test, migrate]
     if: |
       github.event_name != 'pull_request' &&
       github.ref == 'refs/heads/main' &&
@@ -183,9 +190,9 @@ jobs:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_TOKEN }}
         run: |
           supabase link --project-ref hoseohvgoiarxluxqwqv
-          supabase functions deploy health-ping  --project-ref hoseohvgoiarxluxqwqv --no-verify-jwt || true
-          supabase functions deploy run-schedules --project-ref hoseohvgoiarxluxqwqv || true
-          supabase functions deploy send-message  --project-ref hoseohvgoiarxluxqwqv || true
+          supabase functions deploy health-ping  --project-ref hoseohvgoiarxluxqwqv --no-verify-jwt
+          supabase functions deploy run-schedules --project-ref hoseohvgoiarxluxqwqv
+          supabase functions deploy send-message  --project-ref hoseohvgoiarxluxqwqv
           echo "✅ Edge functions deployed"
 
   # ─── 7. SUMMARY ──────────────────────────────────────────────────
@@ -212,4 +219,4 @@ jobs:
           echo "- **Pages**: https://open-teleset-dashboard.pages.dev" >> $GITHUB_STEP_SUMMARY
           echo "- **Worker**: https://open-teleset.hillstreet-ph.workers.dev" >> $GITHUB_STEP_SUMMARY
           echo "- **Health**: https://open-teleset.site/health" >> $GITHUB_STEP_SUMMARY
-          echo "- **Docker**: openclose8/open-teleset:latest" >> $GITHUB_STEP_SUMMARY
+          echo "- **Docker**: hillstreet/open-teleset:latest" >> $GITHUB_STEP_SUMMARY

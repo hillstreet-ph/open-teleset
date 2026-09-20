@@ -1,15 +1,18 @@
 name: Cloudflare Pages (dashboard static)
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "static/**"
-      - ".github/workflows/cloudflare-pages.yml"
   workflow_dispatch:
 
+permissions:
+  contents: read
+  actions: read
+
 jobs:
+  release-gates:
+    uses: ./.github/workflows/verify-release-gates.yml
+
   pages:
+    needs: release-gates
     runs-on: ubuntu-latest
     environment: production
     steps:

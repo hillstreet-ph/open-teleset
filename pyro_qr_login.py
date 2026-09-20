@@ -4,12 +4,13 @@ Telegram QR Code Login with Pyrogram
 Pyrogram 对 QR 登录支持更好
 """
 import os
+from session_manager import session_manager
 import asyncio
 from pyrogram import Client
 
 # 从环境变量读取凭据，保留默认值用于开发
-API_ID = int(os.getenv("TELEGRAM_API_ID", "2040"))
-API_HASH = os.getenv("TELEGRAM_API_HASH", "b18441a1ff607e10a989891a5462e627")
+API_ID = int(os.getenv("TELEGRAM_API_ID", "0"))
+API_HASH = os.getenv("TELEGRAM_API_HASH", "")
 SESSION_FILE = ".telegram_session"
 
 
@@ -93,8 +94,7 @@ async def main():
 
                 # 获取并保存 session string
                 session_string = client.export_session_string()
-                with open(SESSION_FILE, "w") as f:
-                    f.write(session_string)
+                session_manager.save_session(session_string)
 
                 print(f"\n✅ Session 已保存到 {SESSION_FILE}")
                 print("   现在可以启动 MCP 服务器: python main.py")

@@ -10,7 +10,7 @@ authors = [{name = "User"}]
 license = {text = "MIT"}
 requires-python = ">=3.10"
 dependencies = [
-    "mcp[cli]>=1.8.0",
+    "mcp[cli]>=1.8.0,<2",
     "telethon>=1.39.0",
     "python-dotenv>=1.1.0",
     "flask>=3.0.0",

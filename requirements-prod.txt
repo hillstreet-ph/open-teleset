@@ -1,7 +1,7 @@
 # open-teleset — production dependencies (consolidated)
 
 # MCP + Telegram
-mcp[cli]>=1.8.0
+mcp[cli]>=1.8.0,<2
 telethon>=1.42.0
 
 # Web framework

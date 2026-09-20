@@ -8,15 +8,17 @@ import json
 import os
 from datetime import datetime
 from typing import Dict, List, Optional, Any
-from telethon import TelegramClient
+from outreach_client import ConsentTelegramClient as TelegramClient
 from telethon.sessions import StringSession
 import qrcode
 from io import BytesIO
 import base64
+import tempfile
+from open_teleset.crypto import encrypt_session, decrypt_session, SessionCryptoError
 
 
-API_ID = int(os.getenv("TELEGRAM_API_ID", "2040"))
-API_HASH = os.getenv("TELEGRAM_API_HASH", "b18441a1ff607e10a989891a5462e627")
+API_ID = int(os.getenv("TELEGRAM_API_ID", "0"))
+API_HASH = os.getenv("TELEGRAM_API_HASH", "")
 ACCOUNTS_DIR = "./accounts"
 CONFIG_FILE = os.path.join(ACCOUNTS_DIR, "config.json")
 
@@ -37,16 +39,37 @@ class AccountManager:
         os.makedirs(ACCOUNTS_DIR, exist_ok=True)
 
     def _load_config(self):
-        """加载账号配置"""
-        if os.path.exists(CONFIG_FILE):
-            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-                self.accounts = json.load(f)
+        if not os.path.exists(CONFIG_FILE):
+            return
+        with open(CONFIG_FILE, "r", encoding="utf-8") as handle:
+            stored = json.load(handle)
+        decoded = {}
+        for account_id, record in stored.items():
+            item = dict(record)
+            if item.get("session_string"):
+                raise SessionCryptoError("Legacy plaintext account configuration requires offline migration")
+            encrypted = item.pop("session_encrypted", "")
+            item["session_string"] = decrypt_session(encrypted)
+            decoded[account_id] = item
+        self.accounts = decoded
 
     def _save_config(self):
-        """保存账号配置"""
         self._ensure_dir()
-        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-            json.dump(self.accounts, f, ensure_ascii=False, indent=2)
+        stored = {}
+        for account_id, record in self.accounts.items():
+            item = dict(record)
+            item["session_encrypted"] = encrypt_session(item.pop("session_string", ""))
+            stored[account_id] = item
+        fd, temporary = tempfile.mkstemp(prefix=".accounts-", dir=ACCOUNTS_DIR)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(stored, handle, ensure_ascii=False, indent=2)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, CONFIG_FILE)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
 
     def list_accounts(self) -> List[Dict]:
         """
@@ -125,7 +148,8 @@ class AccountManager:
             client = TelegramClient(
                 StringSession(session_string),
                 API_ID,
-                API_HASH
+                API_HASH,
+                outreach_account_id=account_id
             )
             await client.connect()
 
@@ -154,7 +178,7 @@ class AccountManager:
             self._save_config()
             return True
         except Exception as e:
-            print(f"添加账号失败: {e}")
+            print(f"Account setup failed: {type(e).__name__}")
             return False
 
     async def generate_qr_code(self, account_id: str, proxy: Dict = None) -> Dict:
@@ -180,6 +204,7 @@ class AccountManager:
             # 创建临时客户端
             client_kwargs = {
                 "session": StringSession(),
+                "outreach_account_id": account_id,
                 "api_id": API_ID,
                 "api_hash": API_HASH,
                 "device_model": "Desktop",
@@ -489,7 +514,8 @@ class AccountManager:
             StringSession(session_string),
             API_ID,
             API_HASH,
-            proxy=proxy
+            proxy=proxy,
+            outreach_account_id=account_id
         )
         await client.connect()
 
@@ -564,6 +590,7 @@ class AccountManager:
             # 创建临时客户端
             client_kwargs = {
                 "session": StringSession(),
+                "outreach_account_id": account_id,
                 "api_id": API_ID,
                 "api_hash": API_HASH,
                 "device_model": "Desktop",
@@ -817,7 +844,7 @@ class AccountManager:
         if not session_string:
             raise ValueError("账号没有有效的Session")
 
-        client = TelegramClient(StringSession(session_string), API_ID, API_HASH)
+        client = TelegramClient(StringSession(session_string), API_ID, API_HASH, outreach_account_id=account_id)
         friends = []
 
         try:
@@ -871,7 +898,7 @@ class AccountManager:
         if not session_string:
             raise ValueError("账号没有有效的Session")
 
-        client = TelegramClient(StringSession(session_string), API_ID, API_HASH)
+        client = TelegramClient(StringSession(session_string), API_ID, API_HASH, outreach_account_id=account_id)
         valid = []
         invalid = []
 

@@ -9,8 +9,14 @@ or account IDs in plaintext.
 from __future__ import annotations
 
 import hashlib
+import asyncio
 import json
+import logging
+import math
 import os
+import re
+import sqlite3
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,6 +24,18 @@ from typing import Iterable, Optional
 
 
 DEFAULT_POLICY_FILE = "./accounts/outreach_policy.json"
+ACTIONS = {"personal_send", "member_add", "batch_send", "scheduled_send"}
+
+
+def valid_bounds(count, maximum, delay, minimum):
+    return (type(count) is int and 1 <= count <= maximum
+            and type(delay) in (int, float) and math.isfinite(delay)
+            and minimum <= delay <= 3600)
+
+
+def _hashes(value):
+    return (isinstance(value, list) and bool(value)
+            and all(isinstance(x, str) and re.fullmatch(r"[a-f0-9]{64}", x) for x in value))
 
 
 def hash_identifier(value: object) -> str:
@@ -60,9 +78,9 @@ class OutreachPolicy:
         try:
             with self.path.open("r", encoding="utf-8") as handle:
                 data = json.load(handle)
-        except (OSError, json.JSONDecodeError):
+        except (OSError, UnicodeError, json.JSONDecodeError):
             return None
-        if not isinstance(data, dict) or data.get("version") != 1:
+        if not isinstance(data, dict) or type(data.get("version")) is not int or data["version"] != 1:
             return None
         if not isinstance(data.get("approvals"), dict):
             return None
@@ -70,6 +88,25 @@ class OutreachPolicy:
             return None
         if not isinstance(data.get("suppressions"), list):
             return None
+        for key, record in data["approvals"].items():
+            if (not isinstance(key, str) or not key.strip() or not isinstance(record, dict)
+                    or not isinstance(record.get("action"), str) or record["action"] not in ACTIONS
+                    or _parse_time(record.get("expires_at")) is None
+                    or not _hashes(record.get("account_hashes"))):
+                return None
+        for record in data["consents"]:
+            if (not isinstance(record, dict) or not _hashes([record.get("subject_hash")])
+                    or not _hashes(record.get("account_hashes"))
+                    or not isinstance(record.get("actions"), list) or not record["actions"]
+                    or any(not isinstance(a, str) or a not in ACTIONS for a in record["actions"])
+                    or record.get("source") != "explicit"
+                    or _parse_time(record.get("granted_at")) is None
+                    or _parse_time(record.get("expires_at")) is None):
+                return None
+        for record in data["suppressions"]:
+            if (not isinstance(record, dict) or not _hashes([record.get("subject_hash")])
+                    or type(record.get("active")) is not bool):
+                return None
         return data
 
     @staticmethod
@@ -98,8 +135,10 @@ class OutreachPolicy:
         account_ref = hash_identifier(account_id)
         current_time = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
 
-        if source == "scraped":
+        if source != "explicit":
             return PolicyDecision(False, "scraped_source_forbidden", action, subject_ref)
+        if action not in ACTIONS:
+            return PolicyDecision(False, "action_invalid", "unknown", subject_ref)
 
         data = self._load()
         if data is None:
@@ -152,6 +191,7 @@ class OutreachPolicy:
         source: str = "explicit",
         now: Optional[datetime] = None,
     ) -> list[PolicyDecision]:
+        subjects, account_ids = list(subjects), list(account_ids)
         return [
             self.authorize(
                 action=action,
@@ -167,3 +207,61 @@ class OutreachPolicy:
 
 
 outreach_policy = OutreachPolicy()
+
+
+class OutreachDenied(ValueError):
+    """Safe to log: contains a policy reason, never recipient or message data."""
+
+
+async def dispatch_outreach(*, action, subject, account_id, approval_id, send, delay=None):
+    """Pace every attempt across processes, then revalidate immediately before sending.
+
+    All workers for an account must share the mounted rate database. Failure to
+    access it fails closed. The caller supplies a resolved, stable Telegram peer ID.
+    """
+    minimum = 35 if action == "member_add" else 3
+    delay = minimum if delay is None else delay
+    if not valid_bounds(1, 1, delay, minimum):
+        raise OutreachDenied("invalid_rate_bounds")
+    key = hash_identifier(account_id)
+    rate_path = Path(os.getenv("OUTREACH_RATE_DB", "./accounts/outreach_rate.sqlite3"))
+    while True:
+        decision = outreach_policy.authorize(action=action, subject=subject,
+                                             account_id=account_id, approval_id=approval_id)
+        if not decision.allowed:
+            raise OutreachDenied(decision.reason)
+        try:
+            rate_path.parent.mkdir(parents=True, exist_ok=True)
+            with sqlite3.connect(rate_path, timeout=1) as db:
+                db.execute("CREATE TABLE IF NOT EXISTS attempts (account TEXT PRIMARY KEY, until REAL NOT NULL)")
+                db.execute("BEGIN IMMEDIATE")
+                now = time.time()
+                row = db.execute("SELECT until FROM attempts WHERE account=?", (key,)).fetchone()
+                wait = max(0, row[0] - now) if row else 0
+                if not wait:
+                    db.execute("INSERT OR REPLACE INTO attempts VALUES (?, ?)", (key, now + delay))
+        except (OSError, sqlite3.Error):
+            raise OutreachDenied("rate_store_unavailable") from None
+        if not wait:
+            break
+        await asyncio.sleep(min(wait, 35))
+    decision = outreach_policy.authorize(action=action, subject=subject,
+                                         account_id=account_id, approval_id=approval_id)
+    if not decision.allowed:
+        raise OutreachDenied(decision.reason)
+    try:
+        from outreach_client import outreach_context
+        with outreach_context(action=action, subject=subject, account_id=account_id,
+                              approval_id=approval_id, delay=delay):
+            result = await send()
+    except Exception as exc:
+        logging.getLogger("outreach.audit").warning(
+            "outreach_attempt action=%s account=%s subject=%s outcome=%s",
+            action, key[:12], decision.subject_ref, type(exc).__name__,
+        )
+        raise
+    logging.getLogger("outreach.audit").info(
+        "outreach_attempt action=%s account=%s subject=%s outcome=sent",
+        action, key[:12], decision.subject_ref,
+    )
+    return result

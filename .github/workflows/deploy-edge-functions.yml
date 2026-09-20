@@ -1,15 +1,18 @@
 name: Deploy Supabase Edge Functions
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "supabase/functions/**"
-      - ".github/workflows/deploy-edge-functions.yml"
   workflow_dispatch:
 
+permissions:
+  contents: read
+  actions: read
+
 jobs:
+  release-gates:
+    uses: ./.github/workflows/verify-release-gates.yml
+
   deploy-functions:
+    needs: release-gates
     runs-on: ubuntu-latest
     environment: production
     steps:
@@ -28,20 +31,8 @@ jobs:
           for fn in supabase/functions/*/; do
             name=$(basename "$fn")
             echo "Deploying: $name"
-            supabase functions deploy "$name" \
-              --project-ref "$PROJECT_ID" \
-              --no-verify-jwt || echo "⚠️  $name deploy failed (continuing)"
+            flags=()
+            if [ "$name" = health-ping ]; then flags+=(--no-verify-jwt); fi
+            supabase functions deploy "$name" --project-ref "$PROJECT_ID" "${flags[@]}"
           done
           echo "✅ Edge function deployment complete"
-
-      - name: Set edge function secrets
-        env:
-          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_TOKEN }}
-          PROJECT_ID: hoseohvgoiarxluxqwqv
-        run: |
-          supabase secrets set \
-            SUPABASE_URL="${{ secrets.SUPABASE_URL }}" \
-            SUPABASE_SERVICE_ROLE_KEY="${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
-            SITE_URL="https://open-teleset.site" \
-            --project-ref "$PROJECT_ID" || echo "⚠️  Secrets set failed"
-          echo "✅ Edge function secrets set"
