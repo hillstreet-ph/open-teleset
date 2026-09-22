@@ -1,4 +1,6 @@
 const SITE = "https://open-teleset.site";
+const HEALTH_TIMEOUT_MS = 10_000;
+const HEALTH_MAX_AGE_MS = 2 * 60_000;
 
 const ALLOWED_ORIGINS = new Set([SITE, "https://www.open-teleset.site", "https://open-teleset-dashboard.pages.dev"]);
 
@@ -13,10 +15,58 @@ function cors(resp, request) {
   const r = new Response(resp.body, resp);
   Object.entries(CORS_HEADERS).forEach(([k, v]) => r.headers.set(k, v));
   r.headers.delete("Access-Control-Allow-Origin");
-  const origin = request.headers.get("Origin");
-  if (ALLOWED_ORIGINS.has(origin)) r.headers.set("Access-Control-Allow-Origin", origin);
+  const origin = request?.headers.get("Origin");
+  if (origin && ALLOWED_ORIGINS.has(origin)) r.headers.set("Access-Control-Allow-Origin", origin);
   r.headers.append("Vary", "Origin");
   return r;
+}
+
+function healthResponse(body, status = 200, request) {
+  return cors(Response.json(body, {
+    status,
+    headers: { "Cache-Control": "no-store" },
+  }), request);
+}
+
+async function fetchOriginHealth(origin, request) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS);
+  try {
+    const target = new URL("/health", origin);
+    target.searchParams.set("probe", Date.now().toString());
+    const response = await fetch(target, {
+      headers: { Accept: "application/json", "Cache-Control": "no-cache" },
+      cache: "no-store",
+      cf: { cacheTtl: 0, cacheEverything: false },
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      return healthResponse({ status: "degraded", reason: "upstream_http_error" }, 503, request);
+    }
+
+    let payload;
+    try {
+      payload = await response.json();
+    } catch {
+      return healthResponse({ status: "degraded", reason: "invalid_upstream_health" }, 503, request);
+    }
+
+    const timestamp = Date.parse(payload.ts);
+    const stale = !Number.isFinite(timestamp) || Math.abs(Date.now() - timestamp) > HEALTH_MAX_AGE_MS;
+    if (payload.status !== "ok" || stale) {
+      return healthResponse({
+        status: "degraded",
+        reason: stale ? "stale_upstream_health" : "upstream_unhealthy",
+      }, 503, request);
+    }
+
+    return healthResponse(payload, 200, request);
+  } catch {
+    return healthResponse({ status: "degraded", reason: "upstream_unavailable" }, 503, request);
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export default {
@@ -28,28 +78,12 @@ export default {
       return new Response(null, { status: 204, headers: cors(new Response(null), request).headers });
     }
 
-    // Health check — always responds, even without ORIGIN
+    // Health must fail closed when the origin is missing, stale, or unavailable.
     if (url.pathname === "/api/health" || url.pathname === "/health") {
-      if (env.ORIGIN) {
-        try {
-          const r = await fetch(`${env.ORIGIN}/health`, {
-            headers: { Accept: "application/json" },
-            cf: { cacheTtl: 0 },
-          });
-          return cors(new Response(await r.text(), {
-            status: r.status,
-            headers: { "content-type": "application/json" },
-          }), request);
-        } catch (e) {
-          return cors(Response.json({ status: "degraded", error: "origin_unavailable" }, { status: 503 }), request);
-        }
+      if (!env.ORIGIN) {
+        return healthResponse({ status: "degraded", reason: "origin_unconfigured" }, 503, request);
       }
-      return cors(Response.json({
-        status: "degraded",
-        edge: "cloudflare",
-        site: env.SITE_URL || SITE,
-        ts: new Date().toISOString(),
-      }, { status: 503 }), request);
+      return fetchOriginHealth(env.ORIGIN, request);
     }
 
     // Proxy all other requests to ORIGIN backend
@@ -66,8 +100,8 @@ export default {
       try {
         const resp = await fetch(target.toString(), init);
         return cors(resp, request);
-      } catch (e) {
-        return cors(Response.json({ error: "upstream unavailable", detail: "origin_unavailable" }, { status: 502 }), request);
+      } catch {
+        return cors(Response.json({ error: "upstream unavailable" }, { status: 502 }), request);
       }
     }
 
