@@ -16,9 +16,13 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Prepare Pages artifact
+        env:
+          SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
         run: |
+          test -n "$SUPABASE_PUBLISHABLE_KEY"
           mkdir -p cf-pages
           cp -r static/* cf-pages/
+          CONFIG_FILE=cf-pages/config.js node -e 'const fs=require("fs"); const p=process.env.CONFIG_FILE; const key=process.env.SUPABASE_PUBLISHABLE_KEY; const s=fs.readFileSync(p,"utf8"); if(!s.includes("__SUPABASE_PUBLISHABLE_KEY__")) throw new Error("publishable-key placeholder missing"); fs.writeFileSync(p,s.replace("__SUPABASE_PUBLISHABLE_KEY__",key));'
           # Drop large zip archives from Pages publish
           find cf-pages -name '*.zip' -delete || true
           ls -la cf-pages/
