@@ -4,6 +4,8 @@ Telegram Session Manager
 """
 import os
 import json
+import tempfile
+from open_teleset.crypto import encrypt_session, decrypt_session
 import asyncio
 from pathlib import Path
 from typing import Optional, Dict, Any
@@ -13,8 +15,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-API_ID = int(os.getenv("TELEGRAM_API_ID", "2040"))
-API_HASH = os.getenv("TELEGRAM_API_HASH", "b18441a1ff607e10a989891a5462e627")
+API_ID = int(os.getenv("TELEGRAM_API_ID", "0"))
+API_HASH = os.getenv("TELEGRAM_API_HASH", "")
 SESSION_FILE = os.getenv("SESSION_FILE", ".telegram_session")
 USER_DATA_FILE = ".telegram_user_data.json"
 
@@ -32,13 +34,22 @@ class SessionManager:
         """从文件加载 session"""
         if os.path.exists(SESSION_FILE):
             with open(SESSION_FILE, "r") as f:
-                return f.read().strip()
+                return decrypt_session(f.read().strip())
         return None
 
     def save_session(self, session_string: str) -> None:
         """保存 session 到文件"""
-        with open(SESSION_FILE, "w") as f:
-            f.write(session_string)
+        encrypted = encrypt_session(session_string)
+        fd, temporary = tempfile.mkstemp(prefix=".session-", dir=str(Path(SESSION_FILE).parent))
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(encrypted)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temporary, SESSION_FILE)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
         self.session_string = session_string
 
     def load_user_data(self) -> Optional[Dict[str, Any]]:

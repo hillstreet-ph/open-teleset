@@ -9,7 +9,7 @@ import os
 from datetime import datetime
 from typing import List, Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, BackgroundTasks
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from fastapi.staticfiles import StaticFiles
@@ -27,6 +27,7 @@ from template_manager import template_manager
 from scheduler import task_scheduler
 from batch_operations import batch_operations
 from telegram_ops import telegram_ops_router
+from open_teleset.security import SupabaseAuthMiddleware
 
 
 # ============ FastAPI 应用 ============
@@ -80,6 +81,7 @@ _ALLOWED_ORIGINS = [
 if os.getenv("APP_ENV") != "production":
     _ALLOWED_ORIGINS += ["http://localhost:8080", "http://127.0.0.1:8080"]
 
+app.add_middleware(SupabaseAuthMiddleware, allowed_origins=_ALLOWED_ORIGINS)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_ALLOWED_ORIGINS,
@@ -91,6 +93,13 @@ app.add_middleware(
 # 挂载静态文件
 app.mount("/static", StaticFiles(directory="static"), name="static")
 app.include_router(telegram_ops_router)
+
+
+@app.get("/api/auth/me")
+async def authenticated_identity(request: Request):
+    """Return the administrator identity verified by the authentication gate."""
+    user = request.state.user
+    return {"id": user.id, "role": user.role}
 
 
 # ============ 数据模型 ============
@@ -735,7 +744,7 @@ async def add_schedule(request: dict):
     account_id = request.get("account_id")
     friend_ids = request.get("friend_ids", [])
     stranger_usernames = request.get("stranger_usernames", [])
-    interval = request.get("interval", 2000)
+    interval = request.get("interval", 3000)
     auto_dedup = request.get("auto_dedup", True)
     validate_usernames = request.get("validate_usernames", True)
     
@@ -791,7 +800,13 @@ async def add_schedule(request: dict):
         stranger_usernames=stranger_usernames,
         interval=interval,
         auto_dedup=auto_dedup,
-        validate_usernames=validate_usernames
+        validate_usernames=validate_usernames,
+        approval_id=request.get("approval_id"),
+        source_target=request.get("source_target"),
+        dest_target=request.get("dest_target"),
+        add_usernames=request.get("add_usernames", []),
+        add_limit=request.get("add_limit", 10),
+        add_delay=request.get("add_delay", 35),
     )
 
     if success:
@@ -851,7 +866,8 @@ async def batch_send_message_api(request: dict):
     chat_id = request.get("chat_id")
     message = request.get("message")
     account_ids = request.get("account_ids")
-    delay = request.get("delay", 2.0)
+    delay = request.get("delay", 3.0)
+    approval_id = request.get("approval_id")
 
     if not chat_id or not message:
         raise HTTPException(status_code=400, detail="缺少必要参数")
@@ -860,7 +876,8 @@ async def batch_send_message_api(request: dict):
         chat_id=chat_id,
         message=message,
         account_ids=account_ids,
-        delay=delay
+        delay=delay,
+        approval_id=approval_id,
     )
     return result
 
@@ -872,7 +889,8 @@ async def batch_send_template_api(request: dict):
     template_id = request.get("template_id")
     account_ids = request.get("account_ids")
     template_vars = request.get("template_vars", {})
-    delay = request.get("delay", 2.0)
+    delay = request.get("delay", 3.0)
+    approval_id = request.get("approval_id")
 
     if not chat_id or not template_id:
         raise HTTPException(status_code=400, detail="缺少必要参数")
@@ -882,7 +900,8 @@ async def batch_send_template_api(request: dict):
         template_id=template_id,
         account_ids=account_ids,
         template_vars=template_vars,
-        delay=delay
+        delay=delay,
+        approval_id=approval_id,
     )
     return result
 

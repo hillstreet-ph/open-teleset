@@ -36,6 +36,9 @@ mcp_errors.log
 # 账号数据（包含敏感 Session）
 accounts/config.json
 accounts/*.json
+accounts/*.sqlite3*
+accounts/.accounts-*
+.session-*
 !accounts/.gitkeep
 
 # Dashboard 日志

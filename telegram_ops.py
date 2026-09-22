@@ -12,11 +12,12 @@ from datetime import datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
-from telethon import functions, types
+from pydantic import BaseModel, Field
+from telethon import functions, utils
 
 from account_manager import account_manager
 from log_manager import log_manager
+from outreach_policy import outreach_policy, dispatch_outreach
 from stats_tracker import stats_tracker
 
 
@@ -37,16 +38,31 @@ class AddMembersRequest(BaseModel):
     source_target: Optional[str] = None   # source channel/group (if scraping first)
     dest_target: str                       # destination channel/group
     usernames: Optional[List[str]] = None  # explicit list of usernames/IDs
-    limit: int = 50                        # max members to add per run
-    delay: float = 35.0                    # seconds between each add (Telegram rate limit)
+    limit: int = Field(default=10, ge=1, le=10)                        # max members to add per run
+    delay: float = Field(default=35.0, ge=35, le=3600, allow_inf_nan=False)                    # seconds between each add (Telegram rate limit)
+    approval_id: Optional[str] = None      # server-side approval reference
 
 
 class BulkSendRequest(BaseModel):
     account_id: str
     message: str
-    targets: List[str]           # list of usernames or user IDs
-    delay: float = 3.0           # seconds between sends
+    targets: List[str] = Field(min_length=1, max_length=20)           # list of usernames or user IDs
+    delay: float = Field(default=3.0, ge=3, le=3600, allow_inf_nan=False)           # seconds between sends
     template_id: Optional[str] = None
+    approval_id: Optional[str] = None      # server-side approval reference
+
+
+def _enforce_outreach(action: str, subjects: List[str], account_id: str, approval_id: Optional[str]):
+    decisions = outreach_policy.authorize_many(
+        action=action,
+        subjects=subjects,
+        account_ids=[account_id],
+        approval_id=approval_id,
+    )
+    denied = next((decision for decision in decisions if not decision.allowed and decision.reason != "consent_missing_or_invalid"), None)
+    if denied:
+        log_manager.add_log("OutreachPolicy", account_id, denied.audit_summary(), "warning")
+        raise HTTPException(status_code=403, detail=f"Outreach denied: {denied.reason}")
 
 
 # ============ 1. Member Scraper ============
@@ -94,9 +110,9 @@ async def scrape_members(request: ScrapeRequest):
     except Exception as e:
         log_manager.add_log(
             "Scraper", request.account_id,
-            f"Scrape failed for {request.target}: {str(e)}", "error",
+            f"Scrape failed for {request.target}: {type(e).__name__}", "error",
         )
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=type(e).__name__)
 
 
 # ============ 2. Member Adder ============
@@ -105,29 +121,30 @@ async def scrape_members(request: ScrapeRequest):
 async def add_members(request: AddMembersRequest):
     """
     Add members to a channel or group.
-    Supports either an explicit usernames list or scraping from a source first.
+    Only accepts explicit usernames with current consent. Scraped additions are denied.
     """
     try:
+        if request.source_target:
+            log_manager.add_log(
+                "OutreachPolicy", request.account_id,
+                "outreach_policy deny action=member_add reason=scraped_source_forbidden",
+                "warning",
+            )
+            raise HTTPException(
+                status_code=403,
+                detail="Outreach denied: scraped_source_forbidden",
+            )
+        if request.limit > 10 or request.delay < 35:
+            raise HTTPException(status_code=400, detail="Member-add safety bounds exceeded")
+        if not request.usernames:
+            raise HTTPException(status_code=400, detail="Explicit usernames are required")
+
+        user_list = request.usernames[:request.limit]
+        _enforce_outreach("member_add", user_list, request.account_id, request.approval_id)
+
         client = await account_manager.get_client(request.account_id)
         if not client:
             raise HTTPException(status_code=400, detail="Client unavailable — account not connected")
-
-        # Resolve the list of users to add
-        user_list: List[str] = []
-        if request.usernames:
-            user_list = request.usernames[:request.limit]
-        elif request.source_target:
-            # Scrape source first
-            source_entity = await client.get_entity(request.source_target)
-            participants = await client.get_participants(source_entity, limit=request.limit)
-            for p in participants:
-                if not p.bot and p.username:
-                    user_list.append(p.username)
-        else:
-            raise HTTPException(
-                status_code=400,
-                detail="Provide 'usernames' list or 'source_target' to scrape from",
-            )
 
         if not user_list:
             return {"success": True, "added": 0, "failed": 0, "results": [], "message": "No users to add"}
@@ -141,25 +158,27 @@ async def add_members(request: AddMembersRequest):
         for i, username in enumerate(user_list):
             try:
                 user_entity = await client.get_entity(username)
-                await client(
+                await dispatch_outreach(action="member_add", subject=utils.get_peer_id(user_entity),
+                    account_id=request.account_id, approval_id=request.approval_id, delay=request.delay,
+                    send=lambda: client(
                     functions.channels.InviteToChannelRequest(
                         channel=dest_entity,
                         users=[user_entity],
                     )
-                )
+                ))
                 results.append({"username": username, "success": True})
                 added += 1
                 log_manager.add_log(
                     "MemberAdder", request.account_id,
-                    f"Added {username} to {request.dest_target}", "success",
+                    "Approved member addition completed", "success",
                 )
             except Exception as e:
-                error_msg = str(e)
+                error_msg = type(e).__name__
                 results.append({"username": username, "success": False, "error": error_msg})
                 failed += 1
                 log_manager.add_log(
                     "MemberAdder", request.account_id,
-                    f"Failed to add {username}: {error_msg}", "error",
+                    f"Approved member addition failed: {type(e).__name__}", "error",
                 )
 
             # Rate-limit delay (except after the last one)
@@ -167,7 +186,7 @@ async def add_members(request: AddMembersRequest):
                 await asyncio.sleep(request.delay)
 
         return {
-            "success": True,
+            "success": failed == 0,
             "dest_target": request.dest_target,
             "added": added,
             "failed": failed,
@@ -180,9 +199,9 @@ async def add_members(request: AddMembersRequest):
     except Exception as e:
         log_manager.add_log(
             "MemberAdder", request.account_id,
-            f"Add members failed: {str(e)}", "error",
+            f"Add members failed: {type(e).__name__}", "error",
         )
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=type(e).__name__)
 
 
 # ============ 3. Bulk Personal Message Sender ============
@@ -195,6 +214,17 @@ async def bulk_send_personal(request: BulkSendRequest):
     from MANY accounts to ONE chat.
     """
     try:
+        if not request.targets:
+            raise HTTPException(status_code=400, detail="At least one target is required")
+        if len(request.targets) > 20 or request.delay < 3:
+            raise HTTPException(status_code=400, detail="Bulk-send safety bounds exceeded")
+        _enforce_outreach(
+            "personal_send",
+            request.targets,
+            request.account_id,
+            request.approval_id,
+        )
+
         client = await account_manager.get_client(request.account_id)
         if not client:
             raise HTTPException(status_code=400, detail="Client unavailable — account not connected")
@@ -222,21 +252,21 @@ async def bulk_send_personal(request: BulkSendRequest):
         for i, target in enumerate(request.targets):
             try:
                 entity = await client.get_entity(target)
-                await client.send_message(entity, message_text)
+                await dispatch_outreach(action="personal_send", subject=utils.get_peer_id(entity), account_id=request.account_id, approval_id=request.approval_id, delay=request.delay, send=lambda: client.send_message(entity, message_text))
                 results.append({"target": target, "success": True})
                 sent += 1
                 stats_tracker.record_message_sent(request.account_id)
                 log_manager.add_log(
                     "BulkSend", request.account_id,
-                    f"Sent to {target}", "success",
+                    "Approved personal message sent", "success",
                 )
             except Exception as e:
-                error_msg = str(e)
+                error_msg = type(e).__name__
                 results.append({"target": target, "success": False, "error": error_msg})
                 failed += 1
                 log_manager.add_log(
                     "BulkSend", request.account_id,
-                    f"Failed to send to {target}: {error_msg}", "error",
+                    f"Approved personal send failed: {type(e).__name__}", "error",
                 )
 
             # Delay between sends (except last)
@@ -244,7 +274,7 @@ async def bulk_send_personal(request: BulkSendRequest):
                 await asyncio.sleep(request.delay)
 
         return {
-            "success": True,
+            "success": failed == 0,
             "account_id": request.account_id,
             "sent": sent,
             "failed": failed,
@@ -257,6 +287,6 @@ async def bulk_send_personal(request: BulkSendRequest):
     except Exception as e:
         log_manager.add_log(
             "BulkSend", request.account_id,
-            f"Bulk send failed: {str(e)}", "error",
+            f"Bulk send failed: {type(e).__name__}", "error",
         )
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=type(e).__name__)

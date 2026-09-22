@@ -23,15 +23,18 @@ services:
     environment:
       REDIS_URL: redis://redis:6379/0
       APP_ENV: production
+    volumes:
+      - account_data:/app/accounts
     depends_on:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/api/health"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 25s
 
 volumes:
+  account_data:
   redis_data:

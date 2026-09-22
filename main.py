@@ -15,8 +15,9 @@ from typing import List, Dict, Optional, Union, Any
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
-from telethon import TelegramClient, functions, utils
+from telethon import TelegramClient, functions, types, utils
 from telethon.sessions import StringSession
+from outreach_policy import dispatch_outreach
 from telethon.tl.types import (
     User, Chat, Channel,
     ChatAdminRights, ChatBannedRights,
@@ -27,8 +28,8 @@ from telethon.tl.types import (
 load_dotenv()
 
 # 配置
-API_ID = int(os.getenv("TELEGRAM_API_ID", "2040"))
-API_HASH = os.getenv("TELEGRAM_API_HASH", "b18441a1ff607e10a989891a5462e627")
+API_ID = int(os.getenv("TELEGRAM_API_ID", "0"))
+API_HASH = os.getenv("TELEGRAM_API_HASH", "")
 SESSION_FILE = os.getenv("SESSION_FILE", ".telegram_session")
 
 # 允许嵌套事件循环
@@ -95,48 +96,24 @@ def log_and_format_error(
 # ============================================================================
 
 async def get_client() -> TelegramClient:
-    """获取已连接的 Telegram Client"""
-    global client
+    """Resolve the configured account through the encrypted account manager."""
+    from account_manager import account_manager
+    result = await account_manager.get_client(get_default_account_id())
+    if result is None:
+        raise ValueError("Configured Telegram account is unavailable")
+    return result
 
-    # 优先从账号管理系统加载 session
-    session_string = None
-    accounts_config = "./accounts/config.json"
-    
-    if os.path.exists(accounts_config):
-        try:
-            with open(accounts_config, "r") as f:
-                accounts = json.load(f)
-            # 获取第一个可用账号的session
-            for acc_id, acc_data in accounts.items():
-                if acc_data.get("session_string"):
-                    session_string = acc_data["session_string"]
-                    break
-        except:
-            pass
-    
-    # 如果账号管理系统没有，则使用默认session文件
-    if not session_string and os.path.exists(SESSION_FILE):
-        with open(SESSION_FILE, "r") as f:
-            session_string = f.read().strip()
 
-    if not session_string:
-        raise ValueError(
-            "未找到 Telegram session。请先运行登录:\n"
-            "  访问 http://localhost:8080/static/dashboard.html 添加账号\n"
-            "  或运行 python web_login.py"
-        )
-
-    if client is None:
-        client = TelegramClient(
-            StringSession(session_string),
-            API_ID,
-            API_HASH
-        )
-
-    if not client.is_connected():
-        await client.connect()
-
-    return client
+def get_default_account_id() -> str:
+    from account_manager import account_manager
+    configured = os.getenv("OUTREACH_DEFAULT_ACCOUNT_ID")
+    if configured:
+        if configured not in account_manager.accounts:
+            raise ValueError("Configured account is unavailable")
+        return configured
+    if len(account_manager.accounts) != 1:
+        raise ValueError("Configure OUTREACH_DEFAULT_ACCOUNT_ID for multi-account operation")
+    return next(iter(account_manager.accounts))
 
 
 def format_entity(entity) -> Dict[str, Any]:
@@ -351,6 +328,8 @@ async def send_message(
     chat_id: Union[int, str],
     message: str,
     parse_mode: str = None
+,
+    approval_id: str = None,
 ) -> str:
     """发送消息到指定聊天
 
@@ -362,10 +341,10 @@ async def send_message(
     try:
         c = await get_client()
         entity = await c.get_entity(chat_id)
-        await c.send_message(entity, message, parse_mode=parse_mode)
+        await dispatch_outreach(action="personal_send", subject=utils.get_peer_id(entity), account_id=get_default_account_id(), approval_id=approval_id, send=lambda: c.send_message(entity, message, parse_mode=parse_mode))
         return f"✅ 消息已发送到 {chat_id}"
     except Exception as e:
-        return log_and_format_error("send_message", e, chat_id=chat_id)
+        return f"Outbound operation failed: {type(e).__name__}"
 
 
 @mcp.tool(annotations=ToolAnnotations(title="获取消息", openWorldHint=True, readOnlyHint=True))
@@ -409,6 +388,8 @@ async def reply_message(
     chat_id: Union[int, str],
     message_id: int,
     text: str
+,
+    approval_id: str = None,
 ) -> str:
     """回复指定消息
 
@@ -420,10 +401,10 @@ async def reply_message(
     try:
         c = await get_client()
         entity = await c.get_entity(chat_id)
-        await c.send_message(entity, text, reply_to=message_id)
+        await dispatch_outreach(action="personal_send", subject=utils.get_peer_id(entity), account_id=get_default_account_id(), approval_id=approval_id, send=lambda: c.send_message(entity, text, reply_to=message_id))
         return f"✅ 已回复消息 {message_id}"
     except Exception as e:
-        return log_and_format_error("reply_message", e, chat_id=chat_id, message_id=message_id)
+        return f"Outbound operation failed: {type(e).__name__}"
 
 
 @mcp.tool(annotations=ToolAnnotations(title="编辑消息", openWorldHint=True, destructiveHint=True, idempotentHint=True))
@@ -431,6 +412,8 @@ async def edit_message(
     chat_id: Union[int, str],
     message_id: int,
     new_text: str
+,
+    approval_id: str = None,
 ) -> str:
     """编辑你发送的消息
 
@@ -442,10 +425,10 @@ async def edit_message(
     try:
         c = await get_client()
         entity = await c.get_entity(chat_id)
-        await c.edit_message(entity, message_id, new_text)
+        await dispatch_outreach(action="personal_send", subject=utils.get_peer_id(entity), account_id=get_default_account_id(), approval_id=approval_id, send=lambda: c.edit_message(entity, message_id, new_text))
         return f"✅ 消息 {message_id} 已编辑"
     except Exception as e:
-        return log_and_format_error("edit_message", e, chat_id=chat_id, message_id=message_id)
+        return f"Outbound operation failed: {type(e).__name__}"
 
 
 @mcp.tool(annotations=ToolAnnotations(title="删除消息", openWorldHint=True, destructiveHint=True, idempotentHint=True))
@@ -473,6 +456,8 @@ async def forward_message(
     from_chat_id: Union[int, str],
     message_id: int,
     to_chat_id: Union[int, str]
+,
+    approval_id: str = None,
 ) -> str:
     """转发消息到另一个聊天
 
@@ -485,10 +470,10 @@ async def forward_message(
         c = await get_client()
         from_entity = await c.get_entity(from_chat_id)
         to_entity = await c.get_entity(to_chat_id)
-        await c.forward_messages(to_entity, message_id, from_entity)
+        await dispatch_outreach(action="personal_send", subject=utils.get_peer_id(to_entity), account_id=get_default_account_id(), approval_id=approval_id, send=lambda: c.forward_messages(to_entity, message_id, from_entity))
         return f"✅ 消息已从 {from_chat_id} 转发到 {to_chat_id}"
     except Exception as e:
-        return log_and_format_error("forward_message", e)
+        return f"Outbound operation failed: {type(e).__name__}"
 
 
 @mcp.tool(annotations=ToolAnnotations(title="置顶消息", openWorldHint=True, destructiveHint=True, idempotentHint=True))
@@ -727,7 +712,8 @@ async def unblock_user(user_id: Union[int, str]) -> str:
 @mcp.tool(annotations=ToolAnnotations(title="创建群组", openWorldHint=True, destructiveHint=True))
 async def create_group(
     title: str,
-    users: List[Union[int, str]]
+    users: List[Union[int, str]],
+    approval_id: str = None,
 ) -> str:
     """创建新群组
 
@@ -736,6 +722,8 @@ async def create_group(
         users: 用户 ID 或用户名列表
     """
     try:
+        if len(users) != 1:
+            return "Member creation/invite requires exactly one consented recipient per call"
         c = await get_client()
         user_entities = []
         for user_id in users:
@@ -745,10 +733,10 @@ async def create_group(
             except Exception as e:
                 return f"❌ 找不到用户 {user_id}"
 
-        result = await c(functions.messages.CreateChatRequest(
+        result = await dispatch_outreach(action="member_add", subject=utils.get_peer_id(user_entities[0]), account_id=get_default_account_id(), approval_id=approval_id, send=lambda: c(functions.messages.CreateChatRequest(
             users=user_entities,
             title=title
-        ))
+        )))
 
         if hasattr(result, "chats") and result.chats:
             return f"✅ 群组 '{title}' 已创建，ID: {result.chats[0].id}"
@@ -756,7 +744,7 @@ async def create_group(
     except Exception as e:
         if "PEER_FLOOD" in str(e):
             return "❌ 创建群组失败：操作过于频繁，请稍后重试"
-        return log_and_format_error("create_group", e, title=title)
+        return f"Member operation failed: {type(e).__name__}"
 
 
 @mcp.tool(annotations=ToolAnnotations(title="获取群组成员", openWorldHint=True, readOnlyHint=True))
@@ -816,7 +804,8 @@ async def get_admins(chat_id: Union[int, str]) -> str:
 @mcp.tool(annotations=ToolAnnotations(title="邀请进群", openWorldHint=True, destructiveHint=True, idempotentHint=True))
 async def invite_to_chat(
     chat_id: Union[int, str],
-    users: List[Union[int, str]]
+    users: List[Union[int, str]],
+    approval_id: str = None,
 ) -> str:
     """邀请用户加入群组
 
@@ -825,6 +814,24 @@ async def invite_to_chat(
         users: 用户 ID 或用户名列表
     """
     try:
+        if len(users) != 1:
+            return "Member creation/invite requires exactly one consented recipient per call"
+        if not users or len(users) > 10:
+            return "❌ Member-add safety bounds exceeded"
+        from outreach_policy import outreach_policy
+
+        account_id = get_default_account_id()
+        decisions = outreach_policy.authorize_many(
+            action="member_add",
+            subjects=users,
+            account_ids=[account_id],
+            approval_id=approval_id,
+        )
+        denied = next((decision for decision in decisions if not decision.allowed and decision.reason != "consent_missing_or_invalid"), None)
+        if denied:
+            logger.warning(denied.audit_summary())
+            return f"❌ Outreach denied: {denied.reason}"
+
         c = await get_client()
         entity = await c.get_entity(chat_id)
 
@@ -836,13 +843,13 @@ async def invite_to_chat(
             except Exception:
                 return f"❌ 找不到用户 {user_id}"
 
-        await c(functions.channels.InviteToChannelRequest(
+        await dispatch_outreach(action="member_add", subject=utils.get_peer_id(user_entities[0]), account_id=get_default_account_id(), approval_id=approval_id, send=lambda: c(functions.channels.InviteToChannelRequest(
             channel=entity,
             users=user_entities
-        ))
+        )))
         return f"✅ 已邀请 {len(user_entities)} 位用户加入群组"
     except Exception as e:
-        return log_and_format_error("invite_to_chat", e, chat_id=chat_id)
+        return f"Member operation failed: {type(e).__name__}"
 
 
 @mcp.tool(annotations=ToolAnnotations(title="提升管理员", openWorldHint=True, destructiveHint=True, idempotentHint=True))
@@ -1159,6 +1166,8 @@ async def create_poll(
     options: List[str],
     multiple_choice: bool = False,
     anonymous: bool = True
+,
+    approval_id: str = None,
 ) -> str:
     """在聊天中创建投票
 
@@ -1185,14 +1194,14 @@ async def create_poll(
             close_date=None,
         )
 
-        await c.send_message(
+        await dispatch_outreach(action="personal_send", subject=utils.get_peer_id(entity), account_id=get_default_account_id(), approval_id=approval_id, send=lambda: c.send_message(
             entity,
             file=InputMediaPoll(poll=poll),
-        )
+        ))
 
         return f"✅ 投票已创建"
     except Exception as e:
-        return log_and_format_error("create_poll", e, chat_id=chat_id)
+        return f"Outbound operation failed: {type(e).__name__}"
 
 
 # ============================================================================
@@ -1204,6 +1213,8 @@ async def send_photo(
     chat_id: Union[int, str],
     file_path: str,
     caption: str = ""
+,
+    approval_id: str = None,
 ) -> str:
     """发送图片到聊天
 
@@ -1215,10 +1226,10 @@ async def send_photo(
     try:
         c = await get_client()
         entity = await c.get_entity(chat_id)
-        await c.send_file(entity, file_path, caption=caption)
+        await dispatch_outreach(action="personal_send", subject=utils.get_peer_id(entity), account_id=get_default_account_id(), approval_id=approval_id, send=lambda: c.send_file(entity, file_path, caption=caption))
         return f"✅ 图片已发送"
     except Exception as e:
-        return log_and_format_error("send_photo", e, chat_id=chat_id)
+        return f"Outbound operation failed: {type(e).__name__}"
 
 
 @mcp.tool(annotations=ToolAnnotations(title="发送视频", openWorldHint=True, destructiveHint=True))
@@ -1226,6 +1237,8 @@ async def send_video(
     chat_id: Union[int, str],
     file_path: str,
     caption: str = ""
+,
+    approval_id: str = None,
 ) -> str:
     """发送视频到聊天
 
@@ -1237,10 +1250,10 @@ async def send_video(
     try:
         c = await get_client()
         entity = await c.get_entity(chat_id)
-        await c.send_file(entity, file_path, caption=caption, supports_streaming=True)
+        await dispatch_outreach(action="personal_send", subject=utils.get_peer_id(entity), account_id=get_default_account_id(), approval_id=approval_id, send=lambda: c.send_file(entity, file_path, caption=caption, supports_streaming=True))
         return f"✅ 视频已发送"
     except Exception as e:
-        return log_and_format_error("send_video", e, chat_id=chat_id)
+        return f"Outbound operation failed: {type(e).__name__}"
 
 
 @mcp.tool(annotations=ToolAnnotations(title="发送文件", openWorldHint=True, destructiveHint=True))
@@ -1248,6 +1261,8 @@ async def send_document(
     chat_id: Union[int, str],
     file_path: str,
     caption: str = ""
+,
+    approval_id: str = None,
 ) -> str:
     """发送文件到聊天
 
@@ -1259,16 +1274,18 @@ async def send_document(
     try:
         c = await get_client()
         entity = await c.get_entity(chat_id)
-        await c.send_file(entity, file_path, caption=caption, force_document=True)
+        await dispatch_outreach(action="personal_send", subject=utils.get_peer_id(entity), account_id=get_default_account_id(), approval_id=approval_id, send=lambda: c.send_file(entity, file_path, caption=caption, force_document=True))
         return f"✅ 文件已发送"
     except Exception as e:
-        return log_and_format_error("send_document", e, chat_id=chat_id)
+        return f"Outbound operation failed: {type(e).__name__}"
 
 
 @mcp.tool(annotations=ToolAnnotations(title="发送语音", openWorldHint=True, destructiveHint=True))
 async def send_voice(
     chat_id: Union[int, str],
     file_path: str
+,
+    approval_id: str = None,
 ) -> str:
     """发送语音消息
 
@@ -1279,10 +1296,10 @@ async def send_voice(
     try:
         c = await get_client()
         entity = await c.get_entity(chat_id)
-        await c.send_file(entity, file_path, voice_note=True)
+        await dispatch_outreach(action="personal_send", subject=utils.get_peer_id(entity), account_id=get_default_account_id(), approval_id=approval_id, send=lambda: c.send_file(entity, file_path, voice_note=True))
         return f"✅ 语音消息已发送"
     except Exception as e:
-        return log_and_format_error("send_voice", e, chat_id=chat_id)
+        return f"Outbound operation failed: {type(e).__name__}"
 
 
 @mcp.tool(annotations=ToolAnnotations(title="发送音频", openWorldHint=True, destructiveHint=True))
@@ -1291,6 +1308,8 @@ async def send_audio(
     file_path: str,
     title: str = "",
     performer: str = ""
+,
+    approval_id: str = None,
 ) -> str:
     """发送音频文件
 
@@ -1303,10 +1322,10 @@ async def send_audio(
     try:
         c = await get_client()
         entity = await c.get_entity(chat_id)
-        await c.send_file(entity, file_path, attributes=(title, performer))
+        await dispatch_outreach(action="personal_send", subject=utils.get_peer_id(entity), account_id=get_default_account_id(), approval_id=approval_id, send=lambda: c.send_file(entity, file_path, attributes=(title, performer)))
         return f"✅ 音频已发送"
     except Exception as e:
-        return log_and_format_error("send_audio", e, chat_id=chat_id)
+        return f"Outbound operation failed: {type(e).__name__}"
 
 
 @mcp.tool(annotations=ToolAnnotations(title="下载媒体", openWorldHint=True, destructiveHint=False))
@@ -1458,7 +1477,8 @@ async def get_message_reactions(
 async def schedule_message(
     chat_id: Union[int, str],
     message: str,
-    timestamp: int
+    timestamp: int,
+    approval_id: str = None,
 ) -> str:
     """定时发送消息
 
@@ -1467,14 +1487,11 @@ async def schedule_message(
         message: 消息内容
         timestamp: 发送时间戳
     """
-    try:
-        c = await get_client()
-        entity = await c.get_entity(chat_id)
-
-        await c.send_message(entity, message, schedule=timestamp)
-        return f"✅ 消息已定时发送"
-    except Exception as e:
-        return log_and_format_error("schedule_message", e, chat_id=chat_id)
+    del chat_id, message, timestamp, approval_id
+    return (
+        "❌ Outreach denied: native_schedule_cannot_revalidate. "
+        "Use create_schedule so consent and suppression are rechecked at execution time."
+    )
 
 
 @mcp.tool(annotations=ToolAnnotations(title="发送位置", openWorldHint=True, destructiveHint=True))
@@ -1483,6 +1500,8 @@ async def send_location(
     latitude: float,
     longitude: float,
     title: str = ""
+,
+    approval_id: str = None,
 ) -> str:
     """发送位置
 
@@ -1497,11 +1516,11 @@ async def send_location(
         entity = await c.get_entity(chat_id)
 
         from telethon.tl.types import InputGeoPoint
-        await c.send_message(entity, file=InputGeoPoint(latitude, longitude))
+        await dispatch_outreach(action="personal_send", subject=utils.get_peer_id(entity), account_id=get_default_account_id(), approval_id=approval_id, send=lambda: c.send_message(entity, file=InputGeoPoint(latitude, longitude)))
 
         return f"✅ 位置已发送"
     except Exception as e:
-        return log_and_format_error("send_location", e, chat_id=chat_id)
+        return f"Outbound operation failed: {type(e).__name__}"
 
 
 @mcp.tool(annotations=ToolAnnotations(title="发送联系人", openWorldHint=True, destructiveHint=True))
@@ -1510,6 +1529,8 @@ async def send_contact(
     phone: str,
     first_name: str,
     last_name: str = ""
+,
+    approval_id: str = None,
 ) -> str:
     """发送联系人卡片
 
@@ -1524,15 +1545,15 @@ async def send_contact(
         entity = await c.get_entity(chat_id)
 
         from telethon.tl.types import InputMediaContact
-        await c.send_message(entity, file=InputMediaContact(
+        await dispatch_outreach(action="personal_send", subject=utils.get_peer_id(entity), account_id=get_default_account_id(), approval_id=approval_id, send=lambda: c.send_message(entity, file=InputMediaContact(
             phone_number=phone,
             first_name=first_name,
             last_name=last_name,
             user_id=0
-        ))
+        )))
         return f"✅ 联系人已发送"
     except Exception as e:
-        return log_and_format_error("send_contact", e, chat_id=chat_id)
+        return f"Outbound operation failed: {type(e).__name__}"
 
 
 @mcp.tool(annotations=ToolAnnotations(title="创建频道", openWorldHint=True, destructiveHint=True))
@@ -2385,6 +2406,8 @@ async def copy_message(
     message_id: int,
     to_chat_id: Union[int, str],
     caption: str = ""
+,
+    approval_id: str = None,
 ) -> str:
     """复制消息到另一聊天（不显示转发来源）
 
@@ -2405,17 +2428,17 @@ async def copy_message(
         message = await c.get_messages(from_entity, ids=message_id)
 
         if message.media:
-            await c.send_file(
+            await dispatch_outreach(action="personal_send", subject=utils.get_peer_id(to_entity), account_id=get_default_account_id(), approval_id=approval_id, send=lambda: c.send_file(
                 to_entity,
                 message.media,
                 caption=caption or message.message
-            )
+            ))
         else:
-            await c.send_message(to_entity, caption or message.message)
+            await dispatch_outreach(action="personal_send", subject=utils.get_peer_id(to_entity), account_id=get_default_account_id(), approval_id=approval_id, send=lambda: c.send_message(to_entity, caption or message.message))
 
         return f"✅ 消息已复制"
     except Exception as e:
-        return log_and_format_error("copy_message", e, from_chat_id=from_chat_id)
+        return f"Outbound operation failed: {type(e).__name__}"
 
 
 @mcp.tool(
@@ -2425,7 +2448,9 @@ async def copy_message(
         destructiveHint=True,
     )
 )
-async def send_sticker(chat_id: Union[int, str], file_path: str) -> str:
+async def send_sticker(chat_id: Union[int, str], file_path: str,
+    approval_id: str = None,
+) -> str:
     """发送贴纸
 
     Args:
@@ -2439,11 +2464,11 @@ async def send_sticker(chat_id: Union[int, str], file_path: str) -> str:
         c = await get_client()
         entity = await c.get_entity(chat_id)
 
-        await c.send_file(entity, file_path)
+        await dispatch_outreach(action="personal_send", subject=utils.get_peer_id(entity), account_id=get_default_account_id(), approval_id=approval_id, send=lambda: c.send_file(entity, file_path))
 
         return f"✅ 贴纸已发送"
     except Exception as e:
-        return log_and_format_error("send_sticker", e, chat_id=chat_id)
+        return f"Outbound operation failed: {type(e).__name__}"
 
 
 @mcp.tool(
@@ -2453,7 +2478,9 @@ async def send_sticker(chat_id: Union[int, str], file_path: str) -> str:
         destructiveHint=True,
     )
 )
-async def send_gif(chat_id: Union[int, str], file_path: str, caption: str = "") -> str:
+async def send_gif(chat_id: Union[int, str], file_path: str, caption: str = "",
+    approval_id: str = None,
+) -> str:
     """发送GIF动图
 
     Args:
@@ -2468,16 +2495,16 @@ async def send_gif(chat_id: Union[int, str], file_path: str, caption: str = "") 
         c = await get_client()
         entity = await c.get_entity(chat_id)
 
-        await c.send_file(
+        await dispatch_outreach(action="personal_send", subject=utils.get_peer_id(entity), account_id=get_default_account_id(), approval_id=approval_id, send=lambda: c.send_file(
             entity,
             file_path,
             caption=caption,
             attributes=[types.DocumentAttributeAnimated()]
-        )
+        ))
 
         return f"✅ GIF已发送"
     except Exception as e:
-        return log_and_format_error("send_gif", e, chat_id=chat_id)
+        return f"Outbound operation failed: {type(e).__name__}"
 
 
 @mcp.tool(
@@ -2493,6 +2520,8 @@ async def send_venue(
     longitude: float,
     title: str,
     address: str = ""
+,
+    approval_id: str = None,
 ) -> str:
     """发送详细地点信息（venue）
 
@@ -2522,11 +2551,11 @@ async def send_venue(
             venue_type=""
         )
 
-        await c.send_file(entity, venue)
+        await dispatch_outreach(action="personal_send", subject=utils.get_peer_id(entity), account_id=get_default_account_id(), approval_id=approval_id, send=lambda: c.send_file(entity, venue))
 
         return f"✅ 地点信息已发送"
     except Exception as e:
-        return log_and_format_error("send_venue", e, chat_id=chat_id)
+        return f"Outbound operation failed: {type(e).__name__}"
 
 
 @mcp.tool(
@@ -2536,7 +2565,9 @@ async def send_venue(
         destructiveHint=True,
     )
 )
-async def send_game(chat_id: Union[int, str], bot_id: Union[int, str], game_short_name: str) -> str:
+async def send_game(chat_id: Union[int, str], bot_id: Union[int, str], game_short_name: str,
+    approval_id: str = None,
+) -> str:
     """发送游戏
 
     Args:
@@ -2562,11 +2593,11 @@ async def send_game(chat_id: Union[int, str], bot_id: Union[int, str], game_shor
             )
         )
 
-        await c.send_file(entity, game)
+        await dispatch_outreach(action="personal_send", subject=utils.get_peer_id(entity), account_id=get_default_account_id(), approval_id=approval_id, send=lambda: c.send_file(entity, game))
 
         return f"✅ 游戏已发送"
     except Exception as e:
-        return log_and_format_error("send_game", e, chat_id=chat_id)
+        return f"Outbound operation failed: {type(e).__name__}"
 
 
 @mcp.tool(
@@ -2580,6 +2611,8 @@ async def send_media_group(
     chat_id: Union[int, str],
     file_paths: list,
     caption: str = ""
+,
+    approval_id: str = None,
 ) -> str:
     """发送媒体组（相册形式）
 
@@ -2599,11 +2632,11 @@ async def send_media_group(
         for path in file_paths:
             files.append(path)
 
-        await c.send_file(entity, files, caption=caption)
+        await dispatch_outreach(action="personal_send", subject=utils.get_peer_id(entity), account_id=get_default_account_id(), approval_id=approval_id, send=lambda: c.send_file(entity, files, caption=caption))
 
         return f"✅ 媒体组已发送（{len(files)}个文件）"
     except Exception as e:
-        return log_and_format_error("send_media_group", e, chat_id=chat_id)
+        return f"Outbound operation failed: {type(e).__name__}"
 
 
 # ------------------- 数据导出与备份 -------------------
@@ -2949,6 +2982,8 @@ async def send_bot_command(
     chat_id: Union[int, str],
     bot_id: Union[int, str],
     command: str
+,
+    approval_id: str = None,
 ) -> str:
     """发送机器人命令（如 /start /help）
 
@@ -2964,11 +2999,11 @@ async def send_bot_command(
         c = await get_client()
         entity = await c.get_entity(chat_id)
 
-        await c.send_message(entity, f"{command}@{bot_id}" if isinstance(bot_id, str) else command)
+        await dispatch_outreach(action="personal_send", subject=utils.get_peer_id(entity), account_id=get_default_account_id(), approval_id=approval_id, send=lambda: c.send_message(entity, f"{command}@{bot_id}" if isinstance(bot_id, str) else command))
 
         return f"✅ 机器人命令已发送: {command}"
     except Exception as e:
-        return log_and_format_error("send_bot_command", e)
+        return f"Outbound operation failed: {type(e).__name__}"
 
 
 @mcp.tool(
@@ -3446,8 +3481,7 @@ async def save_file(file_path: str) -> str:
         c = await get_client()
 
         # 获取 Saved Messages 聊天
-        me = await c.get_me()
-        saved_peer = await c.get_input_entity(me.id)
+        saved_peer = types.InputPeerSelf()
 
         await c.send_file(saved_peer, file_path)
 
@@ -3860,7 +3894,8 @@ async def create_schedule(
     month: int = None,
     day: int = None,
     second: int = 0,
-    interval: int = 2000
+    interval: int = 3000,
+    approval_id: str = None,
 ) -> str:
     """创建定时发送任务
     
@@ -3882,6 +3917,7 @@ async def create_schedule(
         创建结果
     """
     try:
+        from account_manager import account_manager
         from scheduler import task_scheduler
         import uuid
         
@@ -3929,7 +3965,8 @@ async def create_schedule(
             repeat=repeat,
             friend_ids=friend_ids,
             stranger_usernames=stranger_usernames,
-            interval=interval
+            interval=interval,
+            approval_id=approval_id,
         )
         
         if success:
@@ -4146,7 +4183,8 @@ async def get_pending_ai_tasks() -> str:
 )
 async def execute_ai_task(
     task_id: str,
-    polished_message: str
+    polished_message: str,
+    approval_id: str = None,
 ) -> str:
     """执行AI润色后的定时任务
     
@@ -4157,81 +4195,17 @@ async def execute_ai_task(
     Returns:
         执行结果
     """
-    try:
-        from scheduler import task_scheduler
-        import asyncio
-        
-        schedule = task_scheduler.schedules.get(task_id)
-        if not schedule:
-            return f"❌ 任务不存在: {task_id}"
-        
-        # 获取发送目标
-        friend_ids = schedule.get("friend_ids", [])
-        stranger_usernames = schedule.get("stranger_usernames", [])
-        interval = schedule.get("interval", 2000)
-        accounts = schedule.get("accounts") or schedule.get("account_ids")
-        account_id = accounts[0] if accounts else None
-        
-        if not account_id:
-            return "❌ 没有可用账号"
-        
-        # 获取客户端
-        client = await account_manager.get_client(account_id)
-        if not client:
-            return f"❌ 获取账号 {account_id} 客户端失败"
-        
-        # 合并发送目标
-        targets = []
-        for fid in friend_ids:
-            targets.append({"type": "id", "value": fid})
-        for username in stranger_usernames:
-            targets.append({"type": "username", "value": username})
-        
-        if not targets:
-            targets = [{"type": "id", "value": "me"}]
-        
-        success_count = 0
-        fail_count = 0
-        results = []
-        
-        for i, target in enumerate(targets):
-            try:
-                target_value = target["value"]
-                entity = await client.get_entity(target_value)
-                await client.send_message(entity, polished_message)
-                success_count += 1
-                results.append(f"✅ {target_value}")
-                
-                if i < len(targets) - 1:
-                    await asyncio.sleep(interval / 1000)
-                    
-            except Exception as e:
-                fail_count += 1
-                results.append(f"❌ {target_value}: {str(e)}")
-        
-        # 更新任务状态
-        now_iso = datetime.now().isoformat()
-        schedule["last_run"] = now_iso
-        schedule["lastRun"] = now_iso
-        schedule["run_count"] = schedule.get("run_count", 0) + 1
-        if fail_count > 0:
-            schedule["fail_count"] = schedule.get("fail_count", 0) + 1
+    from scheduler import task_scheduler
+    schedule = task_scheduler.schedules.get(task_id)
+    if not schedule or not schedule.get("enabled") or schedule.get("action") != "ai_execute":
+        return "AI schedule unavailable"
+    candidate = dict(schedule, message=polished_message,
+                     approval_id=approval_id or schedule.get("approval_id"))
+    success = await task_scheduler._execute_schedule(candidate)
+    if success:
+        task_scheduler.schedules[task_id] = candidate
         task_scheduler._save_schedules()
-        
-        return f"""✅ AI润色任务执行完成
-
-任务: {schedule.get('name')}
-润色后消息: {polished_message[:100]}{'...' if len(polished_message) > 100 else ''}
-
-发送结果:
-- 成功: {success_count}
-- 失败: {fail_count}
-
-详情:
-""" + "\n".join(results)
-        
-    except Exception as e:
-        return log_and_format_error("execute_ai_task", e)
+    return "AI task completed" if success else "AI task denied or failed"
 
 
 # ============================================================================
@@ -4239,18 +4213,14 @@ async def execute_ai_task(
 # ============================================================================
 
 async def check_login():
-    """检查是否已登录"""
-    if not os.path.exists(SESSION_FILE):
-        print("\n" + "="*60)
-        print("⚠️  未检测到 Telegram session")
-        print("="*60)
-        print("\n请先运行登录命令：")
-        print("  python web_login.py")
-        print("\n或者直接运行：")
-        print("  python -c \"from web_login import run_login_server; run_login_server()\"")
-        print("\n然后在浏览器中扫码登录\n")
+    """Use the same encrypted account configuration as the running MCP client."""
+    try:
+        from account_manager import account_manager
+        account_id = get_default_account_id()
+        return bool(account_manager.accounts[account_id].get("session_string"))
+    except (ValueError, KeyError):
+        print("Configure a Telegram account through the authenticated dashboard")
         return False
-    return True
 
 
 async def main():
@@ -4265,7 +4235,7 @@ async def main():
         await c.get_me()
         print("✅ Telegram 连接成功!")
     except Exception as e:
-        print(f"⚠️  Session 验证失败: {e}")
+        print(f"Session validation failed: {type(e).__name__}")
         print("\n请重新运行登录: python web_login.py")
         sys.exit(1)
 

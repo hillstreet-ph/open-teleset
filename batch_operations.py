@@ -12,13 +12,15 @@ from account_manager import account_manager
 from template_manager import template_manager
 from log_manager import log_manager
 from health_monitor import health_monitor
+from outreach_policy import outreach_policy, dispatch_outreach, valid_bounds
+from telethon import utils
 from stats_tracker import stats_tracker
 
 
 class BatchOperations:
     """批量操作器"""
 
-    def __init__(self, default_delay: float = 2.0):
+    def __init__(self, default_delay: float = 3.0):
         """
         初始化批量操作器
 
@@ -32,7 +34,8 @@ class BatchOperations:
         chat_id: str,
         message: str,
         account_ids: List[str] = None,
-        delay: float = None
+        delay: float = None,
+        approval_id: str = None,
     ) -> Dict:
         """
         批量发送消息
@@ -52,7 +55,20 @@ class BatchOperations:
         if not account_ids:
             return {"success": False, "error": "没有可用账号"}
 
-        delay = delay or self.default_delay
+        delay = self.default_delay if delay is None else delay
+        if not valid_bounds(len(account_ids), 5, delay, 3):
+            return {"success": False, "error": "Batch-send safety bounds exceeded"}
+
+        decisions = outreach_policy.authorize_many(
+            action="batch_send",
+            subjects=[chat_id],
+            account_ids=account_ids,
+            approval_id=approval_id,
+        )
+        denied = next((decision for decision in decisions if not decision.allowed and decision.reason != "consent_missing_or_invalid"), None)
+        if denied:
+            log_manager.add_log("OutreachPolicy", "system", denied.audit_summary(), "warning")
+            return {"success": False, "error": f"Outreach denied: {denied.reason}"}
 
         results = []
         success_count = 0
@@ -69,36 +85,36 @@ class BatchOperations:
                         "error": "客户端不可用"
                     })
                     fail_count += 1
-                    log_manager.add_log("批量发送", account_id, f"发送失败: 客户端不可用", "error")
+                    log_manager.add_log("批量发送", account_id, "发送失败: 客户端不可用", "error")
                     continue
 
                 # 发送消息
                 entity = await client.get_entity(chat_id)
-                await client.send_message(entity, message)
+                await dispatch_outreach(action="batch_send", subject=utils.get_peer_id(entity), account_id=account_id, approval_id=approval_id, delay=delay, send=lambda: client.send_message(entity, message))
 
                 results.append({
                     "account": account_id,
                     "success": True
                 })
                 success_count += 1
-                log_manager.add_log("批量发送", account_id, f"发送到 {chat_id}", "success")
+                log_manager.add_log("批量发送", account_id, "已批准的批量消息发送成功", "success")
                 stats_tracker.record_message_sent(account_id)
 
             except Exception as e:
                 results.append({
                     "account": account_id,
                     "success": False,
-                    "error": str(e)
+                    "error": type(e).__name__
                 })
                 fail_count += 1
-                log_manager.add_log("批量发送", account_id, f"发送失败: {str(e)}", "error")
-                health_monitor.record_message_failure(account_id, str(e))
+                log_manager.add_log("批量发送", account_id, f"发送失败: {type(e).__name__}", "error")
+                health_monitor.record_message_failure(account_id, type(e).__name__)
 
             # 延迟
             await asyncio.sleep(delay)
 
         return {
-            "success": True,
+            "success": fail_count == 0,
             "total": len(account_ids),
             "success_count": success_count,
             "fail_count": fail_count,
@@ -111,7 +127,8 @@ class BatchOperations:
         template_id: str,
         account_ids: List[str] = None,
         template_vars: Dict = None,
-        delay: float = None
+        delay: float = None,
+        approval_id: str = None,
     ) -> Dict:
         """
         批量发送模板消息
@@ -132,7 +149,9 @@ class BatchOperations:
 
         # 为每个账号添加默认变量
         messages = {}
-        accounts = account_ids or list(account_manager.accounts.keys())
+        accounts = list(account_manager.accounts.keys()) if account_ids is None else account_ids
+        if not valid_bounds(len(accounts), 5, self.default_delay if delay is None else delay, 3):
+            return {"success": False, "error": "Batch-send safety bounds exceeded"}
 
         for account_id in accounts:
             vars_for_account = {
@@ -145,20 +164,25 @@ class BatchOperations:
 
         # 批量发送
         results = []
+        errors = []
         for account_id, message in messages.items():
             if message:
                 result = await self.batch_send_message(
                     chat_id=chat_id,
                     message=message,
                     account_ids=[account_id],
-                    delay=delay
+                    delay=delay,
+                    approval_id=approval_id,
                 )
                 results.extend(result.get("results", []))
+                if not result.get("success"):
+                    errors.append(result.get("error", "Batch send failed"))
 
         return {
-            "success": True,
+            "success": not errors,
             "template_id": template_id,
-            "results": results
+            "results": results,
+            "errors": errors,
         }
 
     async def batch_check_health(self, account_ids: List[str] = None) -> Dict:
@@ -248,7 +272,7 @@ class BatchOperations:
                 log_manager.add_log("删除账号", account_id, "批量删除", "warning")
 
         return {
-            "success": True,
+            "success": success_count == len(account_ids),
             "total": len(account_ids),
             "success_count": success_count,
             "results": results
@@ -291,7 +315,7 @@ class BatchOperations:
                     log_manager.add_log("获取对话", account_id, f"获取 {len(result)} 个对话", "info")
             except Exception as e:
                 dialogs[account_id] = []
-                log_manager.add_log("获取对话", account_id, f"获取失败: {str(e)}", "error")
+                log_manager.add_log("获取对话", account_id, f"获取失败: {type(e).__name__}", "error")
 
         return {
             "success": True,

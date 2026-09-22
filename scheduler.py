@@ -14,10 +14,35 @@ from croniter import croniter
 from account_manager import account_manager
 from template_manager import template_manager
 from log_manager import log_manager
+from outreach_policy import outreach_policy, dispatch_outreach, valid_bounds
+from telethon import utils
 
 
 ACCOUNTS_DIR = "./accounts"
 SCHEDULE_FILE = os.path.join(ACCOUNTS_DIR, "schedules.json")
+
+
+def schedule_requirements(schedule):
+    action = schedule.get("action")
+    if action == "scrape_members":
+        return None, [], 0
+    if action not in {"send_message", "send_template", "ai_execute", "add_members"}:
+        raise ValueError("unsupported_schedule_action")
+    if action == "add_members":
+        users = schedule.get("add_usernames", [])
+        limit, delay = schedule.get("add_limit", 10), schedule.get("add_delay", 35)
+        if (schedule.get("source_target") or not isinstance(users, list) or not users
+                or not valid_bounds(limit, 10, delay, 35) or len(users) > 10):
+            raise ValueError("invalid_member_schedule")
+        return "member_add", users[:limit], delay
+    friends, strangers = schedule.get("friend_ids", []), schedule.get("stranger_usernames", [])
+    interval = schedule.get("interval", 3000)
+    if not isinstance(friends, list) or not isinstance(strangers, list):
+        raise ValueError("invalid_targets")
+    subjects = friends + strangers
+    if type(interval) not in (int, float) or not valid_bounds(max(1, len(subjects)), 20, interval / 1000, 3):
+        raise ValueError("invalid_send_schedule")
+    return "scheduled_send", subjects, interval / 1000
 
 
 class TaskScheduler:
@@ -71,9 +96,10 @@ class TaskScheduler:
         repeat: str = None,
         friend_ids: List = None,
         stranger_usernames: List = None,
-        interval: int = 2000,
+        interval: int = 3000,
         auto_dedup: bool = True,
         validate_usernames: bool = True,
+        approval_id: str = None,
         **kwargs  # 忽略其他未知参数
     ) -> bool:
         """
@@ -102,6 +128,27 @@ class TaskScheduler:
         # 统一账号列表参数（兼容 account_ids 和 accounts）
         accounts_list = account_ids or accounts
 
+        try:
+            policy_action, policy_subjects, _ = schedule_requirements({
+                "action": action, "friend_ids": friend_ids or [],
+                "stranger_usernames": stranger_usernames or [], "interval": interval,
+                "source_target": kwargs.get("source_target"),
+                "add_usernames": kwargs.get("add_usernames", []),
+                "add_limit": kwargs.get("add_limit", 10),
+                "add_delay": kwargs.get("add_delay", 35),
+            })
+        except ValueError:
+            return False
+        if policy_action and policy_subjects:
+            if not accounts_list:
+                return False
+            decisions = outreach_policy.authorize_many(
+                action=policy_action, subjects=policy_subjects,
+                account_ids=accounts_list, approval_id=approval_id,
+            )
+            if any(not decision.allowed and decision.reason != "consent_missing_or_invalid" for decision in decisions):
+                return False
+
         self.schedules[schedule_id] = {
             "id": schedule_id,
             "schedule_id": schedule_id,  # 前端使用的字段名
@@ -127,7 +174,14 @@ class TaskScheduler:
             "stranger_usernames": stranger_usernames or [],
             "interval": interval,
             "auto_dedup": auto_dedup,
-            "validate_usernames": validate_usernames
+            "validate_usernames": validate_usernames,
+            "approval_id": approval_id,
+            "policy_action": policy_action,
+            "source_target": kwargs.get("source_target"),
+            "dest_target": kwargs.get("dest_target"),
+            "add_usernames": kwargs.get("add_usernames", []),
+            "add_limit": kwargs.get("add_limit", 10),
+            "add_delay": kwargs.get("add_delay", 35),
         }
 
         self._save_schedules()
@@ -207,7 +261,7 @@ class TaskScheduler:
             # 获取发送目标
             friend_ids = schedule.get("friend_ids", [])
             stranger_usernames = schedule.get("stranger_usernames", [])
-            interval = schedule.get("interval", 2000)  # 毫秒
+            interval = schedule.get("interval", 3000)  # 毫秒
             
             # 兼容 accounts 和 account_ids 字段
             accounts = schedule.get("accounts") or schedule.get("account_ids")
@@ -223,6 +277,28 @@ class TaskScheduler:
             if not account_id:
                 log_manager.add_log("定时任务", "system", "没有可用账号", "error")
                 return False
+
+            try:
+                policy_action, policy_subjects, execution_delay = schedule_requirements(schedule)
+            except ValueError:
+                schedule["enabled"] = False
+                schedule["last_error"] = "invalid_schedule_bounds_or_action"
+                self._save_schedules()
+                return False
+            if policy_action and policy_subjects:
+                decisions = outreach_policy.authorize_many(
+                    action=policy_action, subjects=policy_subjects,
+                    account_ids=[account_id], approval_id=schedule.get("approval_id"),
+                )
+                if any(not decision.allowed and decision.reason != "consent_missing_or_invalid" for decision in decisions):
+                    schedule["enabled"] = False
+                    schedule["last_error"] = "outreach_denied"
+                    self._save_schedules()
+                    return False
+            if action == "send_template":
+                message = template_manager.render_template(schedule.get("template_id"))
+                if not message:
+                    return False
 
             try:
                 # 获取客户端
@@ -263,8 +339,8 @@ class TaskScheduler:
                         results.append({"account": account_id, "success": True, "scraped": len(members)})
                     except Exception as e:
                         log_manager.add_log("定时任务", account_id,
-                            f"Scrape failed for {scrape_target}: {str(e)}", "error")
-                        results.append({"account": account_id, "success": False, "error": str(e)})
+                            f"Scrape failed for {scrape_target}: {type(e).__name__}", "error")
+                        results.append({"account": account_id, "success": False, "error": type(e).__name__})
 
                 # ---- Action: add_members ----
                 elif action == "add_members":
@@ -272,7 +348,7 @@ class TaskScheduler:
                     dest_target = schedule.get("dest_target", "")
                     source_target = schedule.get("source_target", "")
                     add_usernames = schedule.get("add_usernames", [])
-                    add_limit = schedule.get("add_limit", 50)
+                    add_limit = schedule.get("add_limit", 10)
                     add_delay = schedule.get("add_delay", 35)
                     if not dest_target:
                         log_manager.add_log("定时任务", account_id, "add_members: no dest_target specified", "error")
@@ -294,16 +370,20 @@ class TaskScheduler:
                         for idx, uname in enumerate(user_list):
                             try:
                                 user_entity = await client.get_entity(uname)
-                                await client(tl_functions.channels.InviteToChannelRequest(
-                                    channel=dest_entity, users=[user_entity]))
+                                await dispatch_outreach(
+                                    action="member_add", subject=utils.get_peer_id(user_entity),
+                                    account_id=account_id, approval_id=schedule.get("approval_id"),
+                                    delay=execution_delay,
+                                    send=lambda: client(tl_functions.channels.InviteToChannelRequest(
+                                        channel=dest_entity, users=[user_entity])))
                                 added += 1
-                                log_manager.add_log("定时任务", account_id, f"Added {uname} to {dest_target}", "success")
+                                log_manager.add_log("定时任务", account_id, "Approved member addition completed", "success")
                             except Exception as e:
                                 failed_add += 1
-                                log_manager.add_log("定时任务", account_id, f"Failed to add {uname}: {str(e)}", "error")
+                                log_manager.add_log("定时任务", account_id, f"Approved member addition failed: {type(e).__name__}", "error")
                             if idx < len(user_list) - 1:
                                 await asyncio.sleep(add_delay)
-                        results.append({"account": account_id, "success": added > 0, "added": added, "failed": failed_add})
+                        results.append({"account": account_id, "success": failed_add == 0, "added": added, "failed": failed_add})
                         log_manager.add_log("定时任务", account_id,
                             f"Add members done: {added} added, {failed_add} failed", "success" if failed_add == 0 else "warning")
 
@@ -331,11 +411,18 @@ class TaskScheduler:
                             
                             # 发送消息
                             # ai_execute 暂时和 send_message 一样（AI优化需要用户自己调用MCP）
-                            await client.send_message(entity, message)
+                            if policy_subjects:
+                                await dispatch_outreach(
+                                    action="scheduled_send", subject=utils.get_peer_id(entity),
+                                    account_id=account_id, approval_id=schedule.get("approval_id"),
+                                    delay=execution_delay, send=lambda: client.send_message(entity, message))
+                            else:
+                                # Only the internally constructed Saved Messages target is exempt.
+                                await client.send_message(entity, message)
                             success_count += 1
                             
                             log_manager.add_log("定时任务", account_id, 
-                                f"发送成功: {target_value}", "success")
+                                "已批准的定时消息发送成功", "success")
                             
                             # 发送间隔（除了最后一条）
                             if i < len(targets) - 1:
@@ -344,11 +431,11 @@ class TaskScheduler:
                         except Exception as e:
                             fail_count += 1
                             log_manager.add_log("定时任务", account_id, 
-                                f"发送失败 {target_value}: {str(e)}", "error")
+                                f"已批准的定时消息发送失败: {type(e).__name__}", "error")
                     
                     results.append({
                         "account": account_id, 
-                        "success": success_count > 0,
+                        "success": fail_count == 0,
                         "sent": success_count,
                         "failed": fail_count
                     })
@@ -358,8 +445,8 @@ class TaskScheduler:
                         "success" if fail_count == 0 else "warning")
 
             except Exception as e:
-                log_manager.add_log("定时任务", account_id, f"执行失败: {str(e)}", "error")
-                results.append({"account": account_id, "success": False, "error": str(e)})
+                log_manager.add_log("定时任务", account_id, f"执行失败: {type(e).__name__}", "error")
+                results.append({"account": account_id, "success": False, "error": type(e).__name__})
 
             # 更新任务统计
             now_iso = datetime.now().isoformat()
@@ -373,10 +460,10 @@ class TaskScheduler:
                 schedule["fail_count"] = schedule.get("fail_count", 0) + 1
 
             self._save_schedules()
-            return True
+            return all(r.get("success") for r in results)
 
         except Exception as e:
-            log_manager.add_log("定时任务", "system", f"执行任务 {schedule['name']} 失败: {str(e)}", "error")
+            log_manager.add_log("定时任务", "system", f"执行任务 {schedule['name']} 失败: {type(e).__name__}", "error")
             return False
 
     async def start(self):
