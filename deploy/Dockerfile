@@ -1,6 +1,6 @@
 # open-teleset — production multi-stage image
-# Build: docker build -f deploy/Dockerfile -t openclose8/open-teleset:latest .
-# Run:   docker run -p 8080:8080 --env-file .env openclose8/open-teleset:latest
+# Build: docker build -f deploy/Dockerfile -t hillstreet/open-teleset:latest .
+# Run:   docker run -p 8080:8080 --env-file .env hillstreet/open-teleset:latest
 
 FROM python:3.12-slim AS base
 
