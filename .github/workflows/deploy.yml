@@ -182,10 +182,10 @@ jobs:
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_TOKEN }}
         run: |
-          supabase link --project-ref wkewimymzbhgbkumlxmg
-          supabase functions deploy health-ping  --project-ref wkewimymzbhgbkumlxmg --no-verify-jwt || true
-          supabase functions deploy run-schedules --project-ref wkewimymzbhgbkumlxmg || true
-          supabase functions deploy send-message  --project-ref wkewimymzbhgbkumlxmg || true
+          supabase link --project-ref hoseohvgoiarxluxqwqv
+          supabase functions deploy health-ping  --project-ref hoseohvgoiarxluxqwqv --no-verify-jwt
+          supabase functions deploy run-schedules --project-ref hoseohvgoiarxluxqwqv
+          supabase functions deploy send-message  --project-ref hoseohvgoiarxluxqwqv
           echo "✅ Edge functions deployed"
 
   # ─── 7. SUMMARY ──────────────────────────────────────────────────
