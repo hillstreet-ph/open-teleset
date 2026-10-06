@@ -11,8 +11,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from open_teleset.account_store import AccountStore
-from open_teleset.db import close_pool, init_pool, record_health
+from open_teleset.account_store import AccountStore  # noqa: E402
+from open_teleset.db import close_pool, init_pool, record_health  # noqa: E402
 
 logger = logging.getLogger("health_worker")
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))

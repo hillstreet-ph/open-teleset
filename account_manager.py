@@ -7,7 +7,7 @@ import asyncio
 import json
 import os
 from datetime import datetime
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional
 from outreach_client import ConsentTelegramClient as TelegramClient
 from telethon.sessions import StringSession
 import qrcode
@@ -118,7 +118,7 @@ class AccountManager:
             client = self.clients[account_id]
             try:
                 return client.is_connected()
-            except:
+            except Exception:
                 return False
         return False
 
@@ -435,7 +435,7 @@ class AccountManager:
             old_session = self.qr_sessions[account_id]
             try:
                 await old_session["client"].disconnect()
-            except:
+            except Exception:
                 pass
             del self.qr_sessions[account_id]
 
@@ -461,7 +461,7 @@ class AccountManager:
         if account_id in self.clients:
             try:
                 await self.clients[account_id].disconnect()
-            except:
+            except Exception:
                 pass
             del self.clients[account_id]
 
@@ -629,7 +629,7 @@ class AccountManager:
                 try:
                     from telethon.tl.types import AuthPasswordRecovery
                     has_2fa = isinstance(result.next_type, AuthPasswordRecovery) or result.next_type is None
-                except:
+                except Exception:
                     pass
 
             # 保存会话
@@ -697,7 +697,7 @@ class AccountManager:
             from telethon.tl.functions.auth import SignInRequest
 
             # 尝试验证码登录
-            result = await client(SignInRequest(phone, phone_code_hash, code))
+            await client(SignInRequest(phone, phone_code_hash, code))
 
             # 登录成功，保存账号
             await self._complete_phone_login(account_id, client, session)
@@ -746,13 +746,12 @@ class AccountManager:
 
         try:
             from telethon.tl.functions.auth import CheckPasswordRequest
-            from telethon.tl.types import InputCheckPasswordSRP
 
             # 获取密码信息
-            password_info = await client.get_password_hint()
+            await client.get_password_hint()
 
             # 使用密码登录
-            result = await client(CheckPasswordRequest(password=password))
+            await client(CheckPasswordRequest(password=password))
 
             # 登录成功
             await self._complete_phone_login(account_id, client, session)
@@ -817,7 +816,7 @@ class AccountManager:
             session = self.phone_sessions[account_id]
             try:
                 await session["client"].disconnect()
-            except:
+            except Exception:
                 pass
             del self.phone_sessions[account_id]
             return True

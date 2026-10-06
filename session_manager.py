@@ -6,7 +6,6 @@ import os
 import json
 import tempfile
 from open_teleset.crypto import encrypt_session, decrypt_session
-import asyncio
 from pathlib import Path
 from typing import Optional, Dict, Any
 from telethon import TelegramClient

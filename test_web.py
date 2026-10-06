@@ -51,7 +51,7 @@ async def test_telegram_web():
                     print(f"✅ 找到: {selector}")
                     text = await elem.inner_text()
                     print(f"   文本: {text}")
-            except Exception as e:
+            except Exception:
                 pass
 
         # 获取所有按钮
@@ -63,7 +63,7 @@ async def test_telegram_web():
                 aria_label = await btn.get_attribute('aria-label')
                 class_name = await btn.get_attribute('class')
                 print(f"  [{i}] 文本={text[:30] if text else ''}, aria-label={aria_label}, class={class_name}")
-            except:
+            except Exception:
                 pass
 
         print("\n按回车关闭浏览器...")

@@ -64,7 +64,6 @@ async def test():
     # 4. 测试 Unicode 表情
     print("\n【4】Unicode 表情测试...")
 
-    emoji_text = "🎉🎊🎁👍❤️🔥⭐✨💯"
     try:
         result = await main.send_reaction(me.id, 1, "👍")
         # 注意：发送反应到自己的消息可能失败，这是正常的
@@ -118,7 +117,7 @@ async def test():
     try:
         result = await main.get_chats(page=0, page_size=0)
         # 可能返回空列表或默认值
-        print(f"  ✅ page=0, page_size=0: 已处理")
+        print("  ✅ page=0, page_size=0: 已处理")
         tests.append(True)
     except Exception as e:
         print(f"  ⚠️ page=0, page_size=0: {str(e)[:50]}")

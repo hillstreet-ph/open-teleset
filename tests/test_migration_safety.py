@@ -1,5 +1,6 @@
 """Legacy migrations must never replace canonical shared Auth contracts."""
 from unittest.mock import AsyncMock
+from urllib.parse import urlparse
 
 import pytest
 
@@ -75,3 +76,51 @@ async def test_unexpected_schema_result_fails_closed(target):
     with pytest.raises(migrations.MigrationSafetyError):
         await migrations._validate_legacy_target(target, ["postgresql://localhost/standalone"])
     target.execute.assert_not_awaited()
+
+
+def test_direct_dsn_is_mapped_to_resolvable_pooler(monkeypatch):
+    monkeypatch.setenv("SUPABASE_REGION", "ap-southeast-1")
+    derived = migrations._derive_pooler(
+        "postgresql://postgres:secret@db.hoseohvgoiarxluxqwqv.supabase.co:5432/postgres"
+    )
+    assert derived is not None
+    parsed = urlparse(derived)
+    assert parsed.hostname == "aws-0-ap-southeast-1.pooler.supabase.com"
+    assert parsed.port == 6543
+    assert parsed.username == "postgres.hoseohvgoiarxluxqwqv"
+    assert parsed.password == "secret"
+    assert "sslmode=require" in derived
+
+
+def test_non_supabase_dsn_is_not_rewritten():
+    assert migrations._derive_pooler("postgresql://user:pw@localhost:5432/db") is None
+
+
+def test_candidate_dsns_prefers_pooler_before_direct(monkeypatch):
+    monkeypatch.setenv("SUPABASE_REGION", "ap-southeast-1")
+    monkeypatch.delenv("DATABASE_POOLER_URL", raising=False)
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        "postgresql://postgres:pw@db.hoseohvgoiarxluxqwqv.supabase.co:5432/postgres",
+    )
+    candidates = migrations._candidate_dsns()
+    assert len(candidates) == 2
+    assert "pooler.supabase.com" in candidates[0]
+    assert "db.hoseohvgoiarxluxqwqv.supabase.co" in candidates[1]
+
+
+@pytest.mark.asyncio
+async def test_unreachable_database_returns_clean_status(target, monkeypatch, capsys):
+    monkeypatch.setattr(migrations, "_candidate_dsns", lambda: ["postgresql://pooler/path"])
+    monkeypatch.setattr(migrations, "_connect", AsyncMock(side_effect=OSError("no route")))
+    assert await migrations.main() == 1
+    err = capsys.readouterr().err
+    assert "MIGRATIONS_STATUS=unreachable" in err
+    assert "no route" not in err  # provider detail must not leak verbatim
+
+
+@pytest.mark.asyncio
+async def test_missing_configuration_is_reported(target, monkeypatch, capsys):
+    monkeypatch.setattr(migrations, "_candidate_dsns", list)
+    assert await migrations.main() == 1
+    assert "MIGRATIONS_STATUS=not_configured" in capsys.readouterr().err

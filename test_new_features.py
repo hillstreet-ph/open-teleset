@@ -8,7 +8,7 @@ import main
 async def test():
     print("🧪 测试新增功能...\n")
 
-    c = await main.get_client()
+    await main.get_client()
 
     # 测试列表
     tests = [

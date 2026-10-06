@@ -9,10 +9,8 @@ import sys
 # 导入主模块
 from main import (
     get_client, get_chats, get_me, get_contacts, search_public_chats,
-    get_messages, search_messages, get_participants, get_admins,
-    get_invite_link, get_user_status, get_chat, get_active_sessions,
-    get_pinned_messages, get_chat_photos, get_history, get_topics,
-    search_media, filter_messages
+    get_messages, get_chat, get_active_sessions,
+    get_pinned_messages, get_history
 )
 
 async def test_tool(name, func, *args, **kwargs):
