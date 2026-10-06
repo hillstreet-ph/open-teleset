@@ -105,8 +105,8 @@ def test_candidate_dsns_prefers_pooler_before_direct(monkeypatch):
     )
     candidates = migrations._candidate_dsns()
     assert len(candidates) == 2
-    assert "pooler.supabase.com" in candidates[0]
-    assert "db.hoseohvgoiarxluxqwqv.supabase.co" in candidates[1]
+    assert urlparse(candidates[0]).hostname == "aws-0-ap-southeast-1.pooler.supabase.com"
+    assert urlparse(candidates[1]).hostname == "db.hoseohvgoiarxluxqwqv.supabase.co"
 
 
 @pytest.mark.asyncio

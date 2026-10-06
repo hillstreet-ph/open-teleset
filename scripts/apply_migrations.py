@@ -93,6 +93,17 @@ def _derive_pooler(dsn: str) -> str | None:
     return f"postgresql://{auth}{pool_host}:6543{parsed.path or '/postgres'}?sslmode=require"
 
 
+def _host_of(dsn: str) -> str:
+    try:
+        return (urlparse(dsn).hostname or "").lower()
+    except ValueError:
+        return ""
+
+
+def _is_pooler_host(host: str) -> bool:
+    return host == "pooler.supabase.com" or host.endswith(".pooler.supabase.com")
+
+
 def _candidate_dsns() -> list[str]:
     """Pooler first, then direct — every resolvable Supabase variant is offered."""
     poolers: list[str] = []
@@ -102,7 +113,7 @@ def _candidate_dsns() -> list[str]:
         if not value or "YOUR_PASSWORD" in value:
             continue
         normalized = _ensure_sslmode(value)
-        if "pooler.supabase.com" in normalized:
+        if _is_pooler_host(_host_of(normalized)):
             poolers.append(normalized)
             continue
         directs.append(normalized)
