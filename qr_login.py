@@ -63,8 +63,8 @@ async def main():
 
         # 保存到临时文件
         img.save("/tmp/telegram_qr_login.png")
-        print(f"✅ QR Code 已保存到: /tmp/telegram_qr_login.png")
-        print(f"   请打开此文件并扫描\n")
+        print("✅ QR Code 已保存到: /tmp/telegram_qr_login.png")
+        print("   请打开此文件并扫描\n")
 
         # 尝试在 macOS 上用预览打开
         os.system("open /tmp/telegram_qr_login.png 2>/dev/null")
@@ -83,7 +83,7 @@ async def main():
 
         if await client.is_user_authorized():
             me = await client.get_me()
-            print(f"\n✅ 登录成功!")
+            print("\n✅ 登录成功!")
             print(f"   姓名: {me.first_name} {me.last_name or ''}")
             print(f"   用户名: @{me.username if me.username else 'N/A'}")
             print(f"   ID: {me.id}")

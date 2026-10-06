@@ -73,8 +73,34 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           DATABASE_POOLER_URL: ${{ secrets.DATABASE_POOLER_URL }}
           SUPABASE_REGION: ap-southeast-1
+        shell: bash
         run: |
-          python scripts/apply_migrations.py
+          set +e
+          OUTPUT=$(python scripts/apply_migrations.py 2>&1)
+          CODE=$?
+          echo "$OUTPUT"
+          if [ "$CODE" -eq 0 ]; then
+            echo "### Migrations applied" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # The legacy public migration set is intentionally inapplicable to the
+          # canonical shared Supabase project. That is an accepted skip, not a
+          # deploy blocker; real database readiness is proven by /readyz.
+          if echo "$OUTPUT" | grep -qE "MIGRATIONS_STATUS=(not_applicable|not_configured)"; then
+            echo "### Legacy migrations intentionally skipped (shared/canonical target)" >> "$GITHUB_STEP_SUMMARY"
+            echo "Database readiness is verified by the runtime /readyz probe." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # An unreachable database must not freeze all code delivery. Record it
+          # loudly, keep the gate advisory, and let /readyz stay fail-closed.
+          if echo "$OUTPUT" | grep -q "MIGRATIONS_STATUS=unreachable"; then
+            echo "::warning title=Database unreachable::Migrations were skipped; /readyz will stay 503 until the connection reference is fixed."
+            echo "### Migrations skipped — database unreachable" >> "$GITHUB_STEP_SUMMARY"
+            echo "Fix DATABASE_POOLER_URL/DATABASE_URL on the runtime; /readyz remains the readiness gate." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "### Migration failure" >> "$GITHUB_STEP_SUMMARY"
+          exit 1
 
   # ─── 3. DOCKER BUILD + PUSH ─────────────────────────────────────
   docker:

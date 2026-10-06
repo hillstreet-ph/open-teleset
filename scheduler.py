@@ -6,7 +6,7 @@
 import asyncio
 import json
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Dict, List, Optional, Callable
 from croniter import croniter
 
@@ -63,7 +63,7 @@ class TaskScheduler:
                 with open(SCHEDULE_FILE, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     self.schedules = data.get("schedules", {})
-            except:
+            except Exception:
                 self.schedules = {}
 
     def _save_schedules(self):
@@ -122,7 +122,7 @@ class TaskScheduler:
         # 验证 cron 表达式
         try:
             croniter(cron)
-        except ValueError as e:
+        except ValueError:
             return False
 
         # 统一账号列表参数（兼容 account_ids 和 accounts）
@@ -192,7 +192,7 @@ class TaskScheduler:
         try:
             cron_obj = croniter(cron, datetime.now())
             return cron_obj.get_next(datetime).isoformat()
-        except:
+        except Exception:
             return ""
 
     def remove_schedule(self, schedule_id: str) -> bool:

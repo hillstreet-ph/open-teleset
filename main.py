@@ -4,11 +4,10 @@ Telegram MCP Server - Complete
 """
 import os
 import sys
-import json
 import asyncio
 import logging
 import nest_asyncio
-from datetime import datetime, timedelta
+from datetime import datetime
 from enum import Enum
 from typing import List, Dict, Optional, Union, Any
 
@@ -16,13 +15,11 @@ from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 from telethon import TelegramClient, functions, types, utils
-from telethon.sessions import StringSession
 from outreach_policy import dispatch_outreach
 from telethon.tl.types import (
     User, Chat, Channel,
     ChatAdminRights, ChatBannedRights,
-    ChannelParticipantsAdmins, ChannelParticipantsKicked,
-    InputChatPhotoEmpty,
+    ChannelParticipantsAdmins,
 )
 
 load_dotenv()
@@ -241,20 +238,20 @@ async def get_chat(chat_id: Union[int, str]) -> str:
             try:
                 participants = await c.get_participants(entity, limit=0)
                 lines.append(f"成员数: {participants.total}")
-            except:
+            except Exception:
                 pass
 
         elif isinstance(entity, Chat):
             lines.extend([
                 f"名称: {entity.title}",
-                f"类型: 普通群组",
+                "类型: 普通群组",
             ])
 
         elif isinstance(entity, User):
             name = f"{entity.first_name or ''} {entity.last_name or ''}".strip()
             lines.extend([
                 f"名称: {name}",
-                f"类型: 用户",
+                "类型: 用户",
             ])
             if entity.username:
                 lines.append(f"用户名: @{entity.username}")
@@ -312,7 +309,7 @@ async def leave_chat(chat_id: Union[int, str]) -> str:
             await c(functions.messages.DeleteChatUserRequest(
                 chat_id=entity.id, user_id=me
             ))
-            return f"✅ 已离开群组"
+            return "✅ 已离开群组"
         else:
             return "无法离开用户聊天"
     except Exception as e:
@@ -513,7 +510,7 @@ async def unpin_message(
         c = await get_client()
         entity = await c.get_entity(chat_id)
         await c.unpin_message(entity, message_id)
-        return f"✅ 已取消置顶"
+        return "✅ 已取消置顶"
     except Exception as e:
         return log_and_format_error("unpin_message", e, chat_id=chat_id)
 
@@ -652,7 +649,7 @@ async def add_contact(
         if result.imported:
             return f"✅ 已添加联系人: {first_name} {last_name}"
         else:
-            return f"联系人未添加，可能已存在"
+            return "联系人未添加，可能已存在"
     except Exception as e:
         return log_and_format_error("add_contact", e, phone=phone)
 
@@ -730,7 +727,7 @@ async def create_group(
             try:
                 user = await c.get_entity(user_id)
                 user_entities.append(user)
-            except Exception as e:
+            except Exception:
                 return f"❌ 找不到用户 {user_id}"
 
         result = await dispatch_outreach(action="member_add", subject=utils.get_peer_id(user_entities[0]), account_id=get_default_account_id(), approval_id=approval_id, send=lambda: c(functions.messages.CreateChatRequest(
@@ -1021,7 +1018,7 @@ async def get_invite_link(chat_id: Union[int, str]) -> str:
         try:
             link = await c.export_chat_invite_link(entity)
             return f"🔗 邀请链接: {link}"
-        except:
+        except Exception:
             return "无法获取邀请链接"
     except Exception as e:
         return log_and_format_error("get_invite_link", e, chat_id=chat_id)
@@ -1040,7 +1037,7 @@ async def get_me() -> str:
 
         name = f"{me.first_name or ''} {me.last_name or ''}".strip()
         lines = [
-            f"📱 你的信息:",
+            "📱 你的信息:",
             f"ID: {me.id}",
             f"名称: {name}",
         ]
@@ -1199,7 +1196,7 @@ async def create_poll(
             file=InputMediaPoll(poll=poll),
         ))
 
-        return f"✅ 投票已创建"
+        return "✅ 投票已创建"
     except Exception as e:
         return f"Outbound operation failed: {type(e).__name__}"
 
@@ -1227,7 +1224,7 @@ async def send_photo(
         c = await get_client()
         entity = await c.get_entity(chat_id)
         await dispatch_outreach(action="personal_send", subject=utils.get_peer_id(entity), account_id=get_default_account_id(), approval_id=approval_id, send=lambda: c.send_file(entity, file_path, caption=caption))
-        return f"✅ 图片已发送"
+        return "✅ 图片已发送"
     except Exception as e:
         return f"Outbound operation failed: {type(e).__name__}"
 
@@ -1251,7 +1248,7 @@ async def send_video(
         c = await get_client()
         entity = await c.get_entity(chat_id)
         await dispatch_outreach(action="personal_send", subject=utils.get_peer_id(entity), account_id=get_default_account_id(), approval_id=approval_id, send=lambda: c.send_file(entity, file_path, caption=caption, supports_streaming=True))
-        return f"✅ 视频已发送"
+        return "✅ 视频已发送"
     except Exception as e:
         return f"Outbound operation failed: {type(e).__name__}"
 
@@ -1275,7 +1272,7 @@ async def send_document(
         c = await get_client()
         entity = await c.get_entity(chat_id)
         await dispatch_outreach(action="personal_send", subject=utils.get_peer_id(entity), account_id=get_default_account_id(), approval_id=approval_id, send=lambda: c.send_file(entity, file_path, caption=caption, force_document=True))
-        return f"✅ 文件已发送"
+        return "✅ 文件已发送"
     except Exception as e:
         return f"Outbound operation failed: {type(e).__name__}"
 
@@ -1297,7 +1294,7 @@ async def send_voice(
         c = await get_client()
         entity = await c.get_entity(chat_id)
         await dispatch_outreach(action="personal_send", subject=utils.get_peer_id(entity), account_id=get_default_account_id(), approval_id=approval_id, send=lambda: c.send_file(entity, file_path, voice_note=True))
-        return f"✅ 语音消息已发送"
+        return "✅ 语音消息已发送"
     except Exception as e:
         return f"Outbound operation failed: {type(e).__name__}"
 
@@ -1323,7 +1320,7 @@ async def send_audio(
         c = await get_client()
         entity = await c.get_entity(chat_id)
         await dispatch_outreach(action="personal_send", subject=utils.get_peer_id(entity), account_id=get_default_account_id(), approval_id=approval_id, send=lambda: c.send_file(entity, file_path, attributes=(title, performer)))
-        return f"✅ 音频已发送"
+        return "✅ 音频已发送"
     except Exception as e:
         return f"Outbound operation failed: {type(e).__name__}"
 
@@ -1401,7 +1398,7 @@ async def set_chat_photo(
         entity = await c.get_entity(chat_id)
 
         await c.edit_photo(entity, photo=photo_path)
-        return f"✅ 头像已设置"
+        return "✅ 头像已设置"
     except Exception as e:
         return log_and_format_error("set_chat_photo", e, chat_id=chat_id)
 
@@ -1428,7 +1425,7 @@ async def send_reaction(
         entity = await c.get_entity(chat_id)
 
         from telethon import functions, types
-        result = await c(functions.messages.SendReactionRequest(
+        await c(functions.messages.SendReactionRequest(
             peer=entity,
             msg_id=message_id,
             reaction=types.ReactionEmoji(emoticon=emoji)
@@ -1518,7 +1515,7 @@ async def send_location(
         from telethon.tl.types import InputGeoPoint
         await dispatch_outreach(action="personal_send", subject=utils.get_peer_id(entity), account_id=get_default_account_id(), approval_id=approval_id, send=lambda: c.send_message(entity, file=InputGeoPoint(latitude, longitude)))
 
-        return f"✅ 位置已发送"
+        return "✅ 位置已发送"
     except Exception as e:
         return f"Outbound operation failed: {type(e).__name__}"
 
@@ -1551,7 +1548,7 @@ async def send_contact(
             last_name=last_name,
             user_id=0
         )))
-        return f"✅ 联系人已发送"
+        return "✅ 联系人已发送"
     except Exception as e:
         return f"Outbound operation failed: {type(e).__name__}"
 
@@ -1606,7 +1603,7 @@ async def edit_channel(
         if about:
             await c.edit_about(entity, about)
 
-        return f"✅ 频道已更新"
+        return "✅ 频道已更新"
     except Exception as e:
         return log_and_format_error("edit_channel", e, chat_id=chat_id)
 
@@ -1632,7 +1629,7 @@ async def get_channel_stats(
         full_channel = result.full_chat
 
         stats = [
-            f"频道统计:",
+            "频道统计:",
             f"成员数: {full_channel.participants_count}",
             f"管理员数: {len(full_channel.admins)}",
             f"被禁用户数: {len(full_channel.kicked)}",
@@ -1662,7 +1659,7 @@ async def archive_chat(
             peer_add=[types.InputDialogPeer(entity)]
         ))
 
-        return f"✅ 聊天已归档"
+        return "✅ 聊天已归档"
     except Exception as e:
         return log_and_format_error("archive_chat", e, chat_id=chat_id)
 
@@ -1678,12 +1675,12 @@ async def unarchive_chat(
     """
     try:
         c = await get_client()
-        entity = await c.get_entity(chat_id)
+        await c.get_entity(chat_id)
 
-        from telethon import functions, types
+        from telethon import functions
         await c(functions.messages.GetDialogFiltersRequest())
 
-        return f"✅ 聊天已取消归档"
+        return "✅ 聊天已取消归档"
     except Exception as e:
         return log_and_format_error("unarchive_chat", e, chat_id=chat_id)
 
@@ -1706,7 +1703,7 @@ async def pin_chat(
         entity = await c.get_entity(chat_id)
 
         await c.pin_dialog(entity)
-        return f"✅ 聊天已置顶"
+        return "✅ 聊天已置顶"
     except Exception as e:
         return log_and_format_error("pin_chat", e, chat_id=chat_id)
 
@@ -1725,7 +1722,7 @@ async def unpin_chat(
         entity = await c.get_entity(chat_id)
 
         await c.unpin_dialog(entity)
-        return f"✅ 聊天已取消置顶"
+        return "✅ 聊天已取消置顶"
     except Exception as e:
         return log_and_format_error("unpin_chat", e, chat_id=chat_id)
 
@@ -1800,7 +1797,7 @@ async def set_chat_title(
         entity = await c.get_entity(chat_id)
 
         await c.edit_title(entity, title)
-        return f"✅ 群组标题已更新"
+        return "✅ 群组标题已更新"
     except Exception as e:
         return log_and_format_error("set_chat_title", e, chat_id=chat_id)
 
@@ -1844,7 +1841,7 @@ async def set_chat_permissions(
         )
 
         await c.edit_default_banned_rights(entity, rights)
-        return f"✅ 群组权限已更新"
+        return "✅ 群组权限已更新"
     except Exception as e:
         return log_and_format_error("set_chat_permissions", e, chat_id=chat_id)
 
@@ -1857,7 +1854,7 @@ async def get_active_sessions() -> str:
         c = await get_client()
 
         # 使用正确的 Telethon API
-        from telethon import functions, types
+        from telethon import functions
 
         result = await c(functions.account.GetAuthorizationsRequest())
 
@@ -1889,7 +1886,7 @@ async def terminate_session(
             hash=session_hash
         ))
 
-        return f"✅ 会话已终止"
+        return "✅ 会话已终止"
     except Exception as e:
         return log_and_format_error("terminate_session", e)
 
@@ -2047,7 +2044,7 @@ async def close_secret_chat(chat_id: int) -> str:
 
         await c(functions.messages.DiscardEncryptedChatRequest(chat_id=chat_id))
 
-        return f"✅ 秘密聊天已关闭"
+        return "✅ 秘密聊天已关闭"
     except Exception as e:
         return log_and_format_error("close_secret_chat", e, chat_id=chat_id)
 
@@ -2071,7 +2068,7 @@ async def set_self_destruct_timer(chat_id: Union[int, str], timer: int = 30) -> 
     """
     try:
         c = await get_client()
-        entity = await c.get_entity(chat_id)
+        await c.get_entity(chat_id)
 
         # 注意：这个功能在普通聊天中有限支持
         # 这里演示设置消息的 TTL（如果支持）
@@ -2102,7 +2099,7 @@ async def set_read_enabled(chat_id: Union[int, str], enabled: bool = True) -> st
     """
     try:
         c = await get_client()
-        entity = await c.get_entity(chat_id)
+        await c.get_entity(chat_id)
 
         # 这个设置通常是全局隐私设置，不是单个聊天
         # 这里演示发送消息时是否请求已读回执
@@ -2140,7 +2137,7 @@ async def create_topic(
         c = await get_client()
         entity = await c.get_entity(chat_id)
 
-        from telethon import functions, types
+        from telethon import functions
         result = await c(functions.channels.CreateForumTopicRequest(
             channel=entity,
             title=title,
@@ -2214,7 +2211,7 @@ async def edit_topic(
         c = await get_client()
         entity = await c.get_entity(chat_id)
 
-        from telethon import functions, types
+        from telethon import functions
         await c(functions.channels.EditForumTopicRequest(
             channel=entity,
             topic_id=topic_id,
@@ -2222,7 +2219,7 @@ async def edit_topic(
             icon_color=icon_color
         ))
 
-        return f"✅ 话题已更新"
+        return "✅ 话题已更新"
     except Exception as e:
         return log_and_format_error("edit_topic", e, chat_id=chat_id)
 
@@ -2254,7 +2251,7 @@ async def delete_topic(chat_id: Union[int, str], topic_id: int) -> str:
             topic_id=topic_id
         ))
 
-        return f"✅ 话题已删除"
+        return "✅ 话题已删除"
     except Exception as e:
         return log_and_format_error("delete_topic", e, chat_id=chat_id)
 
@@ -2282,7 +2279,7 @@ async def edit_chat_about(chat_id: Union[int, str], about: str) -> str:
 
         await c.edit_entity(entity, about=about)
 
-        return f"✅ 群组简介已更新"
+        return "✅ 群组简介已更新"
     except Exception as e:
         return log_and_format_error("edit_chat_about", e, chat_id=chat_id)
 
@@ -2308,7 +2305,7 @@ async def set_slow_mode(chat_id: Union[int, str], seconds: int) -> str:
         c = await get_client()
         entity = await c.get_entity(chat_id)
 
-        from telethon import functions, types
+        from telethon import functions
         await c(functions.channels.ToggleSlowModeRequest(
             channel=entity,
             seconds=seconds
@@ -2387,7 +2384,7 @@ async def edit_admin_rights(
             rank=""
         ))
 
-        return f"✅ 管理员权限已更新"
+        return "✅ 管理员权限已更新"
     except Exception as e:
         return log_and_format_error("edit_admin_rights", e, chat_id=chat_id)
 
@@ -2436,7 +2433,7 @@ async def copy_message(
         else:
             await dispatch_outreach(action="personal_send", subject=utils.get_peer_id(to_entity), account_id=get_default_account_id(), approval_id=approval_id, send=lambda: c.send_message(to_entity, caption or message.message))
 
-        return f"✅ 消息已复制"
+        return "✅ 消息已复制"
     except Exception as e:
         return f"Outbound operation failed: {type(e).__name__}"
 
@@ -2466,7 +2463,7 @@ async def send_sticker(chat_id: Union[int, str], file_path: str,
 
         await dispatch_outreach(action="personal_send", subject=utils.get_peer_id(entity), account_id=get_default_account_id(), approval_id=approval_id, send=lambda: c.send_file(entity, file_path))
 
-        return f"✅ 贴纸已发送"
+        return "✅ 贴纸已发送"
     except Exception as e:
         return f"Outbound operation failed: {type(e).__name__}"
 
@@ -2502,7 +2499,7 @@ async def send_gif(chat_id: Union[int, str], file_path: str, caption: str = "",
             attributes=[types.DocumentAttributeAnimated()]
         ))
 
-        return f"✅ GIF已发送"
+        return "✅ GIF已发送"
     except Exception as e:
         return f"Outbound operation failed: {type(e).__name__}"
 
@@ -2553,7 +2550,7 @@ async def send_venue(
 
         await dispatch_outreach(action="personal_send", subject=utils.get_peer_id(entity), account_id=get_default_account_id(), approval_id=approval_id, send=lambda: c.send_file(entity, venue))
 
-        return f"✅ 地点信息已发送"
+        return "✅ 地点信息已发送"
     except Exception as e:
         return f"Outbound operation failed: {type(e).__name__}"
 
@@ -2581,7 +2578,7 @@ async def send_game(chat_id: Union[int, str], bot_id: Union[int, str], game_shor
     try:
         c = await get_client()
         entity = await c.get_entity(chat_id)
-        bot = await c.get_entity(bot_id)
+        await c.get_entity(bot_id)
 
         from telethon.tl.types import InputMediaGame
 
@@ -2595,7 +2592,7 @@ async def send_game(chat_id: Union[int, str], bot_id: Union[int, str], game_shor
 
         await dispatch_outreach(action="personal_send", subject=utils.get_peer_id(entity), account_id=get_default_account_id(), approval_id=approval_id, send=lambda: c.send_file(entity, game))
 
-        return f"✅ 游戏已发送"
+        return "✅ 游戏已发送"
     except Exception as e:
         return f"Outbound operation failed: {type(e).__name__}"
 
@@ -2826,7 +2823,7 @@ async def get_privacy() -> str:
                     elif isinstance(rule, types.PrivacyValueAllowUsers):
                         rules.append(f"指定用户: {rule.users}")
                 settings.append(f"{type(key).__name__}: {', '.join(rules)}")
-            except:
+            except Exception:
                 pass
 
         return "🔒 隐私设置:\n" + "\n".join(settings)
@@ -2937,7 +2934,7 @@ async def set_bio(bio: str) -> str:
 
         await c(functions.account.UpdateProfileRequest(about=bio))
 
-        return f"✅ 个人简介已更新"
+        return "✅ 个人简介已更新"
     except Exception as e:
         return log_and_format_error("set_bio", e)
 
@@ -3265,7 +3262,7 @@ async def get_nearby_chats(latitude: float, longitude: float, radius: int = 100)
             if isinstance(peer, types.PeerLocated):
                 chats.append(f"  - 位置: {peer.peer}")
 
-        return f"📍 附近的人/群组:\n" + "\n".join(chats) if chats else "未找到结果"
+        return "📍 附近的人/群组:\n" + "\n".join(chats) if chats else "未找到结果"
     except Exception as e:
         return log_and_format_error("get_nearby_chats", e)
 
@@ -3319,9 +3316,9 @@ async def join_channel_by_invite(link: str) -> str:
         c = await get_client()
 
         hash_value = link.split('+')[-1] if '+' in link else link.split('/')[-1]
-        result = await c(functions.messages.ImportChatInviteRequest(hash=hash_value))
+        await c(functions.messages.ImportChatInviteRequest(hash=hash_value))
 
-        return f"✅ 已通过邀请链接加入"
+        return "✅ 已通过邀请链接加入"
     except Exception as e:
         return log_and_format_error("join_channel_by_invite", e)
 
@@ -3385,7 +3382,7 @@ async def delete_channel(channel_id: Union[int, str]) -> str:
 
         await c.delete_entity(entity)
 
-        return f"✅ 频道/群组已删除"
+        return "✅ 频道/群组已删除"
     except Exception as e:
         return log_and_format_error("delete_channel", e, channel_id=channel_id)
 
@@ -3485,7 +3482,7 @@ async def save_file(file_path: str) -> str:
 
         await c.send_file(saved_peer, file_path)
 
-        return f"✅ 文件已保存到收藏"
+        return "✅ 文件已保存到收藏"
     except Exception as e:
         return log_and_format_error("save_file", e)
 
@@ -3513,7 +3510,7 @@ async def profile_photo(file_path: str) -> str:
             file=await c.upload_file(file_path)
         ))
 
-        return f"✅ 个人头像已更新"
+        return "✅ 个人头像已更新"
     except Exception as e:
         return log_and_format_error("profile_photo", e)
 
@@ -3543,7 +3540,7 @@ async def delete_chat_photo(chat_id: Union[int, str]) -> str:
             photo=types.InputChatPhotoEmpty()
         ))
 
-        return f"✅ 群组头像已删除"
+        return "✅ 群组头像已删除"
     except Exception as e:
         return log_and_format_error("delete_chat_photo", e, chat_id=chat_id)
 
@@ -3600,12 +3597,12 @@ async def start_call(user_id: Union[int, str], video: bool = False) -> str:
     """
     try:
         c = await get_client()
-        user = await c.get_entity(user_id)
+        await c.get_entity(user_id)
 
-        from telethon import functions, types
+        from telethon import types
 
         # 创建通话请求
-        call = types.InputPhoneCall(
+        types.InputPhoneCall(
             id=0,
             access_hash=0
         )
@@ -3635,12 +3632,11 @@ async def accept_call(call_id: int) -> str:
         接听结果信息
     """
     try:
-        c = await get_client()
+        await get_client()
 
-        from telethon import functions
 
         # 通话接受需要额外的协议处理
-        return f"⚠️ 正在接听通话（注：完整通话功能需要额外处理）"
+        return "⚠️ 正在接听通话（注：完整通话功能需要额外处理）"
     except Exception as e:
         return log_and_format_error("accept_call", e)
 
@@ -3662,11 +3658,10 @@ async def end_call(call_id: int) -> str:
         挂断结果信息
     """
     try:
-        c = await get_client()
+        await get_client()
 
-        from telethon import functions
 
-        return f"✅ 通话已挂断（注：完整通话功能需要额外处理）"
+        return "✅ 通话已挂断（注：完整通话功能需要额外处理）"
     except Exception as e:
         return log_and_format_error("end_call", e)
 
@@ -3688,11 +3683,10 @@ async def discard_call(call_id: int) -> str:
         拒绝结果信息
     """
     try:
-        c = await get_client()
+        await get_client()
 
-        from telethon import functions
 
-        return f"✅ 已拒绝通话（注：完整通话功能需要额外处理）"
+        return "✅ 已拒绝通话（注：完整通话功能需要额外处理）"
     except Exception as e:
         return log_and_format_error("discard_call", e)
 
@@ -3787,7 +3781,7 @@ async def get_folders() -> str:
         文件夹列表
     """
     try:
-        c = await get_client()
+        await get_client()
 
         # 获取文件夹需要特殊的 API 调用
         return "📁 文件夹列表:\n  （注：此功能在 Telethon 中支持有限）"

@@ -3,7 +3,6 @@
 import asyncio
 import sys
 import main
-from typing import Dict, List, Tuple
 
 
 async def test():
@@ -72,7 +71,7 @@ async def test():
         print(f"\n  📂 {category}:")
         for tool_name in tool_names:
             try:
-                tool = tm.get_tool(tool_name)
+                tm.get_tool(tool_name)
                 print(f"    ✅ {tool_name}")
             except Exception as e:
                 print(f"    ❌ {tool_name}: {e}")

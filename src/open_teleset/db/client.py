@@ -26,14 +26,25 @@ async def init_pool() -> asyncpg.Pool:
     global _pool
     if _pool is not None:
         return _pool
-    dsn = os.getenv("DATABASE_POOLER_URL") or os.environ["DATABASE_URL"]
-    _pool = await asyncpg.create_pool(
-        dsn,
-        min_size=1,
-        max_size=10,
-        command_timeout=30,
-        statement_cache_size=0,
-    )
+    dsn = (os.getenv("DATABASE_POOLER_URL") or os.getenv("DATABASE_URL") or "").strip()
+    if not dsn:
+        raise RuntimeError(
+            "Database not configured: set DATABASE_POOLER_URL or DATABASE_URL. "
+            "Readiness stays fail-closed until a working connection reference exists."
+        )
+    try:
+        _pool = await asyncpg.create_pool(
+            dsn,
+            min_size=1,
+            max_size=10,
+            command_timeout=30,
+            statement_cache_size=0,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"Database unreachable ({type(exc).__name__}): verify the connection "
+            "reference targets the intended project and that the runtime can reach it."
+        ) from exc
     return _pool
 
 

@@ -66,3 +66,35 @@ This repo uses the following coordination labels:
 - `agent:blocked` — blocked on external dependency or human action
 - `auto-merge` — approved for automatic merge when checks pass
 - `auto-deploy` — approved for automatic deployment after merge
+
+## Repository Notes for Agents
+
+- **Two source trees.** Root modules (`dashboard.py`, `account_manager.py`,
+  `main.py`, `scheduler.py`, …) are the dashboard/MCP runtime. `src/open_teleset/`
+  is the package used by `requirements-prod.txt` tooling (`db/client.py`,
+  `crypto/`, `security.py`, `workers/`). `dashboard.py` imports the package via
+  `from src.open_teleset.db.client import init_pool` and the root modules directly.
+- **Commands.**
+  ```bash
+  pip install -r requirements-prod.txt pytest pytest-asyncio ruff
+  ruff check .                                   # must be clean; CI runs src+scripts
+  export SESSION_ENCRYPTION_KEY="$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
+  PYTHONPATH=src pytest tests/ -q                # 100+ tests
+  node --test tests/test_edge_functions.mjs      # Worker/edge boundaries
+  ```
+- **Deploy path.** `.github/workflows/deploy.yml` runs test → container-test →
+  migrate → docker → worker → pages → edge. Migrations are advisory for the
+  shared canonical Supabase project; `/readyz` is the real database gate. See
+  `docs/DEPLOYMENT_RUNBOOK.md`.
+- **Fail-closed rules.** Never weaken `/readyz` (returns `503` +
+  `reason=database_not_configured|database_unreachable` until `SELECT 1` works).
+  Never bypass `scripts/apply_migrations.py` guards that protect the shared
+  `profiles`/auth triggers.
+- **Provider secrets.** `ZEABUR_TOKEN`, `CLOUDFLARE_*`, `SUPABASE_*`,
+  `DATABASE_*`, `DOCKERHUB_*` are not available in the agent sandbox. Provider
+  console actions are tracked in issue #21 and are human-owned.
+- **Frontend base URL.** `static/config.js` sets `apiBase` to
+  `https://open-teleset.site` (same-origin, Worker-proxied). Do not hardcode
+  `*.workers.dev` hosts; that host was unresolvable and broke all browser API
+  calls.
+

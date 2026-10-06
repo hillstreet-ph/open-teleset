@@ -40,7 +40,7 @@ async def main():
 
     if await client.is_user_authorized():
         me = await client.get_me()
-        print(f"\n✅ 登录成功!")
+        print("\n✅ 登录成功!")
         print(f"   姓名: {me.first_name} {me.last_name or ''}")
         print(f"   用户名: @{me.username if me.username else 'N/A'}")
         print(f"   ID: {me.id}")
