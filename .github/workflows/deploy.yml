@@ -36,8 +36,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
-      - name: Edge boundary tests
-        run: node --test tests/test_edge_functions.mjs
+      - name: Edge and dashboard auth tests
+        run: node --test tests/*.mjs
       - name: Python tests
         run: |
           export SESSION_ENCRYPTION_KEY="$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
