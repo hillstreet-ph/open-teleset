@@ -3,7 +3,6 @@
 Telegram QR Code Login with Web Interface
 使用 Telethon 的 qr_login + Flask Web 界面
 """
-import os
 import asyncio
 import webbrowser
 import threading

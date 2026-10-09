@@ -4,7 +4,7 @@
 支持批量发送消息、批量操作账号等
 """
 import asyncio
-from typing import List, Dict, Optional
+from typing import List, Dict
 from datetime import datetime
 
 # 导入管理模块

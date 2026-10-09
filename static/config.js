@@ -5,7 +5,10 @@ window.OPEN_TELESET_CONFIG = {
   supabaseUrl: "https://hoseohvgoiarxluxqwqv.supabase.co",
   // Replaced at deploy time from the GitHub production secret.
   supabaseAnonKey: "__SUPABASE_PUBLISHABLE_KEY__",
-  apiBase: "https://open-teleset.hillstreet-ph.workers.dev",
+  // Same-origin: the dashboard is served from open-teleset.site (Pages + Worker),
+  // which proxies /api/* and /health to the backend. A hardcoded workers.dev host
+  // was unresolvable and broke every API call from the browser.
+  apiBase: "https://open-teleset.site",
   pagesOrigin: "https://open-teleset.site"
 };
 

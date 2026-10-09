@@ -3,10 +3,8 @@
 账号管理 MCP 工具
 供 AI 调用的管理工具接口
 """
-from fastmcp import Context
 from fastmcp.annotations import ToolAnnotations
 import json
-from typing import Optional
 
 # 导入管理模块
 from account_manager import account_manager
@@ -771,5 +769,4 @@ mcp_server = create_mcp_server()
 
 if __name__ == "__main__":
     # 运行MCP服务器
-    import asyncio
     mcp_server.run()

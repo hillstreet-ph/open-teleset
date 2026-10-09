@@ -2,21 +2,15 @@
 Telegram Web Login Server
 使用 Playwright 自动化 Telegram Web 登录，支持扫码登录
 """
-import os
 import asyncio
-import json
 import webbrowser
-from pathlib import Path
 from typing import Optional, Dict, Any
-from flask import Flask, render_template_string, request, jsonify, send_from_directory
+from flask import Flask, render_template_string, jsonify
 from flask_cors import CORS
-import threading
 from playwright.async_api import async_playwright, Browser
-import qrcode
 from io import BytesIO
 import base64
 
-from session_manager import session_manager, API_ID, API_HASH, SESSION_FILE
 
 app = Flask(__name__)
 CORS(app)
@@ -461,11 +455,9 @@ class TelegramWebLogin:
             # 但这里我们尝试从 cookies 中获取一些信息
 
             cookies = await self.context.cookies()
-            tg_auth = None
 
             for cookie in cookies:
                 if 'tg' in cookie.get('name', '').lower() or 'auth' in cookie.get('name', '').lower():
-                    tg_auth = cookie.get('value')
                     break
 
             # 由于 Telegram Web 和 MTProto 使用不同的认证方式

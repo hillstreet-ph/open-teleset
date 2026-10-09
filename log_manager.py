@@ -6,8 +6,7 @@
 import json
 import os
 from datetime import datetime
-from typing import List, Dict, Optional
-from collections import deque
+from typing import List, Dict
 
 
 ACCOUNTS_DIR = "./accounts"
@@ -28,7 +27,7 @@ class LogManager:
             try:
                 with open(LOG_FILE, 'r', encoding='utf-8') as f:
                     self.logs = json.load(f)
-            except:
+            except Exception:
                 self.logs = []
 
     def _save_logs(self):

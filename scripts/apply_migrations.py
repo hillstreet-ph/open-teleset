@@ -8,7 +8,7 @@ import os
 import ssl
 import sys
 from pathlib import Path
-from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
+from urllib.parse import urlparse
 
 import asyncpg
 from dotenv import load_dotenv
@@ -69,35 +69,63 @@ def _ensure_sslmode(dsn: str) -> str:
     return f"{dsn}{sep}sslmode=require"
 
 
+def _derive_pooler(dsn: str) -> str | None:
+    """Map a Supabase direct DSN to its IPv4 pooler equivalent.
+
+    Direct `db.<ref>.supabase.co` hosts are frequently IPv6-only or absent from
+    CI DNS. The Supavisor pooler host (`aws-0-<region>.pooler.supabase.com`)
+    resolves everywhere and is the supported connection path for CI/runtime.
+    """
+    try:
+        parsed = urlparse(dsn)
+    except ValueError:
+        return None
+    host = parsed.hostname or ""
+    if not (host.startswith("db.") and host.endswith(".supabase.co")):
+        return None
+    ref = host[len("db.") : -len(".supabase.co")]
+    region = os.getenv("SUPABASE_REGION", "ap-southeast-1")
+    user = parsed.username or "postgres"
+    pool_user = user if "." in user else f"postgres.{ref}"
+    password = parsed.password or ""
+    auth = f"{pool_user}:{password}@" if password else f"{pool_user}@"
+    pool_host = f"aws-0-{region}.pooler.supabase.com"
+    return f"postgresql://{auth}{pool_host}:6543{parsed.path or '/postgres'}?sslmode=require"
+
+
+def _host_of(dsn: str) -> str:
+    try:
+        return (urlparse(dsn).hostname or "").lower()
+    except ValueError:
+        return ""
+
+
+def _is_pooler_host(host: str) -> bool:
+    return host == "pooler.supabase.com" or host.endswith(".pooler.supabase.com")
+
+
 def _candidate_dsns() -> list[str]:
-    """Prefer transaction/session pooler (IPv4) over direct db host (often IPv6-only)."""
-    out: list[str] = []
+    """Pooler first, then direct — every resolvable Supabase variant is offered."""
+    poolers: list[str] = []
+    directs: list[str] = []
     for key in ("DATABASE_POOLER_URL", "DATABASE_URL"):
-        v = (os.getenv(key) or "").strip()
-        if v and "YOUR_PASSWORD" not in v:
-            out.append(_ensure_sslmode(v))
-    # Derive Supabase pooler host from project ref if only direct URL given
-    direct = (os.getenv("DATABASE_URL") or "").strip()
-    if direct and "supabase.co" in direct and "pooler.supabase.com" not in direct:
-        try:
-            u = urlparse(direct)
-            # postgres:pass@db.REF.supabase.co -> postgres.REF:pass@aws-0-REGION.pooler.supabase.com
-            host = u.hostname or ""
-            if host.startswith("db.") and host.endswith(".supabase.co"):
-                ref = host[len("db.") : -len(".supabase.co")]
-                region = os.getenv("SUPABASE_REGION", "ap-southeast-1")
-                user = u.username or "postgres"
-                # pooler user form: postgres.ref
-                pool_user = f"postgres.{ref}" if "." not in user else user
-                password = u.password or ""
-                pool_host = f"aws-0-{region}.pooler.supabase.com"
-                auth = f"{pool_user}:{password}@" if password else f"{pool_user}@"
-                derived = f"postgresql://{auth}{pool_host}:6543{u.path or '/postgres'}?sslmode=require"
-                if derived not in out:
-                    out.insert(0, derived)
-        except Exception as e:
-            print(f"pooler derive skipped: {e}")
-    return out
+        value = (os.getenv(key) or "").strip()
+        if not value or "YOUR_PASSWORD" in value:
+            continue
+        normalized = _ensure_sslmode(value)
+        if _is_pooler_host(_host_of(normalized)):
+            poolers.append(normalized)
+            continue
+        directs.append(normalized)
+        derived = _derive_pooler(normalized)
+        if derived:
+            poolers.append(derived)
+
+    ordered: list[str] = []
+    for candidate in [*poolers, *directs]:
+        if candidate not in ordered:
+            ordered.append(candidate)
+    return ordered
 
 
 async def _connect(dsns: list[str]):
@@ -105,32 +133,50 @@ async def _connect(dsns: list[str]):
     ctx = ssl.create_default_context()
     for dsn in dsns:
         try:
-            print(f"Connecting (host hidden)...")
+            print("Connecting (host hidden)...")
             conn = await asyncpg.connect(dsn, ssl=ctx, statement_cache_size=0, timeout=60)
             return conn
         except Exception as e:
             last = e
-            print(f"  connect failed: {type(e).__name__}: {e}")
+            # Only the exception class is safe to log; messages can embed hosts.
+            print(f"  connect failed: {type(e).__name__}")
     raise last or RuntimeError("No DATABASE_URL configured")
 
 
 async def main() -> int:
     dsns = _candidate_dsns()
     if not dsns:
-        print("DATABASE_URL not configured — abort", file=sys.stderr)
+        print("MIGRATIONS_STATUS=not_configured", file=sys.stderr)
+        print(
+            "DATABASE_URL / DATABASE_POOLER_URL not configured — no legacy "
+            "migrations to apply. Runtime readiness is verified separately by /readyz.",
+            file=sys.stderr,
+        )
         return 1
 
     migrations_dir = ROOT / "migrations"
     files = sorted(migrations_dir.glob("*.sql"))
     if not files:
+        print("MIGRATIONS_STATUS=no_files")
         print("No migration files found")
         return 0
 
-    conn = await _connect(dsns)
+    try:
+        conn = await _connect(dsns)
+    except Exception as exc:
+        print("MIGRATIONS_STATUS=unreachable", file=sys.stderr)
+        print(
+            f"Could not reach the configured database ({type(exc).__name__}): "
+            "verify the connection reference, project ref and network egress. "
+            "No migration or ledger write was performed.",
+            file=sys.stderr,
+        )
+        return 1
     try:
         try:
             await _validate_legacy_target(conn, dsns)
         except MigrationSafetyError as exc:
+            print("MIGRATIONS_STATUS=not_applicable", file=sys.stderr)
             print(str(exc), file=sys.stderr)
             return 1
         await conn.execute(
@@ -160,6 +206,7 @@ async def main() -> int:
             print(f"  ok   {name}")
     finally:
         await conn.close()
+    print("MIGRATIONS_STATUS=applied")
     print("Migrations complete")
     return 0
 

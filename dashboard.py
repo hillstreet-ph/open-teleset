@@ -145,8 +145,13 @@ async def health_check():
 
 @app.get("/readyz")
 async def readiness_check():
-    """Readiness probe — checks critical dependencies are reachable."""
+    """Readiness probe — checks critical dependencies are reachable.
+
+    Stays fail-closed (503) with a machine-readable reason so operators can act
+    without leaking credentials or provider details.
+    """
     checks: dict = {"service": True}
+    reason: Optional[str] = None
     try:
         from src.open_teleset.db.client import init_pool
         pool = await init_pool()
@@ -155,10 +160,17 @@ async def readiness_check():
         checks["database"] = True
     except Exception:
         checks["database"] = False
+        if not (os.getenv("DATABASE_POOLER_URL") or os.getenv("DATABASE_URL")):
+            reason = "database_not_configured"
+        else:
+            reason = "database_unreachable"
 
     all_ok = all(checks.values())
+    payload: dict = {"status": "ok" if all_ok else "degraded", "checks": checks}
+    if reason:
+        payload["reason"] = reason
     return JSONResponse(
-        content={"status": "ok" if all_ok else "degraded", "checks": checks},
+        content=payload,
         status_code=200 if all_ok else 503,
     )
 
@@ -703,7 +715,6 @@ async def delete_template(template_id: str):
 @app.get("/api/templates/{template_id}/preview")
 async def preview_template(template_id: str, vars: Optional[str] = None):
     """预览模板渲染结果"""
-    import json
     try:
         template_vars = json.loads(vars) if vars else {}
         rendered = template_manager.render_template(template_id, **template_vars)
@@ -761,7 +772,6 @@ async def add_schedule(request: dict):
     if execute_time and not cron:
         hour = execute_time.get("hour", 0)
         minute = execute_time.get("minute", 0)
-        second = execute_time.get("second", 0)
         day = execute_time.get("day", "*")
         month = execute_time.get("month", "*")
         
@@ -966,7 +976,7 @@ class ConnectionManager:
         for connection in self.active_connections:
             try:
                 await connection.send_json(message)
-            except:
+            except Exception:
                 pass
 
 
@@ -1010,7 +1020,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     await asyncio.sleep(5)
 
         # 启动广播任务
-        broadcast_task = asyncio.create_task(broadcast_status())
+        asyncio.create_task(broadcast_status())
 
         # 处理客户端消息
         while True:
