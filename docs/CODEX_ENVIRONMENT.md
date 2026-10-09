@@ -3,10 +3,11 @@
 ## Repository and commands
 
 - Repository: hillstreet-ph/open-teleset; default branch: main.
-- Clone the entire repository. The install script locates the root from its own path; application directory: ..
-- Runtime prerequisites: Python 3.12 as CI.
+- Clone the entire repository. The install script locates the root from its own path; application directory: `.` (the cloned repository root).
+- Runtime prerequisites: Python 3.12 and Node.js 24 as CI.
 - Install command: `bash scripts/codex-setup.sh install`.
 - Validation command: `bash scripts/codex-setup.sh check`.
+- Check mode runs Python tests, Ruff, and all Node edge/dashboard suites; a missing Node runtime fails validation.
 - Configure these commands on a branch containing this file, or after its PR merges. A file in GitHub alone does not configure ChatGPT's environment settings.
 
 The install command never deploys, migrates databases, starts a dispatcher, logs into Telegram or writes application secrets. Run in an isolated development environment. Review package lifecycle scripts before introducing new dependencies.

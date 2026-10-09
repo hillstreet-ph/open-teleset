@@ -16,4 +16,5 @@ else
   SESSION_ENCRYPTION_KEY="$(.venv/bin/python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')" \
     PYTHONPATH=src .venv/bin/python -m pytest tests/ -q --tb=short
   .venv/bin/ruff check src scripts
+  node --test tests/*.mjs
 fi
