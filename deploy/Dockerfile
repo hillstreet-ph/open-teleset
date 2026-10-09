@@ -2,7 +2,9 @@
 # Build: docker build -f deploy/Dockerfile -t hillstreet/open-teleset:latest .
 # Run:   docker run -p 8080:8080 --env-file .env hillstreet/open-teleset:latest
 
-FROM python:3.12-slim AS base
+# Docker publishes the same Official Images on ECR Public. CI's anonymous
+# Docker Hub pulls can be rate-limited before the build even starts.
+FROM public.ecr.aws/docker/library/python:3.12-slim AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
