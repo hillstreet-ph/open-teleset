@@ -36,8 +36,25 @@ test('legacy edge scheduler cannot mutate or claim execution',async()=>{
 });
 function worker(fetcher=()=>{throw Error('unexpected network')}) {
  const code=readFileSync('deploy/cloudflare-worker.js','utf8').replace('export default', 'globalThis.worker =');
- const context={Request,Response,URL,fetch:fetcher};vm.runInNewContext(code,context);return context.worker;
+ const context={Request,Response,URL,AbortController,setTimeout,clearTimeout,fetch:fetcher};vm.runInNewContext(code,context);return context.worker;
 }
+test('Worker health uses compatible cache bypass options and verifies fresh origin health',async()=>{
+ let calls=0;
+ const h=worker(async(url,init)=>{
+  calls++;
+  assert.equal(url.pathname,'/health');
+  assert.ok(url.searchParams.has('probe'));
+  assert.equal(init.cache,'no-store');
+  // workerd rejects cacheTtl:0 combined with cache:no-store.
+  assert.equal(init.cf,undefined);
+  assert.ok(init.signal instanceof AbortSignal);
+  return Response.json({status:'ok',ts:new Date().toISOString()});
+ });
+ const response=await h.fetch(new Request('https://edge.example/health'),{ORIGIN:'https://runtime.example'});
+ assert.equal(response.status,200);
+ assert.equal((await response.json()).status,'ok');
+ assert.equal(calls,1);
+});
 test('Worker CORS permits known dashboard origins and rejects arbitrary origins',async()=>{
  for(const origin of ['https://open-teleset.site','https://www.open-teleset.site','https://app.open-teleset.site','https://open-teleset-dashboard.pages.dev','https://untrusted.example']) {
   const r=await worker().fetch(new Request('https://edge.example/health',{method:'OPTIONS',headers:{Origin:origin}}),{});
