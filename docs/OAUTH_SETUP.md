@@ -59,7 +59,7 @@ Successful OAuth alone does not grant administrator access.
 | GitHub OAuth | Dedicated app `3918956`; no repository scopes | The built-in GitHub provider has one project-wide credential configuration |
 | Dashboard | `open-teleset.site/dashboard`, explicit redirect on every OAuth request | Preserve Open-TGate's existing Site URL and redirect entries |
 | Authorization | `operations_shared.project_access.project_key = 'open-teleset'`, plus approved owner/admin role | Existing Supabase users and UUIDs remain canonical |
-| Application data | `open_teleset` schema | Preserve shared `profiles`, Auth triggers and other applications' schemas |
+| Application data | Dashboard state in the persistent `/app/accounts` volume; `open_teleset` schema for database-backed components | Preserve encrypted sessions, the session encryption key, shared `profiles`, Auth triggers and other applications' schemas |
 | Deployment | Open-Teleset repository, production environment, Pages project, Worker and verified Zeabur service | Separate service/credential scopes; no new paid project implied |
 
 Separate external OAuth registrations do **not** create separate Supabase Auth
