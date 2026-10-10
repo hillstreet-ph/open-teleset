@@ -349,6 +349,14 @@
         @keyframes spin { to { transform: rotate(360deg); } }
         .password-reset-link { display: block; text-align: right; font-size: 0.8rem; color: #3b82f6; cursor: pointer; margin-top: 0.25rem; }
         .password-reset-link:hover { text-decoration: underline; }
+        @media (max-width: 760px) {
+            .header { padding: 16px; flex-direction: column; align-items: flex-start; gap: 12px; }
+            .header-stats { flex-wrap: wrap; gap: 10px; }
+            .container { padding: 12px; }
+            .card { padding: 16px; max-width: 100%; overflow-x: auto; }
+            .tab { padding: 10px 12px; }
+            table { display: block; overflow-x: auto; }
+        }
     </style>
 </head>
 <body>
@@ -522,7 +530,7 @@
                                     </a>
                                     <span v-else>-</span>
                                 </td>
-                                <td>{{ acc.user_id || '-' }}</td>
+                                <td>{{ acc.phone || '-' }}</td>
                                 <td>
                                     <span class="badge" :class="acc.is_premium ? 'badge-premium' : 'badge-normal'">
                                         {{ acc.is_premium ? '⭐ Premium' : 'Standard' }}
@@ -532,10 +540,12 @@
                                     <span class="badge" :class="acc.status === 'online' ? 'badge-success' : 'badge-danger'">
                                         {{ acc.status === 'online' ? 'Online' : 'Offline' }}
                                     </span>
+                                    <small v-if="acc.connection_error" style="display:block;max-width:240px;margin-top:6px;color:#f5b7b1">{{ acc.connection_error }}</small>
                                 </td>
                                 <td>{{ formatTime(acc.last_online) }}</td>
                                 <td>{{ acc.use_count || 0 }}</td>
                                 <td>
+                                    <button class="btn btn-sm btn-outline" :disabled="checkingAccounts[acc.account_id]" @click="checkAccountConnection(acc.account_id)">{{ checkingAccounts[acc.account_id] ? 'Checking...' : 'Check connection' }}</button>
                                     <button class="btn btn-sm btn-outline" @click="exportSession(acc.account_id)">Export</button>
                                     <button class="btn btn-sm btn-danger" @click="deleteAccount(acc.account_id)">Delete</button>
                                 </td>
@@ -690,15 +700,15 @@
                     </div>
                     <div class="stat-card">
                         <div class="stat-value" style="-webkit-text-fill-color: #27ae60;">{{ health.online_accounts || 0 }}</div>
-                        <div class="stat-label">OnlineAccount</div>
+                        <div class="stat-label">Online accounts</div>
                     </div>
                     <div class="stat-card">
                         <div class="stat-value" style="-webkit-text-fill-color: #e74c3c;">{{ health.high_risk || 0 }}</div>
-                        <div class="stat-label">HighRisk</div>
+                        <div class="stat-label">High risk</div>
                     </div>
                     <div class="stat-card">
                         <div class="stat-value" style="-webkit-text-fill-color: #f39c12;">{{ health.medium_risk || 0 }}</div>
-                        <div class="stat-label">MedRisk</div>
+                        <div class="stat-label">Medium risk</div>
                     </div>
                 </div>
 
@@ -713,7 +723,7 @@
                     </div>
                     <table v-else>
                         <thead>
-                            <tr><th>Account ID</th><th>Risk level</th><th>SequentialFailed</th><th>Status</th></tr>
+                            <tr><th>Account ID</th><th>Risk level</th><th>Consecutive failures</th><th>Status</th></tr>
                         </thead>
                         <tbody>
                             <tr v-for="id in riskAccounts" :key="id">
@@ -742,11 +752,11 @@
                     </div>
                     <div class="stat-card">
                         <div class="stat-value">{{ stats.today_uses || 0 }}</div>
-                        <div class="stat-label">TodayUse</div>
+                        <div class="stat-label">Usage today</div>
                     </div>
                     <div class="stat-card">
                         <div class="stat-value">{{ stats.today_messages || 0 }}</div>
-                        <div class="stat-label">TodayMessages</div>
+                        <div class="stat-label">Messages today</div>
                     </div>
                 </div>
                 <div class="card">
@@ -845,14 +855,14 @@
                 <div class="card">
                     <div class="card-header">
                         <h3>📅 Schedule</h3>
-                        <button class="btn btn-primary" @click="openScheduleModal">➕ AddSchedule</button>
+                        <button class="btn btn-primary" @click="openScheduleModal">➕ Add schedule</button>
                     </div>
-                    <p style="color: #999; margin-bottom: 20px;">View and manage scheduled AI tasks</p>
+                    <p style="color: #999; margin-bottom: 20px;">View and manage scheduled tasks</p>
                     
                     <div v-if="!schedules.length" class="empty-state">
                         <div class="icon">📅</div>
                         <p>No schedules</p>
-                        <p style="font-size: 13px; margin-top: 10px;">TellAI"Send greeting every day at 9:00"to create a scheduled task</p>
+                        <p style="font-size: 13px; margin-top: 10px;">Use Add schedule to choose a message, account, recipients, and run time.</p>
                     </div>
                     
                     <div v-else>
@@ -887,11 +897,11 @@
                 <div class="stats-grid">
                     <div class="stat-card">
                         <div class="stat-value">{{ schedules.length }}</div>
-                        <div class="stat-label">Total Schedule</div>
+                        <div class="stat-label">Total schedules</div>
                     </div>
                     <div class="stat-card">
                         <div class="stat-value" style="-webkit-text-fill-color: #27ae60;">{{ schedules.filter(s => s.enabled).length }}</div>
-                        <div class="stat-label">EnableMed</div>
+                        <div class="stat-label">Enabled</div>
                     </div>
                     <div class="stat-card">
                         <div class="stat-value" style="-webkit-text-fill-color: #f39c12;">{{ todayExecutions }}</div>
@@ -1689,6 +1699,7 @@
                     // App state
                     tab: 'accounts',
                     accounts: [],
+                    checkingAccounts: {},
                     globalProxy: null,
                     proxies: [],
                     health: {},
@@ -2804,6 +2815,21 @@
                 },
 
                 // Account
+                async checkAccountConnection(id) {
+                    if (this.checkingAccounts[id]) return;
+                    this.checkingAccounts[id] = true;
+                    try {
+                        const {data} = await _api.post(`/api/health/check/${encodeURIComponent(id)}`, {}, {timeout: 65000});
+                        const healthy = data.result?.status === 'healthy';
+                        this.showToast(healthy ? 'Telegram account connected.' : (data.result?.error || 'Connection unavailable.'), !healthy);
+                        await this.loadAccounts();
+                        await this.loadHealth();
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Connection check failed. Try again.', true);
+                    } finally {
+                        this.checkingAccounts[id] = false;
+                    }
+                },
                 async deleteAccount(id) {
                     if (!confirm(`Delete account? ${id}?`)) return
                     try {
@@ -3193,7 +3219,10 @@
                 formatTime(t) {
                     if (!t || t === 'N/A') return '-'
                     try {
-                        const d = new Date(t)
+                        // Legacy runtime timestamps were UTC without an offset.
+                        const value = String(t);
+                        const d = new Date(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?$/.test(value) ? value + 'Z' : value)
+                        if (!Number.isFinite(d.getTime())) return '-'
                         const diff = (Date.now() - d) / 1000
                         if (diff < 60) return 'Just now'
                         if (diff < 3600) return Math.floor(diff / 60) + ' minutes ago'
