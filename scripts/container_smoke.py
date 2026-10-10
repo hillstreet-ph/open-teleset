@@ -25,7 +25,7 @@ for _ in range(30):
 else:
     raise SystemExit("Runtime failed its liveness probe")
 
-for path in ("/api/accounts", "/api/accounts/test/export-session", "/api/schedules"):
+for path in ("/api/accounts", "/api/accounts/test/export-session", "/api/schedules", "/mcp"):
     assert status(path)[0] == 401, f"Anonymous access not denied: {path}"
 
 assert status("/readyz")[0] == 503, "Unconfigured dependencies must not report readiness"

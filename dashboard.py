@@ -29,6 +29,7 @@ from batch_operations import batch_operations
 from telegram_ops import telegram_ops_router
 from open_teleset.security import SupabaseAuthMiddleware
 from open_teleset.observability import initialize_error_monitoring
+from open_teleset.read_only_mcp import create_read_only_mcp
 
 
 # ============ FastAPI 应用 ============
@@ -63,7 +64,10 @@ async def lifespan(app: FastAPI):
     await health_monitor.start_monitoring(interval=300)  # 每5分钟检查一次
     print("✅ 健康监控已启动")
 
-    yield
+    # Mounted ASGI applications do not start their own lifespan. Run the MCP
+    # session manager here; stateless HTTP revalidates dashboard auth each request.
+    async with remote_mcp.session_manager.run():
+        yield
 
     # 关闭时执行
     scheduler_task.cancel()
@@ -1039,6 +1043,21 @@ async def websocket_endpoint(websocket: WebSocket):
         print(f"WebSocket 错误: {e}")
         manager.disconnect(websocket)
         stop_event.set()
+
+
+async def _mcp_readiness():
+    response = await readiness_check()
+    return json.loads(response.body)
+
+
+remote_mcp = create_read_only_mcp(
+    account_manager.list_accounts,
+    _mcp_readiness,
+    development=os.getenv("APP_ENV") != "production",
+)
+# Mount last so existing dashboard routes keep their precedence. The SDK app's
+# only route is /mcp; the parent SupabaseAuthMiddleware protects every request.
+app.mount("/", remote_mcp.streamable_http_app())
 
 
 # ============ 启动入口 ============
