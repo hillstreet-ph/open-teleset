@@ -130,7 +130,9 @@ def _candidate_dsns() -> list[str]:
 
 async def _connect(dsns: list[str]):
     last = None
-    ctx = ssl.create_default_context()
+    # Supabase's database CA is not in the operating-system trust store.
+    # Keep certificate and hostname verification enabled with the supplied CA.
+    ctx = ssl.create_default_context(cafile=os.getenv("PGSSLROOTCERT") or None)
     for dsn in dsns:
         try:
             print("Connecting (host hidden)...")
