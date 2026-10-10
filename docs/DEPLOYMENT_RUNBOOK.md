@@ -11,7 +11,7 @@ readiness.
 | --- | --- | --- | --- |
 | Development | Local runtime and disposable fixtures; never live Telegram sessions | Developer/test credentials only | Python, Node and Ruff checks |
 | Staging | Dedicated service and isolated test data; provision before claiming it exists | Staging-scoped provider credentials | Immutable image, container smoke, readiness, OAuth and authorization E2E |
-| Production | `open-teleset.site`; canonical `open-operations` project and `open_teleset` schema | GitHub `production` environment and verified runtime secret store | Staging acceptance, rollback digest, production health and release evidence |
+| Production | `open-teleset.site`; persistent `/app/accounts` dashboard state; canonical `open-operations` project and `open_teleset` schema for database-backed components | GitHub `production` environment and verified runtime secret store | Persistent-volume and restore gates, staging acceptance, rollback digest, production health and release evidence |
 
 Do not reuse production session encryption keys, Telegram sessions, service-role
 keys or database credentials in development/staging. Keep the existing shared
@@ -29,6 +29,7 @@ Inventory only provider IDs and secret-manager references, never secret values.
 | Supabase Auth | Dedicated Google/GitHub client credentials, exact callback, additive redirect allowlist | `/auth/v1/settings`, then real account sign-in |
 | Pages `open-teleset-dashboard` | `static/config.js`: production Supabase URL, public publishable key, same-origin API | Deployed config has no placeholder or service-role key; dashboard restores session |
 | Zeabur verified Open-Teleset service | `APP_ENV=production`, port `8080`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, provider-issued `DATABASE_POOLER_URL`, `SESSION_ENCRYPTION_KEY`, `TELEGRAM_API_ID`, `TELEGRAM_API_HASH` | `SELECT 1`, `/health`, `/readyz`, authenticated API |
+| Zeabur persistent storage | Retain the existing volume mounted at `/app/accounts`; writable by container UID `10001`; retain its matching session encryption key | Confirm the live mount, protected consistent backup, isolated restore and state preservation across deployment |
 | GitHub `production` environment | `SUPABASE_PUBLISHABLE_KEY`, `DATABASE_POOLER_URL` or `DATABASE_URL`, `DOCKERHUB_USERNAME`, write-scoped `DOCKERHUB_TOKEN`, `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `SUPABASE_TOKEN` | Inspect successful publication/deployment jobs; Supabase token can access the canonical project |
 | Cloudflare Worker | `ORIGIN` points to the verified Open-Teleset runtime | Same-origin proxy reaches health and authenticated routes |
 | Docker Hub | Write permission for workflow image `hillstreet/open-teleset` | Push immutable commit/version tag; record digest and architecture |
@@ -38,7 +39,40 @@ OAuth client secrets stay in Supabase Auth. `SUPABASE_PUBLISHABLE_KEY` is the
 only Supabase key permitted in the Pages artifact. An API service-role key is
 not a Supabase management token and cannot replace `SUPABASE_TOKEN` in CI.
 Environment variable names alone do not establish that a credential is valid
-or that a provisioned service is the active runtime.
+or that a provisioned service is the active runtime. Postgres requires a database
+password, not a Supabase API JWT. Verify the pooled username belongs to the
+canonical project before changing either database connection reference.
+
+## Persistent state and restoration gate
+
+The deployed `dashboard.py` uses the root `account_manager.py`, which reads and
+writes encrypted sessions in `./accounts/config.json`. With the image working
+directory `/app`, this is `/app/accounts/config.json`. Schedules, templates,
+proxies, health records, logs and statistics also live under `/app/accounts`.
+The package database pool is used by dashboard readiness; a successful
+`SELECT 1` does not prove these local files are durable or backed up.
+
+Before replacing the runtime or promoting a deployment:
+
+1. Verify the existing volume ID and `/app/accounts` mount on the live service,
+   plus runtime ownership/access for UID `10001`. A directory created by the
+   Dockerfile or a Compose declaration alone does not prove a Zeabur mount.
+2. Capture a consistent, encrypted backup of the entire volume while application
+   writes and scheduled/background workers are quiesced. Keep the matching
+   `SESSION_ENCRYPTION_KEY` version in the approved secret store separately;
+   never print sessions or credentials in evidence. S3 variable presence alone
+   does not prove that a backup job ran.
+3. Restore to isolated storage, keeping network activity and workers disabled.
+   Verify JSON integrity, expected state counts and encrypted-session decoding
+   with the retained key without initiating Telegram activity. Record the
+   protected backup reference, timestamp and restore result.
+4. Deploy using the same volume and encryption key. Compare state counts and
+   integrity evidence before and after deployment. If restoring is necessary,
+   first preserve the failed state and quiesce writes; restore the verified
+   image, volume snapshot and matching key together before resuming workers.
+
+Database, OAuth and API checks remain separate release gates. Do not claim a
+successful restore from volume metadata or a database probe alone.
 
 ## What is automated
 
@@ -87,9 +121,9 @@ Use an authorized provider connection. Runtime repairs are coordinated in
 issue #21; OAuth setup is tracked in issue #25. Do not duplicate a locked task.
 
 1. Reconcile the Zeabur service, environment, attached domain and deployed
-   image with the runtime responding at `open-teleset-prod.zeabur.app`. Metadata
-   and live probes disagreed at the last inspection; do not restart an assumed
-   service or create a duplicate. Probe the actual origin and public domain.
+   image with the runtime responding at `open-teleset-prod.zeabur.app`. Complete
+   the persistent-state gate above; do not restart an assumed service or create
+   a duplicate. Probe the actual origin and public domain.
 2. On that service, set `DATABASE_POOLER_URL` (preferred) or `DATABASE_URL` to
    the Supavisor pooler for `hoseohvgoiarxluxqwqv`. Copy the exact connection
    string and SSL requirements from the provider's Connect panel; do not guess
@@ -126,7 +160,8 @@ Treat it as a rollback candidate requiring service/architecture and readiness
 verification, not as a proven healthy release. Before promotion, record the
 actual previous runtime digest. Roll back to that verified digest on failed
 readiness, authorization or smoke/E2E checks, then repeat the probes. Retain the
-session encryption key so existing encrypted sessions remain readable.
+session encryption key and persistent volume so existing encrypted sessions
+remain readable; image rollback alone cannot restore lost filesystem state.
 
 ## Verifying locally
 
