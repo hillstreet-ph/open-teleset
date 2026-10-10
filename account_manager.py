@@ -4,12 +4,17 @@
 负责账号的增删改查、QR登录、状态管理
 """
 import asyncio
+from contextlib import suppress
 import json
 import os
 from datetime import datetime
 from typing import Dict, List, Optional
 from outreach_client import ConsentTelegramClient as TelegramClient
 from telethon.sessions import StringSession
+from telethon.errors import (
+    NetworkMigrateError, PhoneMigrateError, SessionPasswordNeededError,
+    PasswordHashInvalidError, PhoneCodeInvalidError, PhoneCodeExpiredError, FloodWaitError,
+)
 import qrcode
 from io import BytesIO
 import base64
@@ -580,8 +585,12 @@ class AccountManager:
             }
         """
         if account_id in self.accounts:
-            return {"success": False, "error": "账号ID已存在"}
+            return {"success": False, "error": "Account ID already exists"}
+        if account_id in self.phone_sessions:
+            return {"success": False, "error": "Cancel the existing phone login before starting again"}
 
+        temp_client = None
+        retained = False
         try:
             # 标准化手机号（确保以 + 开头）
             if not phone.startswith('+'):
@@ -608,29 +617,20 @@ class AccountManager:
             # 快速连接（缩短超时）
             await asyncio.wait_for(temp_client.connect(), timeout=15)
 
-            # 发送验证码（新版 Telethon 需要 settings 参数）
-            from telethon.tl.functions.auth import SendCodeRequest
-            from telethon.tl.types import CodeSettings
-            result = await temp_client(SendCodeRequest(
-                phone,
-                API_ID,
-                API_HASH,
-                settings=CodeSettings()
-            ))
+            # Telethon switches DC before raising with our zero-retry client.
+            # Retry only this authorization redirect, never flood/server errors
+            # or outbound messages. The second redirect is surfaced to the user.
+            try:
+                result = await temp_client.send_code_request(phone)
+            except (PhoneMigrateError, NetworkMigrateError):
+                result = await temp_client.send_code_request(phone)
 
             # 获取 phone_code_hash
             phone_code_hash = result.phone_code_hash
 
-            # 检查是否需要 2FA
+            # Two-step verification is known only after submitting the code.
             has_2fa = False
             password_hint = None
-            if hasattr(result, 'next_type') and result.next_type is None:
-                # 可能需要 2FA，需要进一步检查
-                try:
-                    from telethon.tl.types import AuthPasswordRecovery
-                    has_2fa = isinstance(result.next_type, AuthPasswordRecovery) or result.next_type is None
-                except Exception:
-                    pass
 
             # 保存会话
             self.phone_sessions[account_id] = {
@@ -643,6 +643,7 @@ class AccountManager:
                 "created_at": datetime.now(),
                 "proxy": proxy
             }
+            retained = True
 
             return {
                 "success": True,
@@ -653,14 +654,22 @@ class AccountManager:
             }
 
         except asyncio.TimeoutError:
-            return {"success": False, "error": "连接超时，请检查网络或代理"}
+            return {"success": False, "error": "Connection timed out; check your network or proxy"}
+        except (PhoneMigrateError, NetworkMigrateError):
+            return {"success": False, "error": "Telegram redirected login again; please try again"}
+        except FloodWaitError as e:
+            return {"success": False, "error": f"Too many requests; try again after {e.seconds} seconds"}
         except Exception as e:
             error_msg = str(e)
             if "flood" in error_msg.lower():
-                return {"success": False, "error": "请求过于频繁，请稍后再试"}
+                return {"success": False, "error": "Too many requests; try again later"}
             if "invalid" in error_msg.lower() and "phone" in error_msg.lower():
-                return {"success": False, "error": "手机号格式无效"}
+                return {"success": False, "error": "Invalid phone number format"}
             return {"success": False, "error": error_msg}
+        finally:
+            if temp_client is not None and not retained:
+                with suppress(Exception):
+                    await temp_client.disconnect()
 
     async def verify_phone_code(
         self,
@@ -682,43 +691,34 @@ class AccountManager:
             }
         """
         if account_id not in self.phone_sessions:
-            return {"success": False, "error": "会话不存在或已过期"}
+            return {"success": False, "error": "Login session is missing or expired"}
 
         session = self.phone_sessions[account_id]
 
         if session["status"] != "code_sent":
-            return {"success": False, "error": "当前状态不允许验证码"}
+            return {"success": False, "error": "This login session is not waiting for a code"}
 
         client = session["client"]
         phone = session["phone"]
         phone_code_hash = session["phone_code_hash"]
 
         try:
-            from telethon.tl.functions.auth import SignInRequest
-
-            # 尝试验证码登录
-            await client(SignInRequest(phone, phone_code_hash, code))
+            await client.sign_in(phone=phone, code=code, phone_code_hash=phone_code_hash)
 
             # 登录成功，保存账号
             await self._complete_phone_login(account_id, client, session)
             return {"success": True, "needs_2fa": False}
 
+        except SessionPasswordNeededError:
+            session["status"] = "need_2fa"
+            session["has_2fa"] = True
+            return {"success": False, "needs_2fa": True, "error": "Two-step verification password required"}
+        except PhoneCodeInvalidError:
+            return {"success": False, "needs_2fa": False, "error": "Invalid verification code"}
+        except PhoneCodeExpiredError:
+            return {"success": False, "needs_2fa": False, "error": "Verification code has expired"}
         except Exception as e:
-            error_msg = str(e)
-            error_msg_lower = error_msg.lower()
-
-            # 检查是否需要 2FA
-            if "password" in error_msg_lower or "2fa" in error_msg_lower or "two-step" in error_msg_lower:
-                session["status"] = "need_2fa"
-                return {"success": False, "needs_2fa": True, "error": "需要两步验证密码"}
-
-            # 其他错误
-            if "invalid" in error_msg_lower and "code" in error_msg_lower:
-                return {"success": False, "needs_2fa": False, "error": "验证码错误"}
-            if "code" in error_msg_lower and "expired" in error_msg_lower:
-                return {"success": False, "needs_2fa": False, "error": "验证码已过期"}
-
-            return {"success": False, "needs_2fa": False, "error": error_msg}
+            return {"success": False, "needs_2fa": False, "error": str(e)}
 
     async def submit_2fa_for_phone(
         self,
@@ -736,32 +736,26 @@ class AccountManager:
             {"success": True/False, "error": "..."}
         """
         if account_id not in self.phone_sessions:
-            return {"success": False, "error": "会话不存在"}
+            return {"success": False, "error": "Login session is missing or expired"}
 
         session = self.phone_sessions[account_id]
         if session["status"] != "need_2fa":
-            return {"success": False, "error": "当前状态不需要密码"}
+            return {"success": False, "error": "This login session is not waiting for a password"}
 
         client = session["client"]
 
         try:
-            from telethon.tl.functions.auth import CheckPasswordRequest
-
-            # 获取密码信息
-            await client.get_password_hint()
-
-            # 使用密码登录
-            await client(CheckPasswordRequest(password=password))
+            # Telethon derives the SRP proof; a plain CheckPasswordRequest is invalid.
+            await client.sign_in(password=password)
 
             # 登录成功
             await self._complete_phone_login(account_id, client, session)
             return {"success": True}
 
+        except PasswordHashInvalidError:
+            return {"success": False, "error": "Incorrect two-step verification password"}
         except Exception as e:
-            error_msg = str(e)
-            if "password" in error_msg.lower() and "invalid" in error_msg.lower():
-                return {"success": False, "error": "密码错误"}
-            return {"success": False, "error": error_msg}
+            return {"success": False, "error": str(e)}
 
     async def _complete_phone_login(self, account_id: str, client, session: Dict):
         """完成手机号登录，保存账号信息"""
@@ -786,13 +780,15 @@ class AccountManager:
             self._save_config()
             session["status"] = "success"
         except Exception as e:
+            self.accounts.pop(account_id, None)
             session["status"] = "failed"
             session["error"] = str(e)
+            raise
         finally:
-            await client.disconnect()
-            # 清理会话
-            if account_id in self.phone_sessions:
-                del self.phone_sessions[account_id]
+            # Cleanup must not hide persistence errors or undo a saved login.
+            self.phone_sessions.pop(account_id, None)
+            with suppress(Exception):
+                await client.disconnect()
 
     def get_phone_login_status(self, account_id: str) -> Dict:
         """获取手机号登录状态"""
