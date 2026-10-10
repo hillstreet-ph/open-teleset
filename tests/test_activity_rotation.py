@@ -56,7 +56,7 @@ def test_naive_timestamp_is_utc():
 @pytest.mark.parametrize("kwargs", [
     {"rotation_mode": "round_robin"}, {"account_ids": ["account"]},
     {"account_id": "", "rotation_mode": "round_robin", "account_ids": ["account", "account"]},
-    {"activity_filter": "60_days"}, {"per_account_limit": 21},
+    {"activity_filter": "60_days"}, {"per_account_limit": -1},
     {"per_account_limit": True}, {"rotation_mode": "automatic_fallback"},
 ])
 def test_invalid_rotation_input(kwargs):
@@ -104,7 +104,7 @@ async def test_round_robin_deduplicates_and_keeps_global_delay(policy, monkeypat
     first, second = fake_client(), fake_client()
     monkeypatch.setattr(ops.account_manager, "get_client", AsyncMock(side_effect=[first, second]))
     result = await ops.bulk_send_personal(ops.BulkSendRequest(message="synthetic", targets=["111", "@111", "222"],
-        account_ids=["account", "second"], rotation_mode="round_robin", per_account_limit=1, approval_id="personal_send"))
+        account_ids=["account", "second"], rotation_mode="round_robin", per_account_limit=1, delay=3, approval_id="personal_send"))
     assert result["sent"] == 2 and result["skipped"] == 1 and result["pending"] == 0
     assert [r["account_id"] for r in result["results"]] == ["account", "second"]
     first.send_message.assert_awaited_once()
@@ -213,7 +213,7 @@ async def test_capacity_denied_before_connecting(policy, monkeypatch):
     monkeypatch.setattr(ops.account_manager, "get_client", connect)
     with pytest.raises(HTTPException) as exc:
         await ops.bulk_send_personal(ops.BulkSendRequest(account_id="account", message="synthetic",
-            targets=["111", "222"], per_account_limit=1, approval_id="personal_send"))
+            targets=["111", "222"], per_account_limit=1, delay=3, approval_id="personal_send"))
     assert exc.value.status_code == 400
     connect.assert_not_called()
 

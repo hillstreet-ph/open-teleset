@@ -122,7 +122,9 @@ async def test_legacy_or_unknown_schedule_cannot_bypass(policy, monkeypatch, act
     ("send_location", (111, 1.0, 2.0)),
 ])
 @pytest.mark.asyncio
-async def test_direct_tools_require_approval(policy, monkeypatch, name, args):
+async def test_direct_tools_require_consent(policy, monkeypatch, name, args):
+    policy.data["consents"] = []
+    policy.save()
     client = SimpleNamespace(get_entity=AsyncMock(return_value=PeerUser(111)), send_message=AsyncMock(),
                              send_file=AsyncMock(), forward_messages=AsyncMock())
     monkeypatch.setattr(main, "get_client", AsyncMock(return_value=client))

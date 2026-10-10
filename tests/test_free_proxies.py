@@ -51,3 +51,16 @@ async def test_manual_global_change_during_probe_wins(manager, monkeypatch):
     monkeypatch.setattr(manager, "test_proxy", probe)
     assert (await manager.ensure_free_global_proxy())["status"] == "configuration_changed"
     assert manager.global_proxy["host"] == '9.9.9.9'
+
+
+@pytest.mark.asyncio
+async def test_prefer_checked_list_and_fallback_when_unavailable(manager, monkeypatch):
+    candidate = {"protocol": "socks5", "host": "8.8.8.8", "port": 1080}
+    fetch = AsyncMock(return_value=[candidate])
+    monkeypatch.setattr(manager, "_fetch_free_source", fetch)
+    assert await manager.fetch_free_candidates() == [candidate]
+    fetch.assert_awaited_once_with(module.VERIFIED_PROXY_SOURCE)
+    fetch.reset_mock()
+    fetch.side_effect = [TimeoutError(), [candidate]]
+    assert await manager.fetch_free_candidates() == [candidate]
+    assert [call.args[0] for call in fetch.await_args_list] == [module.VERIFIED_PROXY_SOURCE, module.FREE_PROXY_SOURCE]
