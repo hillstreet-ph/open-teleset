@@ -557,8 +557,12 @@
             <div v-show="tab === 'proxies'">
                 <div class="card">
                     <div class="card-header">
-                        <h3>🌍 GlobalProxy</h3>
+                        <h3>🌍 Global Proxy</h3>
                     </div>
+                    <p style="color: #999; margin-bottom: 12px;">Free global proxy discovery is enabled by default. Only a tested proxy is saved; existing and per-account settings take priority. Public proxies may be unavailable. Removing the global proxy disables automatic discovery.</p>
+                    <button class="btn btn-outline" @click="findFreeGlobalProxy" :disabled="testing || !!globalProxy?.host">
+                        {{ testing ? 'Checking free proxies...' : 'Find free global proxy' }}
+                    </button>
                     <div v-if="globalProxy && globalProxy.host" class="proxy-item">
                         <div class="proxy-info">
                             <h4>{{ globalProxy.protocol.toUpperCase() }}</h4>
@@ -566,13 +570,13 @@
                         </div>
                         <div class="proxy-actions">
                             <button class="btn btn-sm btn-success" @click="testGlobalProxy" :disabled="testing">
-                                {{ testing ? 'TestMed...' : 'Test' }}
+                                {{ testing ? 'Testing...' : 'Test' }}
                             </button>
                             <button class="btn btn-sm btn-danger" @click="removeGlobalProxy">Remove</button>
                         </div>
                     </div>
                     <div v-else>
-                        <p style="color: #999; margin-bottom: 15px;">After setting a global proxy, all accounts use it by defaultTelegram</p>
+                        <p style="color: #999; margin-bottom: 15px;">All accounts use the global proxy by default. Per-account proxies take priority.</p>
                         <div class="form-row">
                             <div class="form-group">
                                 <label>Protocol</label>
@@ -610,9 +614,9 @@
 
                 <div class="card">
                     <div class="card-header">
-                        <h3>🔌 Per-accountProxy</h3>
+                        <h3>🔌 Per-account Proxy</h3>
                     </div>
-                    <p style="color: #999; margin-bottom: 15px;">Set a dedicated proxy per account (higher priority than the global proxy). Username/password optional by proxy type.。</p>
+                    <p style="color: #999; margin-bottom: 15px;">Set a dedicated proxy per account (higher priority than the global proxy). Username/password optional by proxy type.</p>
                     <div class="form-row">
                         <div class="form-group">
                             <label>ProxyName</label>
@@ -950,6 +954,7 @@
                     <div v-if="scraper.results.length" style="margin-top: 20px;">
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
                             <h4 style="margin:0;">Scraped: {{ scraper.results.length }} members</h4>
+                            <button class="btn btn-outline" @click="exportScraperCSV">⬇ Export CSV</button>
                             <button class="btn btn-outline" @click="copyScrapedUsernames" style="font-size: 0.85em;">📋 Copy Usernames</button>
                         </div>
                         <div style="max-height: 400px; overflow-y: auto; border: 1px solid rgba(255,255,255,0.1); border-radius: 8px;">
@@ -1003,6 +1008,11 @@
                         <label>Consenting recipients (usernames or IDs, one per line; maximum 10)</label>
                         <textarea class="form-control" v-model="adder.usernames" rows="5" placeholder="user1&#10;user2&#10;user3"></textarea>
                     </div>
+                    <div class="form-group">
+                        <label>Import consenting recipients from CSV</label>
+                        <input type="file" accept=".csv,text/csv" @change="importRecipientCSV($event, 'adder')" :disabled="adder.loading">
+                        <small>Use a recipient, username or id header. Up to 10 recipients.</small>
+                    </div>
                     <div style="display: flex; gap: 15px;">
                         <div class="form-group" style="flex:1;">
                             <label>Max Members to Add</label>
@@ -1012,6 +1022,15 @@
                             <label>Delay Between Adds (sec)</label>
                             <input class="form-control" type="number" v-model.number="adder.delay" min="35" max="3600" step="5">
                         </div>
+                    </div>
+                    <div class="form-group">
+                        <label><input type="checkbox" v-model="adder.filterBots"> Exclude bots</label>
+                    </div>
+                    <div class="form-group">
+                        <label>Member activity</label>
+                        <select class="form-control" v-model="adder.activityFilter">
+                            <option v-for="option in activityOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+                        </select>
                     </div>
                     <div class="form-group">
                         <label>Approval reference</label>
@@ -1067,7 +1086,13 @@
                     </div>
                     <div class="form-group">
                         <label>Consenting recipients (usernames or IDs, one per line; maximum 20)</label>
-                        <textarea class="form-control" v-model="bulksend.targets" rows="5" placeholder="user1&#10;user2&#10;@username3"></textarea>
+                        <textarea class="form-control" v-model="bulksend.targets" @input="bulksend.messages = {}" rows="5" placeholder="user1&#10;user2&#10;@username3"></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label>Import recipients and messages from CSV</label>
+                        <input type="file" accept=".csv,text/csv" @change="importRecipientCSV($event, 'bulksend')" :disabled="bulksend.loading">
+                        <small>Headers: recipient (or username/id), optional message. Up to 20 recipients. A message-only CSV can contain one message row.</small>
+                        <p v-if="Object.keys(bulksend.messages).length">{{ Object.keys(bulksend.messages).length }} individual messages imported. Editing recipients clears them.</p>
                     </div>
                     <div class="form-group">
                         <label>Recipient activity</label>
@@ -1075,6 +1100,9 @@
                             <option v-for="option in activityOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
                         </select>
                         <small>Checked using the selected sender's visible Telegram status. Activity does not establish consent. Unknown statuses are skipped when filtering.</small>
+                    </div>
+                    <div class="form-group">
+                        <label><input type="checkbox" v-model="bulksend.filterBots"> Exclude bots</label>
                     </div>
                     <div class="form-group">
                         <label>Maximum recipients per account in this run</label>
@@ -1091,7 +1119,7 @@
                             <input class="form-control" v-model.trim="bulksend.approvalId" placeholder="Approved personal-send reference" autocomplete="off">
                         </div>
                     </div>
-                    <button class="btn btn-primary" @click="runBulkSend" :disabled="bulksend.loading || (bulksend.rotationMode === 'single' ? !bulksend.accountId : !bulksend.accountIds.length) || !bulksend.message || !bulksend.targets || !bulksend.approvalId">
+                    <button class="btn btn-primary" @click="runBulkSend" :disabled="bulksend.loading || (bulksend.rotationMode === 'single' ? !bulksend.accountId : !bulksend.accountIds.length) || (!bulksend.message && !Object.keys(bulksend.messages).length) || !bulksend.targets || !bulksend.approvalId">
                         {{ bulksend.loading ? '⏳ Sending...' : '📨 Send Messages' }}
                     </button>
 
@@ -1600,6 +1628,7 @@
         </template>
     </div>
 
+    <script src="/static/csv.js"></script>
     <script>
         // Supabase client
         const _supabase = supabase.createClient(
@@ -1937,6 +1966,8 @@
                     adder: {
                         accountId: '',
                         destTarget: '',
+                        filterBots: true,
+                        activityFilter: 'all',
                         usernames: '',
                         limit: 10,
                         approvalId: '',
@@ -1949,6 +1980,8 @@
                         accountId: '',
                         accountIds: [],
                         rotationMode: 'single',
+                        filterBots: true,
+                        messages: {},
                         activityFilter: 'all',
                         perAccountLimit: 20,
                         message: '',
@@ -2031,6 +2064,54 @@
                 }
             },
             methods: {
+                async findFreeGlobalProxy() {
+                    this.testing = true;
+                    try {
+                        const {data} = await _api.post('/api/proxies/free-global');
+                        await this.loadProxies();
+                        this.showToast(data.success ? 'Global proxy ready. Reconnect accounts to apply it.' : data.status.replace(/_/g, ' '), !data.success);
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || e.message, true);
+                    } finally {
+                        this.testing = false;
+                    }
+                },
+                downloadCSV(filename, rows) {
+                    const blob = new Blob([OpenTelesetCSV.encode(rows)], {type: 'text/csv;charset=utf-8'});
+                    const url = URL.createObjectURL(blob);
+                    const link = document.createElement('a');
+                    link.href = url;
+                    link.download = filename;
+                    link.click();
+                    setTimeout(() => URL.revokeObjectURL(url), 1000);
+                },
+                exportScraperCSV() {
+                    const fields = ['username', 'id', 'first_name', 'last_name', 'is_bot', 'activity', 'last_seen'];
+                    this.downloadCSV('telegram-members.csv', [fields, ...this.scraper.results.map(member => fields.map(field => member[field]))]);
+                },
+                async importRecipientCSV(event, destination) {
+                    const file = event.target.files?.[0];
+                    if (!file) return;
+                    try {
+                        if (file.size > 2 * 1024 * 1024) throw new Error('CSV must be at most 2 MB.');
+                        const parsed = OpenTelesetCSV.recipients(await file.text(), destination === 'adder' ? 10 : 20);
+                        if (destination === 'adder') {
+                            if (!parsed.targets.length) throw new Error('Recipient rows are required.');
+                            this.adder.usernames = parsed.targets.join('\n');
+                        } else if (parsed.message !== undefined) {
+                            this.bulksend.message = parsed.message;
+                            this.bulksend.messages = {};
+                        } else {
+                            this.bulksend.targets = parsed.targets.join('\n');
+                            this.bulksend.messages = parsed.messages;
+                        }
+                        this.showToast('CSV imported. Review recipients and messages before sending.');
+                    } catch (e) {
+                        this.showToast(e.message, true);
+                    } finally {
+                        event.target.value = '';
+                    }
+                },
                 // ---- Scraper ----
                 async runScraper() {
                     this.scraper.loading = true;
@@ -2074,12 +2155,15 @@
                             limit: this.adder.limit,
                             delay: this.adder.delay,
                             approval_id: this.adder.approvalId.trim(),
+                            filter_bots: this.adder.filterBots,
+                            activity_filter: this.adder.activityFilter,
                             usernames,
                         };
                         const res = await _api.post('/api/members/add', payload);
                         const d = res.data;
                         const outcome = d.success === true && !d.failed ? 'Completed' : 'Incomplete or denied';
-                        this.adder.resultMsg = `${outcome}: added ${d.added || 0}, failed ${d.failed || 0}, total ${d.total || 0}.`;
+                        this.adder.resultMsg = `${outcome}: added ${d.added || 0}, failed ${d.failed || 0}, skipped ${d.skipped || 0}, pending ${d.pending || 0}, total ${d.total || 0}.`;
+                        if (d.stopped_reason) this.adder.resultMsg += ' Stopped: ' + d.stopped_reason;
                         if (d.error) this.adder.resultMsg += ' ' + d.error;
                     } catch (e) {
                         this.adder.resultMsg = '❌ ' + (e.response?.data?.detail || e.message);
@@ -2111,6 +2195,8 @@
                             rotation_mode: this.bulksend.rotationMode,
                             per_account_limit: this.bulksend.perAccountLimit,
                             activity_filter: this.bulksend.activityFilter,
+                            filter_bots: this.bulksend.filterBots,
+                            messages: Object.fromEntries(targets.filter(t => Object.hasOwn(this.bulksend.messages, t)).map(t => [t, this.bulksend.messages[t]])),
                             message: this.bulksend.message,
                             targets: targets,
                             delay: this.bulksend.delay,

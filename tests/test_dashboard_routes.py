@@ -24,6 +24,9 @@ with TestClient(dashboard.app, base_url="https://open-teleset.site") as http:
         assert response.status_code == 200
         assert response.headers["content-type"].startswith("text/html")
     assert 'src="/config.js"' in http.get("/dashboard").text
+    assert 'src="/static/csv.js"' in http.get("/dashboard").text
+    assert http.get('/static/csv.js').status_code == 200
+    assert http.post('/api/proxies/free-global').status_code == 401
     for invalid in ["", "sb_secret_synthetic", "eyJ.synthetic.service-role", 'sb_publishable_\\";alert(1)//']:
         os.environ["SUPABASE_PUBLISHABLE_KEY"] = invalid
         response = http.get("/config.js")

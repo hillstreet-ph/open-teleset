@@ -3,6 +3,7 @@
 # MCP + Telegram
 mcp[cli]>=1.30.0,<2
 telethon>=1.42.0
+python-socks[asyncio]>=2.5,<3
 
 # Web framework
 fastapi>=0.104.0
