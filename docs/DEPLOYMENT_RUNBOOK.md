@@ -5,6 +5,19 @@ gates. Provider changes require an authorized connector or verified console
 session. A successful frontend deployment does not prove runtime or OAuth
 readiness.
 
+## Error monitoring
+
+Set the existing `hillstreet/open-teleset` production client key as `SENTRY_DSN`
+in the runtime secret store. Set `APP_ENV=production` and optionally
+`SENTRY_RELEASE` to the deployed commit. The dashboard initializes monitoring
+only when the DSN is present. Without it, error reporting stays disabled.
+
+Only error types and source locations are sent. Request bodies, query strings,
+headers, cookies, user identities, exception messages, local variables, account
+data and breadcrumbs are removed before transmission. Replay and performance
+sampling are disabled. Validate ingestion using a synthetic exception without
+real account data. Roll back by removing `SENTRY_DSN` and reverting the change.
+
 ## Explicit Worker-only rollout
 
 Normal releases retain Docker publication before the Worker job. For a bounded

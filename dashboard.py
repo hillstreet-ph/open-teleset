@@ -28,6 +28,7 @@ from scheduler import task_scheduler
 from batch_operations import batch_operations
 from telegram_ops import telegram_ops_router
 from open_teleset.security import SupabaseAuthMiddleware
+from open_teleset.observability import initialize_error_monitoring
 
 
 # ============ FastAPI 应用 ============
@@ -70,6 +71,7 @@ async def lifespan(app: FastAPI):
     print("🛴 定时任务调度器和健康监控已停止")
 
 
+initialize_error_monitoring()
 app = FastAPI(title="Telegram 账号管理后台", lifespan=lifespan)
 
 # 配置 CORS — production-hardened origins
