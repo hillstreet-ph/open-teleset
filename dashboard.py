@@ -6,6 +6,8 @@ FastAPI + WebSocket 实现实时状态推送
 import asyncio
 import json
 import os
+import re
+from pathlib import Path
 from datetime import datetime
 from typing import List, Optional
 
@@ -13,7 +15,7 @@ from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, HTTPExcept
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel
 import uvicorn
 
@@ -82,6 +84,7 @@ app = FastAPI(title="Telegram 账号管理后台", lifespan=lifespan)
 _ALLOWED_ORIGINS = [
     "https://open-teleset.site",
     "https://www.open-teleset.site",
+    "https://app.open-teleset.site",
     "https://open-teleset-dashboard.pages.dev",
 ]
 if os.getenv("APP_ENV") != "production":
@@ -182,10 +185,33 @@ async def readiness_check():
 
 # ============ API 端点 ============
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 async def root():
-    """重定向到管理页面"""
-    return JSONResponse(content={"message": "管理后台运行中", "url": "/static/dashboard.html"})
+    """Open the existing login dashboard on the direct runtime host."""
+    return RedirectResponse("/dashboard", status_code=307)
+
+
+@app.api_route("/dashboard", methods=["GET", "HEAD"])
+async def dashboard_page():
+    return FileResponse("static/dashboard.html", media_type="text/html")
+
+
+@app.api_route("/config.js", methods=["GET", "HEAD"])
+async def public_runtime_config():
+    """Render only the public key; never serialize the runtime environment."""
+    key = os.getenv("SUPABASE_PUBLISHABLE_KEY", "").strip()
+    if not re.fullmatch(r"sb_publishable_[A-Za-z0-9_-]+", key):
+        return JSONResponse({"detail": "Public sign-in configuration unavailable"}, status_code=503)
+    template = Path("static/config.js").read_text(encoding="utf-8")
+    if '"__SUPABASE_PUBLISHABLE_KEY__"' not in template:
+        return JSONResponse({"detail": "Public sign-in configuration unavailable"}, status_code=503)
+    content = template.replace('"__SUPABASE_PUBLISHABLE_KEY__"', json.dumps(key))
+    content = content.replace('apiBase: "https://open-teleset.site"', 'apiBase: window.location.origin')
+    alias = os.getenv("DASHBOARD_USER", "").strip()
+    email = os.getenv("DASHBOARD_LOGIN_EMAIL", "").strip()
+    aliases = {alias: email} if alias and re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email) else {}
+    content += "\nwindow.OPEN_TELESET_CONFIG.loginAliases = " + json.dumps(aliases) + ";\n"
+    return Response(content, media_type="application/javascript", headers={"Cache-Control": "no-store"})
 
 
 # ============ 账号管理 API ============

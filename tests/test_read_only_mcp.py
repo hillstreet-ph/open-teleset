@@ -139,6 +139,15 @@ def test_transport_rejects_foreign_host_and_origin(client, headers, status):
     assert rpc(http, "tools/list", headers=headers).status_code == status
 
 
+def test_direct_app_origin_can_use_authenticated_transport(client):
+    http, _ = client
+    response = rpc(http, "tools/list", headers={
+        "Host": "app.open-teleset.site", "Origin": "https://app.open-teleset.site",
+    })
+    assert response.status_code == 200
+    assert len(response.json()["result"]["tools"]) == 3
+
+
 def test_callback_errors_are_redacted(monkeypatch):
     def fail_accounts():
         raise RuntimeError("secret session")

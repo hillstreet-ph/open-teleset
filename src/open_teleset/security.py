@@ -18,13 +18,14 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from starlette.websockets import WebSocketDisconnect
 
-PUBLIC_PATHS = frozenset({"/health", "/healthz", "/readyz", "/"})
+PUBLIC_PATHS = frozenset({"/health", "/healthz", "/readyz", "/", "/dashboard", "/config.js"})
 PROJECT_KEY = "open-teleset"
 ADMIN_ROLES = frozenset({"owner", "admin"})
 WS_PROTOCOL = "open-teleset.v1"
 WS_TOKEN_PREFIX = "bearer."
 PUBLIC_ORIGINS = frozenset({
     "https://open-teleset.site", "https://www.open-teleset.site",
+    "https://app.open-teleset.site",
     "https://open-teleset-dashboard.pages.dev",
 })
 

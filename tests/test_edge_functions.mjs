@@ -39,7 +39,7 @@ function worker(fetcher=()=>{throw Error('unexpected network')}) {
  const context={Request,Response,URL,fetch:fetcher};vm.runInNewContext(code,context);return context.worker;
 }
 test('Worker CORS permits known dashboard origins and rejects arbitrary origins',async()=>{
- for(const origin of ['https://open-teleset.site','https://www.open-teleset.site','https://open-teleset-dashboard.pages.dev','https://untrusted.example']) {
+ for(const origin of ['https://open-teleset.site','https://www.open-teleset.site','https://app.open-teleset.site','https://open-teleset-dashboard.pages.dev','https://untrusted.example']) {
   const r=await worker().fetch(new Request('https://edge.example/health',{method:'OPTIONS',headers:{Origin:origin}}),{});
   assert.equal(r.headers.get('Access-Control-Allow-Origin'),origin.endsWith('untrusted.example')?null:origin);
   assert.equal(r.headers.get('Vary'),'Origin');

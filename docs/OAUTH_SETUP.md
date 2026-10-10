@@ -15,6 +15,23 @@ Supabase redirect allowlist entries:
 - `https://www.open-teleset.site/dashboard`
 - `https://open-teleset-dashboard.pages.dev/dashboard`
 
+The direct Zeabur app host also serves the existing login dashboard at
+`https://app.open-teleset.site/dashboard`; `/` redirects there. Its `/config.js`
+renders only the runtime `SUPABASE_PUBLISHABLE_KEY` into the existing public
+configuration. A missing, secret, or service-role key returns `503` and is never
+published. Add `https://app.open-teleset.site/dashboard` to the shared Auth
+redirect allowlist before accepting OAuth or recovery flows on that host;
+preserve every existing application entry. App-host origins are explicitly
+permitted by the API, WebSocket and remote MCP allowlists.
+
+Email/password sign-in uses the existing Supabase identity. To enable a username
+alias on the direct app host, set `DASHBOARD_USER=admin` and
+`DASHBOARD_LOGIN_EMAIL` to the existing account's email. This alias and email
+are public login configuration. The existing Supabase account password is
+still required; `DASHBOARD_PASSWORD` does not replace it or create another
+administrator. The Pages artifact has no alias unless explicitly configured.
+Google and GitHub buttons remain dependent on the provider configuration below.
+
 ## Google
 
 Use a Web application OAuth client in Google Cloud. Register the provider
