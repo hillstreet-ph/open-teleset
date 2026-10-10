@@ -7,6 +7,10 @@ on:
     branches: [main, master]
   workflow_dispatch:
     inputs:
+      worker_only:
+        description: "Deploy only the Worker after live backend compatibility checks"
+        type: boolean
+        default: false
       skip_deploy:
         description: "Skip Cloudflare deploy"
         type: boolean
@@ -105,7 +109,9 @@ jobs:
   # ─── 3. DOCKER BUILD + PUSH ─────────────────────────────────────
   docker:
     needs: [test, container-test, migrate]
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: |
+      github.event_name != 'pull_request' && github.ref == 'refs/heads/main' &&
+      (github.event_name != 'workflow_dispatch' || inputs.worker_only == false)
     runs-on: ubuntu-latest
     environment: production
     steps:
@@ -142,14 +148,31 @@ jobs:
           docker run --rm ${{ env.IMAGE_NAME }}:latest python -c "print('✅ image ok')"
 
   # ─── 4. CLOUDFLARE WORKER ────────────────────────────────────────
-  deploy-worker:
-    # This Worker is built from source; registry publication is a separate job.
-    # Keep both application and container validation before publishing the edge.
+  worker-compatibility:
     needs: [test, container-test, migrate]
     if: |
-      github.event_name != 'pull_request' &&
+      github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
+      inputs.worker_only == true && inputs.skip_deploy == false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Verify live origin health, readiness, and authorization contract
+        run: python scripts/worker_preflight.py
+
+  deploy-worker:
+    needs: [test, container-test, docker, migrate, worker-compatibility]
+    if: |
+      always() && !cancelled() && github.event_name != 'pull_request' &&
       github.ref == 'refs/heads/main' &&
-      (github.event_name != 'workflow_dispatch' || inputs.skip_deploy == false)
+      needs.test.result == 'success' && needs.container-test.result == 'success' &&
+      needs.migrate.result == 'success' &&
+      (github.event_name != 'workflow_dispatch' || inputs.skip_deploy == false) &&
+      (needs.docker.result == 'success' ||
+       (github.event_name == 'workflow_dispatch' && inputs.worker_only == true &&
+        needs.worker-compatibility.result == 'success'))
     runs-on: ubuntu-latest
     environment: production
     steps:
@@ -176,7 +199,9 @@ jobs:
   # ─── 5. CLOUDFLARE PAGES ─────────────────────────────────────────
   deploy-pages:
     needs: [test, container-test, migrate]
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: |
+      github.event_name != 'pull_request' && github.ref == 'refs/heads/main' &&
+      (github.event_name != 'workflow_dispatch' || inputs.worker_only == false)
     runs-on: ubuntu-latest
     environment: production
     steps:
@@ -211,6 +236,7 @@ jobs:
     if: |
       github.event_name != 'pull_request' &&
       github.ref == 'refs/heads/main' &&
+      (github.event_name != 'workflow_dispatch' || inputs.worker_only == false) &&
       (github.event_name != 'workflow_dispatch' || inputs.skip_deploy == false)
     runs-on: ubuntu-latest
     environment: production
@@ -232,7 +258,7 @@ jobs:
 
   # ─── 7. SUMMARY ──────────────────────────────────────────────────
   summary:
-    needs: [test, migrate, docker, deploy-worker, deploy-pages, deploy-edge]
+    needs: [test, container-test, migrate, docker, worker-compatibility, deploy-worker, deploy-pages, deploy-edge]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -243,6 +269,8 @@ jobs:
           echo "| Job | Result |" >> $GITHUB_STEP_SUMMARY
           echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
           echo "| Test | ${{ needs.test.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Container | ${{ needs.container-test.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Worker compatibility | ${{ needs.worker-compatibility.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Migrate | ${{ needs.migrate.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Docker | ${{ needs.docker.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Worker | ${{ needs.deploy-worker.result }} |" >> $GITHUB_STEP_SUMMARY
