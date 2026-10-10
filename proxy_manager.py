@@ -7,7 +7,6 @@ import asyncio
 import json
 import os
 import ipaddress
-import random
 import ssl
 from urllib.parse import urlsplit
 from datetime import datetime
@@ -17,6 +16,7 @@ import aiohttp
 
 ACCOUNTS_DIR = "./accounts"
 FREE_PROXY_SOURCE = "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/protocols/socks5/data.txt"
+VERIFIED_PROXY_SOURCE = "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/all.txt"
 PROXIES_FILE = os.path.join(ACCOUNTS_DIR, "proxies.json")
 
 
@@ -357,8 +357,20 @@ class ProxyManager:
         return candidates
 
     async def fetch_free_candidates(self):
+        # Prefer the short, hourly checked list, sorted by response time. Keep
+        # the existing source as a fallback when that list cannot be fetched.
+        for source in (VERIFIED_PROXY_SOURCE, FREE_PROXY_SOURCE):
+            try:
+                candidates = await self._fetch_free_source(source)
+                if candidates:
+                    return candidates
+            except (aiohttp.ClientError, TimeoutError, ValueError, UnicodeError):
+                continue
+        raise ValueError("No public SOCKS5 candidates available")
+
+    async def _fetch_free_source(self, source):
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
-            async with session.get(FREE_PROXY_SOURCE, allow_redirects=False) as response:
+            async with session.get(source, allow_redirects=False) as response:
                 response.raise_for_status()
                 chunks = []
                 size = 0
@@ -381,7 +393,7 @@ class ProxyManager:
                 return {"success": False, "status": "disabled"}
             try:
                 candidates = await self.fetch_free_candidates()
-                selected = random.sample(candidates, min(12, len(candidates)))
+                selected = candidates[:24]
                 for start in range(0, len(selected), 4):
                     group = selected[start:start + 4]
                     results = await asyncio.gather(*(self.test_proxy(p, timeout=3) for p in group))
@@ -392,7 +404,7 @@ class ProxyManager:
                         if self.global_proxy or not self.free_global_enabled:
                             return {"success": bool(self.global_proxy), "status": "configuration_changed"}
                         self.set_global_proxy(**config)
-                        self.global_proxy.update({"source": "proxifly", "free": True,
+                        self.global_proxy.update({"source": "verified_public_list", "free": True,
                                                   "verified_at": datetime.now().isoformat()})
                         self._save_proxies()
                         return {"success": True, "status": "verified_free_global", "tested": start + len(group)}

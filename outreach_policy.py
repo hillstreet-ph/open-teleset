@@ -17,8 +17,10 @@ import os
 import re
 import sqlite3
 import time
+import fcntl
+import tempfile
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -73,6 +75,47 @@ class OutreachPolicy:
 
     def __init__(self, path: Optional[str] = None):
         self.path = Path(path or os.getenv("OUTREACH_POLICY_FILE", DEFAULT_POLICY_FILE))
+
+    def record_personal_consents(self, subjects, account_id, operator_id):
+        """Record an operator's declaration atomically, retaining every opt-out."""
+        if not operator_id:
+            raise OutreachDenied("authenticated_operator_required")
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with self.path.with_suffix(".lock").open("a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                data = self._load() if self.path.exists() else {
+                    "version": 1, "approvals": {}, "consents": [], "suppressions": []}
+                if data is None:
+                    raise OutreachDenied("policy_unavailable")
+                now = datetime.now(timezone.utc)
+                account_hash = hash_identifier(account_id)
+                for subject in subjects:
+                    subject_hash = hash_identifier(subject)
+                    if any(r["subject_hash"] == subject_hash and r["active"] for r in data["suppressions"]):
+                        continue
+                    data["consents"] = [r for r in data["consents"] if not (
+                        r.get("recorded_via") == "bulk_send_form" and r["subject_hash"] == subject_hash
+                        and r["account_hashes"] == [account_hash])]
+                    data["consents"].append({
+                        "subject_hash": subject_hash, "account_hashes": [account_hash],
+                        "actions": ["personal_send"], "source": "explicit",
+                        "granted_at": now.isoformat(), "expires_at": (now + timedelta(days=30)).isoformat(),
+                        "recorded_via": "bulk_send_form", "operator_hash": hash_identifier(operator_id),
+                    })
+                temporary = None
+                try:
+                    with tempfile.NamedTemporaryFile(mode="w", dir=self.path.parent, delete=False) as handle:
+                        temporary = handle.name
+                        json.dump(data, handle)
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                    os.replace(temporary, self.path)
+                finally:
+                    if temporary and os.path.exists(temporary):
+                        os.unlink(temporary)
+        except OSError:
+            raise OutreachDenied("policy_write_failed") from None
 
     def _load(self) -> Optional[dict]:
         try:
@@ -129,6 +172,7 @@ class OutreachPolicy:
         approval_id: Optional[str],
         source: str = "explicit",
         now: Optional[datetime] = None,
+        _data: Optional[dict] = None,
     ) -> PolicyDecision:
         subject_hash = hash_identifier(subject)
         subject_ref = subject_hash[:12]
@@ -140,7 +184,7 @@ class OutreachPolicy:
         if action not in ACTIONS:
             return PolicyDecision(False, "action_invalid", "unknown", subject_ref)
 
-        data = self._load()
+        data = self._load() if _data is None else _data
         if data is None:
             return PolicyDecision(False, "policy_unavailable", action, subject_ref)
 
@@ -152,6 +196,25 @@ class OutreachPolicy:
             ):
                 return PolicyDecision(False, "suppressed", action, subject_ref)
 
+        # Personal sends are initiated by an authenticated operator. A separate
+        # manual approval reference is optional; recipient policy still applies.
+        # Validate references supplied by legacy callers rather than ignoring them.
+        if action != "personal_send" or approval_id:
+            denied = self._check_approval(data, approval_id, action, account_ref, current_time, subject_ref)
+            if denied:
+                return denied
+
+        for consent in data["consents"]:
+            if (consent.get("subject_hash") == subject_hash
+                    and action in consent.get("actions", [])
+                    and consent.get("source") == "explicit"
+                    and self._account_matches(consent, account_ref)
+                    and self._record_is_current(consent, current_time)):
+                return PolicyDecision(True, "consent_current", action, subject_ref)
+
+        return PolicyDecision(False, "consent_missing_or_invalid", action, subject_ref)
+
+    def _check_approval(self, data, approval_id, action, account_ref, current_time, subject_ref):
         if not isinstance(approval_id, str) or not approval_id.strip():
             return PolicyDecision(False, "approval_missing", action, subject_ref)
         approval = data["approvals"].get(approval_id)
@@ -165,21 +228,7 @@ class OutreachPolicy:
         if not self._account_matches(approval, account_ref):
             return PolicyDecision(False, "approval_account_mismatch", action, subject_ref)
 
-        for consent in data["consents"]:
-            if not isinstance(consent, dict):
-                continue
-            if consent.get("subject_hash") != subject_hash:
-                continue
-            if action not in consent.get("actions", []):
-                continue
-            if consent.get("source") != "explicit":
-                continue
-            if not self._account_matches(consent, account_ref):
-                continue
-            if self._record_is_current(consent, current_time):
-                return PolicyDecision(True, "consent_current", action, subject_ref)
-
-        return PolicyDecision(False, "consent_missing_or_invalid", action, subject_ref)
+        return None
 
     def authorize_many(
         self,
@@ -192,6 +241,12 @@ class OutreachPolicy:
         now: Optional[datetime] = None,
     ) -> list[PolicyDecision]:
         subjects, account_ids = list(subjects), list(account_ids)
+        # Validate one snapshot for preflight; dispatch still reloads immediately
+        # before every actual send so mid-run opt-outs remain effective.
+        data = self._load()
+        if data is None:
+            return [PolicyDecision(False, "policy_unavailable", action, hash_identifier(subject)[:12])
+                    for _ in account_ids for subject in subjects]
         return [
             self.authorize(
                 action=action,
@@ -200,6 +255,7 @@ class OutreachPolicy:
                 approval_id=approval_id,
                 source=source,
                 now=now,
+                _data=data,
             )
             for account_id in account_ids
             for subject in subjects
@@ -254,9 +310,11 @@ async def dispatch_outreach(*, action, subject, account_id, approval_id, send, d
     All workers for an account must share the mounted rate database. Failure to
     access it fails closed. The caller supplies a resolved, stable Telegram peer ID.
     """
-    minimum = 35 if action == "member_add" else 3
-    delay = minimum if delay is None else delay
-    if not valid_bounds(1, 1, delay, minimum):
+    minimum = 0 if action == "personal_send" else 35 if action == "member_add" else 3
+    delay = (3 if action == "personal_send" else minimum) if delay is None else delay
+    valid_delay = (type(delay) in (int, float) and math.isfinite(delay) and delay >= minimum
+                   and (action == "personal_send" or delay <= 3600))
+    if not valid_delay:
         raise OutreachDenied("invalid_rate_bounds")
     key = hash_identifier(account_id)
     rate_path = _rate_path()

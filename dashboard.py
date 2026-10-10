@@ -1013,7 +1013,8 @@ class ConnectionManager:
         self.active_connections.append(websocket)
 
     def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
 
     async def broadcast(self, message: dict):
         """广播消息到所有连接"""
@@ -1030,7 +1031,11 @@ manager = ConnectionManager()
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """WebSocket 实时推送"""
-    await manager.connect(websocket)
+    # Mobile clients can disconnect while authentication/accept is in flight.
+    try:
+        await manager.connect(websocket)
+    except (WebSocketDisconnect, OSError):
+        return
 
     try:
         # 启动后台任务，定期推送状态更新
@@ -1064,7 +1069,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     await asyncio.sleep(5)
 
         # 启动广播任务
-        asyncio.create_task(broadcast_status())
+        broadcast_task = asyncio.create_task(broadcast_status())
 
         # 处理客户端消息
         while True:
@@ -1075,12 +1080,14 @@ async def websocket_endpoint(websocket: WebSocket):
                 await websocket.send_json({"type": "pong"})
 
     except WebSocketDisconnect:
-        manager.disconnect(websocket)
-        stop_event.set()
+        pass
     except Exception as e:
         print(f"WebSocket 错误: {e}")
-        manager.disconnect(websocket)
+    finally:
         stop_event.set()
+        broadcast_task.cancel()
+        await asyncio.gather(broadcast_task, return_exceptions=True)
+        manager.disconnect(websocket)
 
 
 async def _mcp_readiness():

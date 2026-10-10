@@ -10,7 +10,6 @@ globalThis.OpenTelesetCSV = (() => {
             endField();
             if (row.some(value => value.trim())) rows.push(row);
             row = [];
-            if (rows.length > 10001) throw new Error('Too many CSV rows.');
         };
         for (let i = 0; i < text.length; i++) {
             const c = text[i];
@@ -35,7 +34,7 @@ globalThis.OpenTelesetCSV = (() => {
         return rows;
     }
 
-    function recipients(text, limit) {
+    function recipients(text, limit = 0) {
         const rows = parse(text);
         if (!rows.length) throw new Error('CSV is empty.');
         const headers = rows.shift().map(value => value.trim().toLowerCase());
@@ -50,7 +49,7 @@ globalThis.OpenTelesetCSV = (() => {
             }
             throw new Error('Use a recipient, username, target or id header; optional message column.');
         }
-        const targets = [], messages = Object.create(null);
+        const targets = [], seen = new Set(), messages = Object.create(null);
         for (const row of rows) {
             if (row.length !== headers.length) throw new Error('CSV columns do not match the header.');
             // Prefer a username, falling back to id for exported scraper rows.
@@ -59,14 +58,16 @@ globalThis.OpenTelesetCSV = (() => {
             if (!/^(?:[a-z][a-z0-9_]{3,31}|[1-9][0-9]{0,19})$/.test(target)) throw new Error('Invalid Telegram recipient in CSV.');
             const message = messageIndex >= 0 ? row[messageIndex] : '';
             if (message.length > 4096) throw new Error('Message exceeds 4096 characters.');
-            if (targets.includes(target)) {
+            if (seen.has(target)) {
                 if ((messages[target] || '') !== message) throw new Error('Conflicting messages for duplicate recipient.');
                 continue;
             }
+            seen.add(target);
             targets.push(target);
             if (message.trim()) messages[target] = message;
         }
-        if (!targets.length || targets.length > limit) throw new Error(`Import 1–${limit} recipients per run.`);
+        if (!targets.length) throw new Error("Import at least one recipient.");
+        if (limit > 0 && targets.length > limit) throw new Error(`Import 1–${limit} recipients per run.`);
         return { targets, messages };
     }
 

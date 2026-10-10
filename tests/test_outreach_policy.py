@@ -71,7 +71,7 @@ def test_suppression_overrides_valid_consent(tmp_path):
     assert decision.reason == "suppressed"
 
 
-def test_missing_policy_and_missing_approval_fail_closed(tmp_path):
+def test_missing_policy_fails_closed_personal_approval_is_optional(tmp_path):
     unavailable = OutreachPolicy(str(tmp_path / "missing.json")).authorize(
         action="personal_send",
         subject="exampleuser",
@@ -87,7 +87,7 @@ def test_missing_policy_and_missing_approval_fail_closed(tmp_path):
         now=NOW,
     )
     assert unavailable.reason == "policy_unavailable"
-    assert missing_approval.reason == "approval_missing"
+    assert missing_approval.allowed and missing_approval.reason == "consent_current"
 
 
 def test_mismatched_action_and_account_are_denied(tmp_path):

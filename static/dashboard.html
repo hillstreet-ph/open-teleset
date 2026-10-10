@@ -1063,13 +1063,13 @@
                         </select>
                     </div>
                     <div class="form-group" v-if="bulksend.rotationMode === 'round_robin'">
-                        <label>Rotation accounts (select up to 5)</label>
+                        <label>Rotation accounts</label>
                         <select class="form-control" v-model="bulksend.accountIds" multiple size="5">
                             <option v-for="acc in accounts" :key="acc.account_id" :value="acc.account_id">
                                 {{ acc.phone || acc.account_id }} {{ acc.username ? '(@' + acc.username + ')' : '' }}
                             </option>
                         </select>
-                        <small>Approval and recipient consent must cover the selected sender. A Telegram restriction stops the batch; recipients are never retried through another account.</small>
+                        <small>Recipient consent must cover the selected sender. A Telegram restriction stops the batch; recipients are never retried through another account.</small>
                     </div>
                     <div class="form-group" v-else>
                         <label>Account</label>
@@ -1085,13 +1085,13 @@
                         <textarea class="form-control" v-model="bulksend.message" rows="4" placeholder="Type your message here..."></textarea>
                     </div>
                     <div class="form-group">
-                        <label>Consenting recipients (usernames or IDs, one per line; maximum 20)</label>
+                        <label>Consenting recipients (usernames or IDs, one per line)</label>
                         <textarea class="form-control" v-model="bulksend.targets" @input="bulksend.messages = {}" rows="5" placeholder="user1&#10;user2&#10;@username3"></textarea>
                     </div>
                     <div class="form-group">
                         <label>Import recipients and messages from CSV</label>
                         <input type="file" accept=".csv,text/csv" @change="importRecipientCSV($event, 'bulksend')" :disabled="bulksend.loading">
-                        <small>Headers: recipient (or username/id), optional message. Up to 20 recipients. A message-only CSV can contain one message row.</small>
+                        <small>Headers: recipient (or username/id), optional message. No recipient count cap. A message-only CSV can contain one message row.</small>
                         <p v-if="Object.keys(bulksend.messages).length">{{ Object.keys(bulksend.messages).length }} individual messages imported. Editing recipients clears them.</p>
                     </div>
                     <div class="form-group">
@@ -1103,23 +1103,22 @@
                     </div>
                     <div class="form-group">
                         <label><input type="checkbox" v-model="bulksend.filterBots"> Exclude bots</label>
+                        <label><input type="checkbox" v-model="bulksend.consentConfirmed"> I confirm these recipients consented to messages from the selected accounts.</label>
+                        <small>This records your consent declaration. Existing opt-outs still apply.</small>
                     </div>
                     <div class="form-group">
                         <label>Maximum recipients per account in this run</label>
-                        <input class="form-control" type="number" v-model.number="bulksend.perAccountLimit" min="1" max="20">
-                        <small>Maximum 20 recipients across all accounts. The delay also applies between accounts.</small>
+                        <input class="form-control" type="number" v-model.number="bulksend.perAccountLimit" min="0" step="1">
+                        <small>0 = unlimited. A positive value sets an optional cap for each account in this run.</small>
                     </div>
                     <div style="display: flex; gap: 15px;">
                         <div class="form-group" style="flex:1;">
                             <label>Delay Between Sends (sec)</label>
-                            <input class="form-control" type="number" v-model.number="bulksend.delay" min="3" max="3600" step="1">
+                            <input class="form-control" type="number" v-model.number="bulksend.delay" min="0" step="any">
                         </div>
-                        <div class="form-group" style="flex:1;">
-                            <label>Approval reference</label>
-                            <input class="form-control" v-model.trim="bulksend.approvalId" placeholder="Approved personal-send reference" autocomplete="off">
-                        </div>
+
                     </div>
-                    <button class="btn btn-primary" @click="runBulkSend" :disabled="bulksend.loading || (bulksend.rotationMode === 'single' ? !bulksend.accountId : !bulksend.accountIds.length) || (!bulksend.message && !Object.keys(bulksend.messages).length) || !bulksend.targets || !bulksend.approvalId">
+                    <button class="btn btn-primary" @click="runBulkSend" :disabled="bulksend.loading || (bulksend.rotationMode === 'single' ? !bulksend.accountId : !bulksend.accountIds.length) || (!bulksend.message && !Object.keys(bulksend.messages).length) || !bulksend.targets">
                         {{ bulksend.loading ? '⏳ Sending...' : '📨 Send Messages' }}
                     </button>
 
@@ -1983,11 +1982,11 @@
                         filterBots: true,
                         messages: {},
                         activityFilter: 'all',
-                        perAccountLimit: 20,
+                        perAccountLimit: 0,
+                        consentConfirmed: false,
                         message: '',
                         targets: '',
-                        approvalId: '',
-                        delay: 3,
+                        delay: 0,
                         loading: false,
                         resultMsg: '',
                         results: [],
@@ -2094,7 +2093,7 @@
                     if (!file) return;
                     try {
                         if (file.size > 2 * 1024 * 1024) throw new Error('CSV must be at most 2 MB.');
-                        const parsed = OpenTelesetCSV.recipients(await file.text(), destination === 'adder' ? 10 : 20);
+                        const parsed = OpenTelesetCSV.recipients(await file.text(), destination === 'adder' ? 10 : 0);
                         if (destination === 'adder') {
                             if (!parsed.targets.length) throw new Error('Recipient rows are required.');
                             this.adder.usernames = parsed.targets.join('\n');
@@ -2180,27 +2179,27 @@
                         const targets = [...new Set(this.bulksend.targets.trim().split('\n').map(t => t.trim().toLowerCase().replace(/^@/, '')).filter(Boolean))];
                         const rotating = this.bulksend.rotationMode === 'round_robin';
                         const accountIds = rotating ? this.bulksend.accountIds : [this.bulksend.accountId];
-                        if (!this.bulksend.approvalId || !targets.length || targets.length > 20 ||
-                            !Number.isFinite(this.bulksend.delay) || this.bulksend.delay < 3 || this.bulksend.delay > 3600) {
-                            throw new Error('Provide an approval reference, 1–20 consenting recipients, and a delay of at least 3 seconds.');
+                        if (!targets.length ||
+                            !Number.isFinite(this.bulksend.delay) || this.bulksend.delay < 0) {
+                            throw new Error('Provide recipients and a finite delay of zero seconds or more.');
                         }
-                        if (!accountIds.length || accountIds.length > 5 || accountIds.some(id => !id) ||
-                            !Number.isInteger(this.bulksend.perAccountLimit) || this.bulksend.perAccountLimit < 1 || this.bulksend.perAccountLimit > 20 ||
-                            targets.length > accountIds.length * this.bulksend.perAccountLimit) {
-                            throw new Error('Select 1–5 accounts and enough per-account capacity for this run.');
+                        if (!accountIds.length || accountIds.some(id => !id) ||
+                            !Number.isInteger(this.bulksend.perAccountLimit) || this.bulksend.perAccountLimit < 0 ||
+                            (this.bulksend.perAccountLimit > 0 && targets.length > accountIds.length * this.bulksend.perAccountLimit)) {
+                            throw new Error('Select accounts and set the per-account cap to 0 (unlimited) or enough capacity for this run.');
                         }
                         const res = await _api.post('/api/bulk/send-personal', {
                             account_id: rotating ? '' : this.bulksend.accountId,
                             account_ids: rotating ? accountIds : [],
                             rotation_mode: this.bulksend.rotationMode,
                             per_account_limit: this.bulksend.perAccountLimit,
+                            consent_confirmed: this.bulksend.consentConfirmed,
                             activity_filter: this.bulksend.activityFilter,
                             filter_bots: this.bulksend.filterBots,
                             messages: Object.fromEntries(targets.filter(t => Object.hasOwn(this.bulksend.messages, t)).map(t => [t, this.bulksend.messages[t]])),
                             message: this.bulksend.message,
                             targets: targets,
                             delay: this.bulksend.delay,
-                            approval_id: this.bulksend.approvalId.trim(),
                         });
                         const d = res.data;
                         const outcome = d.success === true && !d.failed ? 'Completed' : 'Incomplete or denied';
@@ -2210,6 +2209,7 @@
                         if (d.error) this.bulksend.resultMsg += ' ' + d.error;
                     } catch (e) {
                         this.bulksend.resultMsg = '❌ ' + (e.response?.data?.detail || e.message);
+                        if (/policy_unavailable|consent_missing_or_invalid/.test(this.bulksend.resultMsg)) this.bulksend.resultMsg += ' Confirm recipient consent before sending.';
                     } finally {
                         this.bulksend.loading = false;
                     }

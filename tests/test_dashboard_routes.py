@@ -89,3 +89,25 @@ assert http.get("/dashboard").status_code == 200
         capture_output=True, text=True, timeout=30,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_websocket_disconnect_during_accept_is_clean(tmp_path):
+    (tmp_path / "static").mkdir()
+    root = Path(__file__).resolve().parents[1]
+    script = '''
+import asyncio
+from unittest.mock import AsyncMock
+from types import SimpleNamespace
+import dashboard
+
+async def run():
+    for error in (OSError('closed'), dashboard.WebSocketDisconnect(1006)):
+        socket = SimpleNamespace(accept=AsyncMock(side_effect=error))
+        await dashboard.websocket_endpoint(socket)
+        assert socket not in dashboard.manager.active_connections
+        dashboard.manager.disconnect(socket)
+asyncio.run(run())
+'''
+    env = dict(os.environ, PYTHONPATH=f'{root}:{root / "src"}', APP_ENV='development')
+    result = subprocess.run([sys.executable, '-c', script], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr

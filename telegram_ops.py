@@ -11,7 +11,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, model_validator
 from telethon import errors, functions, types, utils
 
@@ -85,16 +85,17 @@ class AddMembersRequest(BaseModel):
 class BulkSendRequest(BaseModel):
     account_id: str = ""
     message: str = Field(default="", max_length=4096)
-    messages: dict[str, str] = Field(default_factory=dict, max_length=20)
+    messages: dict[str, str] = Field(default_factory=dict)
     filter_bots: bool = True
-    targets: List[str] = Field(min_length=1, max_length=20)           # list of usernames or user IDs
-    delay: float = Field(default=3.0, ge=3, le=3600, allow_inf_nan=False)           # seconds between sends
+    targets: List[str] = Field(min_length=1)  # finite, explicit list; no app batch cap
+    delay: float = Field(default=0.0, ge=0, allow_inf_nan=False)
     template_id: Optional[str] = None
     approval_id: Optional[str] = None      # server-side approval reference
     activity_filter: ActivityFilter = "all"
     rotation_mode: Literal["single", "round_robin"] = "single"
-    account_ids: List[str] = Field(default_factory=list, max_length=5)
-    per_account_limit: int = Field(default=20, ge=1, le=20, strict=True)
+    account_ids: List[str] = Field(default_factory=list)
+    per_account_limit: int = Field(default=0, ge=0, strict=True)  # 0 = unlimited
+    consent_confirmed: bool = Field(default=False, strict=True)
 
     @model_validator(mode="after")
     def validate_accounts(self):
@@ -117,7 +118,7 @@ class BulkSendRequest(BaseModel):
                 raise ValueError("Single mode requires one account_id and no rotation accounts")
         elif (not self.account_ids or any(not a.strip() for a in self.account_ids)
               or len(set(self.account_ids)) != len(self.account_ids) or self.account_id):
-            raise ValueError("Rotation requires 1–5 unique account_ids and no account_id")
+            raise ValueError("Rotation requires unique account_ids and no account_id")
         return self
 
     def selected_accounts(self):
@@ -312,7 +313,7 @@ async def add_members(request: AddMembersRequest):
 # ============ 3. Bulk Personal Message Sender ============
 
 @telegram_ops_router.post("/api/bulk/send-personal")
-async def bulk_send_personal(request: BulkSendRequest):
+async def bulk_send_personal(request: BulkSendRequest, http_request: Request = None):
     """
     Send once per consenting recipient using one account or an explicit pool.
     Rotation never retries a recipient on another account after a restriction.
@@ -320,14 +321,21 @@ async def bulk_send_personal(request: BulkSendRequest):
     try:
         if not request.targets:
             raise HTTPException(status_code=400, detail="At least one target is required")
-        if len(request.targets) > 20 or request.delay < 3:
-            raise HTTPException(status_code=400, detail="Bulk-send safety bounds exceeded")
         targets = list(dict.fromkeys(t.strip().lower().lstrip("@") for t in request.targets))
         if not all(targets):
             raise HTTPException(status_code=400, detail="Recipient cannot be empty")
         account_ids = request.selected_accounts()
-        if len(targets) > len(account_ids) * request.per_account_limit:
+        if request.per_account_limit and len(targets) > len(account_ids) * request.per_account_limit:
             raise HTTPException(status_code=400, detail="Per-account run limit exceeded")
+        operator = getattr(getattr(http_request, "state", None), "user", None)
+        if request.consent_confirmed:
+            if not operator or not operator.id:
+                raise HTTPException(status_code=403, detail="Authenticated operator required")
+            try:
+                for index, account_id in enumerate(account_ids):
+                    outreach_policy.record_personal_consents(targets[index::len(account_ids)], account_id, operator.id)
+            except OutreachDenied as error:
+                raise HTTPException(status_code=403, detail=str(error)) from None
         for account_id in account_ids:
             _enforce_outreach("personal_send", targets, account_id, request.approval_id)
         clients = {}
@@ -381,6 +389,8 @@ async def bulk_send_personal(request: BulkSendRequest):
                     results.append({"target": target, "account_id": account_id, "success": False, "skipped": "activity_not_matched"})
                     skipped += 1
                     continue
+                if request.consent_confirmed:
+                    outreach_policy.record_personal_consents([peer_id], account_id, operator.id)
                 await dispatch_outreach(action="personal_send", subject=peer_id,
                     account_id=account_id, approval_id=request.approval_id, delay=request.delay,
                     send=lambda: client.send_message(entity, request.messages.get(target, message_text)))
@@ -389,7 +399,7 @@ async def bulk_send_personal(request: BulkSendRequest):
                 stats_tracker.record_message_sent(account_id)
                 log_manager.add_log(
                     "BulkSend", account_id,
-                    "Approved personal message sent", "success",
+                    "Personal message sent", "success",
                 )
             except Exception as e:
                 error_msg = str(e) if isinstance(e, OutreachDenied) else type(e).__name__
@@ -398,7 +408,7 @@ async def bulk_send_personal(request: BulkSendRequest):
                 failed += 1
                 log_manager.add_log(
                     "BulkSend", account_id,
-                    f"Approved personal send failed: {type(e).__name__}", "error",
+                    f"Personal send failed: {type(e).__name__}", "error",
                 )
                 if isinstance(e, (errors.FloodWaitError, errors.PeerFloodError,
                                   errors.UserDeactivatedBanError, errors.AuthKeyUnregisteredError,
