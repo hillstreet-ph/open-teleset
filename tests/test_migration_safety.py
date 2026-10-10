@@ -1,5 +1,6 @@
 """Legacy migrations must never replace canonical shared Auth contracts."""
 from unittest.mock import AsyncMock
+import ssl
 from urllib.parse import urlparse
 
 import pytest
@@ -124,3 +125,26 @@ async def test_missing_configuration_is_reported(target, monkeypatch, capsys):
     monkeypatch.setattr(migrations, "_candidate_dsns", list)
     assert await migrations.main() == 1
     assert "MIGRATIONS_STATUS=not_configured" in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
+async def test_database_ca_keeps_hostname_and_certificate_verification(monkeypatch):
+    certificate = migrations.ROOT / "deploy/certs/supabase-prod-ca-2021.crt"
+    monkeypatch.setenv("PGSSLROOTCERT", str(certificate))
+    connect = AsyncMock(return_value=object())
+    monkeypatch.setattr(migrations.asyncpg, "connect", connect)
+    await migrations._connect(["postgresql://localhost/postgres"])
+    context = connect.call_args.kwargs["ssl"]
+    assert context.check_hostname is True
+    assert context.verify_mode == ssl.CERT_REQUIRED
+    assert context.cert_store_stats()["x509_ca"] == 1
+
+
+@pytest.mark.asyncio
+async def test_bad_database_ca_fails_before_connection(monkeypatch, tmp_path):
+    monkeypatch.setenv("PGSSLROOTCERT", str(tmp_path / "missing.crt"))
+    connect = AsyncMock()
+    monkeypatch.setattr(migrations.asyncpg, "connect", connect)
+    with pytest.raises(FileNotFoundError):
+        await migrations._connect(["postgresql://localhost/postgres"])
+    connect.assert_not_awaited()

@@ -10,7 +10,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PYTHONPATH=/app/src:/app
+    PYTHONPATH=/app/src:/app \
+    PGSSLROOTCERT=/app/deploy/certs/supabase-prod-ca-2021.crt
 
 WORKDIR /app
 

@@ -76,6 +76,7 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           DATABASE_POOLER_URL: ${{ secrets.DATABASE_POOLER_URL }}
+          PGSSLROOTCERT: deploy/certs/supabase-prod-ca-2021.crt
           SUPABASE_REGION: ap-southeast-1
         shell: bash
         run: |
