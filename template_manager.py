@@ -21,6 +21,27 @@ class TemplateManager:
         self.templates: Dict[str, Dict] = {}
         self._load_templates()
 
+    def ensure_english_defaults(self):
+        """Translate only unchanged built-ins; preserve custom text and usage history."""
+        defaults = {
+            "greeting": ("Greeting", "Hello {name}, it is {time}. Have a great day!",
+                         "问候消息", "你好 {name}，现在是 {time}，祝你今天愉快！"),
+            "notification": ("Notification", "Notice: {content}\nSent at: {date} {time}",
+                             "通知消息", "通知：{content}\n发送时间：{date} {time}"),
+        }
+        changed = False
+        for key, (name, content, old_name, old_content) in defaults.items():
+            if key not in self.templates:
+                self.add_template(key, name, content, "general")
+                continue
+            template = self.templates[key]
+            for field, old, new in (("name", old_name, name), ("content", old_content, content)):
+                if template.get(field) == old:
+                    template[field] = new
+                    changed = True
+        if changed:
+            self._save_templates()
+
     def _load_templates(self):
         """加载模板"""
         if os.path.exists(TEMPLATE_FILE):
@@ -45,7 +66,7 @@ class TemplateManager:
         template_id: str,
         name: str,
         content: str,
-        category: str = "其他",
+        category: str = "other",
         variables: List[str] = None
     ) -> bool:
         """
@@ -217,7 +238,7 @@ class TemplateManager:
 
     def get_categories(self) -> List[str]:
         """获取所有分类"""
-        categories = set(t.get("category", "其他") for t in self.templates.values())
+        categories = set(t.get("category", "other") for t in self.templates.values())
         return sorted(categories)
 
     def get_stats(self) -> Dict:

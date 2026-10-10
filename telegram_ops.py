@@ -75,6 +75,8 @@ class AddMembersRequest(BaseModel):
     source_target: Optional[str] = None   # source channel/group (if scraping first)
     dest_target: str                       # destination channel/group
     usernames: Optional[List[str]] = None  # explicit list of usernames/IDs
+    filter_bots: bool = True
+    activity_filter: ActivityFilter = "all"
     limit: int = Field(default=10, ge=1, le=10)                        # max members to add per run
     delay: float = Field(default=35.0, ge=35, le=3600, allow_inf_nan=False)                    # seconds between each add (Telegram rate limit)
     approval_id: Optional[str] = None      # server-side approval reference
@@ -82,7 +84,9 @@ class AddMembersRequest(BaseModel):
 
 class BulkSendRequest(BaseModel):
     account_id: str = ""
-    message: str
+    message: str = Field(default="", max_length=4096)
+    messages: dict[str, str] = Field(default_factory=dict, max_length=20)
+    filter_bots: bool = True
     targets: List[str] = Field(min_length=1, max_length=20)           # list of usernames or user IDs
     delay: float = Field(default=3.0, ge=3, le=3600, allow_inf_nan=False)           # seconds between sends
     template_id: Optional[str] = None
@@ -94,6 +98,20 @@ class BulkSendRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_accounts(self):
+        normalized = {}
+        targets = {t.strip().lower().lstrip("@") for t in self.targets}
+        for key, value in self.messages.items():
+            recipient = key.strip().lower().lstrip("@")
+            if not recipient or recipient not in targets or not value.strip() or len(value) > 4096:
+                raise ValueError("CSV messages require a listed recipient and 1–4096 characters")
+            if recipient in normalized and normalized[recipient] != value:
+                raise ValueError("Conflicting messages for the same recipient")
+            normalized[recipient] = value
+        self.messages = normalized
+        if not self.message.strip() and not self.template_id and any(t not in normalized for t in targets):
+            raise ValueError("A message is required for every recipient")
+        if self.template_id and self.messages:
+            raise ValueError("Choose either template or CSV messages")
         if self.rotation_mode == "single":
             if not self.account_id.strip() or self.account_ids:
                 raise ValueError("Single mode requires one account_id and no rotation accounts")
@@ -202,7 +220,9 @@ async def add_members(request: AddMembersRequest):
         if not request.usernames:
             raise HTTPException(status_code=400, detail="Explicit usernames are required")
 
-        user_list = request.usernames[:request.limit]
+        user_list = list(dict.fromkeys(u.strip().lower().lstrip("@") for u in request.usernames))[:request.limit]
+        if not all(user_list):
+            raise HTTPException(status_code=400, detail="Recipient cannot be empty")
         _enforce_outreach("member_add", user_list, request.account_id, request.approval_id)
 
         client = await account_manager.get_client(request.account_id)
@@ -217,10 +237,23 @@ async def add_members(request: AddMembersRequest):
         results = []
         added = 0
         failed = 0
+        skipped = 0
+        stopped_reason = None
+        peers_seen = set()
 
         for i, username in enumerate(user_list):
             try:
-                user_entity = await client.get_entity(username)
+                user_entity = await client.get_entity(int(username) if username.isdigit() else username)
+                peer_id = utils.get_peer_id(user_entity)
+                reason = ("bot_excluded" if request.filter_bots and getattr(user_entity, "bot", False)
+                          else "duplicate_recipient" if peer_id in peers_seen
+                          else "activity_not_matched" if not matches_activity(user_entity, request.activity_filter)
+                          else None)
+                peers_seen.add(peer_id)
+                if reason:
+                    results.append({"username": username, "success": False, "skipped": reason})
+                    skipped += 1
+                    continue
                 await dispatch_outreach(action="member_add", subject=utils.get_peer_id(user_entity),
                     account_id=request.account_id, approval_id=request.approval_id, delay=request.delay,
                     send=lambda: client(
@@ -236,20 +269,29 @@ async def add_members(request: AddMembersRequest):
                     "Approved member addition completed", "success",
                 )
             except Exception as e:
-                error_msg = type(e).__name__
+                error_msg = str(e) if isinstance(e, OutreachDenied) else type(e).__name__
+                record_provider_restriction(request.account_id, e)
                 results.append({"username": username, "success": False, "error": error_msg})
                 failed += 1
                 log_manager.add_log(
                     "MemberAdder", request.account_id,
                     f"Approved member addition failed: {type(e).__name__}", "error",
                 )
+                if isinstance(e, (errors.FloodWaitError, errors.PeerFloodError,
+                                  errors.UserDeactivatedBanError, errors.AuthKeyUnregisteredError,
+                                  errors.FrozenMethodInvalidError, OutreachDenied)):
+                    stopped_reason = error_msg
+                    break
 
             # Rate-limit delay (except after the last one)
             if i < len(user_list) - 1:
                 await asyncio.sleep(request.delay)
 
         return {
-            "success": failed == 0,
+            "success": failed == 0 and stopped_reason is None,
+            "skipped": skipped,
+            "pending": len(user_list) - len(results),
+            "stopped_reason": stopped_reason,
             "dest_target": request.dest_target,
             "added": added,
             "failed": failed,
@@ -310,6 +352,9 @@ async def bulk_send_personal(request: BulkSendRequest):
             except Exception:
                 pass  # fall back to request.message
 
+        if (not message_text.strip() and any(t not in request.messages for t in targets)) or len(message_text) > 4096:
+            raise HTTPException(status_code=400, detail="A valid message or renderable template is required")
+
         results = []
         sent = 0
         failed = 0
@@ -321,20 +366,24 @@ async def bulk_send_personal(request: BulkSendRequest):
             account_id = account_ids[i % len(account_ids)]
             client = clients[account_id]
             try:
-                entity = await client.get_entity(target)
+                entity = await client.get_entity(int(target) if target.isdigit() else target)
                 peer_id = utils.get_peer_id(entity)
                 if peer_id in peers_seen:
                     results.append({"target": target, "account_id": account_id, "success": False, "skipped": "duplicate_recipient"})
                     skipped += 1
                     continue
                 peers_seen.add(peer_id)
+                if request.filter_bots and getattr(entity, "bot", False):
+                    results.append({"target": target, "account_id": account_id, "success": False, "skipped": "bot_excluded"})
+                    skipped += 1
+                    continue
                 if not matches_activity(entity, request.activity_filter):
                     results.append({"target": target, "account_id": account_id, "success": False, "skipped": "activity_not_matched"})
                     skipped += 1
                     continue
                 await dispatch_outreach(action="personal_send", subject=peer_id,
                     account_id=account_id, approval_id=request.approval_id, delay=request.delay,
-                    send=lambda: client.send_message(entity, message_text))
+                    send=lambda: client.send_message(entity, request.messages.get(target, message_text)))
                 results.append({"target": target, "account_id": account_id, "success": True})
                 sent += 1
                 stats_tracker.record_message_sent(account_id)

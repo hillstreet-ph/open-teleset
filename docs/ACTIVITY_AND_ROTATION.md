@@ -64,3 +64,54 @@ Tests use synthetic peers and mocked clients; no real Telegram messages are
 sent. Deployment acceptance still requires a healthy runtime database and
 authenticated UI/API checks. Roll back code by the previous verified commit;
 retain the rate database, encrypted sessions and volume when rolling back.
+
+## CSV and bot controls
+
+All three tabs default to excluding bots. Sender and Adder resolve each recipient
+before filtering; exclusions show as skipped and never dispatch an RPC. Adder
+also supports the same activity windows and stops on provider restrictions.
+Numeric recipient IDs resolve as integers, preventing phone-contact lookup.
+
+Sender CSV headers: `recipient` (or `username`, `target`, `id`) and optional
+`message`. Messages can differ by recipient; missing row messages use the
+message box. A one-row, message-only CSV fills the message box. Import only
+prepares a reviewed batch; it does not send, record consent or create approvals.
+The current 20-recipient limit and all existing policy checks remain. Duplicate
+recipients with conflicting messages are rejected. Editing the recipient field
+clears imported individual messages. Adder CSV supports up to 10 recipients.
+
+Scraper Export CSV contains username, ID, names, bot flag and visible activity.
+It preserves quoted/multiline values and protects spreadsheet formula cells.
+Exported IDs are a fallback when the username is empty. A scraper export is
+not proof of consent. Files are parsed in the browser, capped at 2 MB, and are
+not uploaded or saved by import. Blank or malformed files show an error without
+replacing the current batch.
+
+## English built-in templates
+
+At startup, unchanged Chinese greeting/notification names and text are
+translated to English. IDs, variables and usage history are retained. Custom
+names and custom message text are preserved. The greetings use `{name}` and
+`{time}`; notification uses `{content}`, `{date}` and `{time}`.
+
+## Free global proxy default
+
+When no global proxy exists, background startup discovery checks up to 12
+SOCKS5 candidates from Proxifly's public list. Only public IP addresses with
+valid ports are accepted; private addresses, hostnames and credential-bearing
+entries are rejected. Candidates must pass Telegram TCP tunnel and certificate-
+verified Telegram website TLS checks. No account credentials or Telegram RPCs
+are used in testing. Selection is bounded, not a guarantee of availability.
+Source: https://github.com/proxifly/free-proxy-list
+
+One verified candidate becomes the persisted global default; per-account
+assignments take priority. Existing global settings are preserved. Accounts
+already connected must reconnect to apply a changed proxy. There is no automatic
+proxy rotation after a Telegram restriction. Removing the global proxy disables
+future discovery persistently. Find free global proxy explicitly re-enables it.
+If the source or candidates fail, no proxy is saved; logs show the outcome.
+Liveness and sign-in startup never wait for discovery. Public proxy availability
+and performance can change; the connected status is not delivery verification.
+
+Rollback to the preceding commit retains encrypted sessions, proxy configuration
+and the rate database. No database migration is required for these additions.

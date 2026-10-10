@@ -6,12 +6,17 @@
 import asyncio
 import json
 import os
+import ipaddress
+import random
+import ssl
+from urllib.parse import urlsplit
 from datetime import datetime
 from typing import Dict, Optional
 import aiohttp
 
 
 ACCOUNTS_DIR = "./accounts"
+FREE_PROXY_SOURCE = "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/protocols/socks5/data.txt"
 PROXIES_FILE = os.path.join(ACCOUNTS_DIR, "proxies.json")
 
 
@@ -22,6 +27,8 @@ class ProxyManager:
         self.proxies: Dict[str, Dict] = {}  # 代理配置
         self.global_proxy: Optional[Dict] = None  # 全局代理
         self.proxy_stats: Dict[str, Dict] = {}  # 代理统计
+        self.free_global_enabled = True
+        self._free_proxy_lock = asyncio.Lock()
         self._load_proxies()
 
     def _load_proxies(self):
@@ -29,6 +36,7 @@ class ProxyManager:
         if os.path.exists(PROXIES_FILE):
             with open(PROXIES_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
+                self.free_global_enabled = data.get("free_global_enabled", True)
                 self.global_proxy = data.get("global")
                 self.proxies = data.get("proxies", {})
                 self.proxy_stats = data.get("stats", {})
@@ -38,6 +46,7 @@ class ProxyManager:
         os.makedirs(ACCOUNTS_DIR, exist_ok=True)
         with open(PROXIES_FILE, 'w', encoding='utf-8') as f:
             json.dump({
+                "free_global_enabled": self.free_global_enabled,
                 "global": self.global_proxy,
                 "proxies": self.proxies,
                 "stats": self.proxy_stats
@@ -55,6 +64,7 @@ class ProxyManager:
             }
         """
         return {
+            "free_global_enabled": self.free_global_enabled,
             "global": self.global_proxy,
             "proxies": self.proxies,
             "stats": self.proxy_stats
@@ -173,6 +183,7 @@ class ProxyManager:
             是否成功
         """
         self.global_proxy = None
+        self.free_global_enabled = False
         self._save_proxies()
         return True
 
@@ -324,6 +335,101 @@ class ProxyManager:
         # 3. 无代理
         return None
 
+    @staticmethod
+    def free_candidates(text):
+        """Accept only public SOCKS5 IPv4/IPv6 addresses from the fixed source."""
+        candidates = []
+        seen = set()
+        for line in text.splitlines():
+            try:
+                url = urlsplit(line.strip())
+                address = ipaddress.ip_address(url.hostname or "")
+                if (url.scheme != "socks5" or not address.is_global or not url.port
+                        or url.username or url.password or url.path or url.query or url.fragment):
+                    continue
+                key = (str(address), url.port)
+                if key in seen:
+                    continue
+                seen.add(key)
+                candidates.append({"protocol": "socks5", "host": str(address), "port": url.port})
+            except ValueError:
+                continue
+        return candidates
+
+    async def fetch_free_candidates(self):
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+            async with session.get(FREE_PROXY_SOURCE, allow_redirects=False) as response:
+                response.raise_for_status()
+                chunks = []
+                size = 0
+                async for chunk in response.content.iter_chunked(65536):
+                    size += len(chunk)
+                    if size > 2 * 1024 * 1024:
+                        raise ValueError("Free proxy list exceeds size limit")
+                    chunks.append(chunk)
+        return self.free_candidates(b"".join(chunks).decode("utf-8"))
+
+    async def ensure_free_global_proxy(self, enable=False):
+        """Use one tested free proxy as a stable default; never rotate on restrictions."""
+        async with self._free_proxy_lock:
+            if enable:
+                self.free_global_enabled = True
+                self._save_proxies()
+            if self.global_proxy:
+                return {"success": True, "status": "existing_global_preserved"}
+            if not self.free_global_enabled:
+                return {"success": False, "status": "disabled"}
+            try:
+                candidates = await self.fetch_free_candidates()
+                selected = random.sample(candidates, min(12, len(candidates)))
+                for start in range(0, len(selected), 4):
+                    group = selected[start:start + 4]
+                    results = await asyncio.gather(*(self.test_proxy(p, timeout=3) for p in group))
+                    for config, result in zip(group, results):
+                        if not result.get("success"):
+                            continue
+                        # A manual setting created while probing always wins.
+                        if self.global_proxy or not self.free_global_enabled:
+                            return {"success": bool(self.global_proxy), "status": "configuration_changed"}
+                        self.set_global_proxy(**config)
+                        self.global_proxy.update({"source": "proxifly", "free": True,
+                                                  "verified_at": datetime.now().isoformat()})
+                        self._save_proxies()
+                        return {"success": True, "status": "verified_free_global", "tested": start + len(group)}
+                return {"success": False, "status": "no_verified_free_proxy", "tested": len(selected)}
+            except Exception as error:
+                return {"success": False, "status": "free_proxy_source_unavailable", "error": type(error).__name__}
+
+    async def test_socks_proxy(self, proxy_config, timeout):
+        from python_socks import ProxyType
+        from python_socks.async_.asyncio import Proxy
+
+        proxy = Proxy(proxy_type=ProxyType.SOCKS5 if proxy_config["protocol"] == "socks5" else ProxyType.SOCKS4,
+                      host=proxy_config["host"], port=proxy_config["port"],
+                      username=proxy_config.get("username"), password=proxy_config.get("password"), rdns=True)
+        # Verify Telegram transport connectivity, without authentication or RPCs.
+        sock = await proxy.connect(dest_host="149.154.167.51", dest_port=443, timeout=timeout)
+        sock.close()
+        # Verify an authenticated TLS tunnel as well; a connect-only proxy can lie.
+        sock = await proxy.connect(dest_host="telegram.org", dest_port=443, timeout=timeout)
+        writer = None
+        try:
+            reader, writer = await asyncio.wait_for(asyncio.open_connection(
+                sock=sock, ssl=ssl.create_default_context(), server_hostname="telegram.org"), timeout)
+            writer.write(b"HEAD / HTTP/1.1\r\nHost: telegram.org\r\nConnection: close\r\n\r\n")
+            await writer.drain()
+            status = await asyncio.wait_for(reader.readline(), timeout)
+            return b" 200 " in status or b" 302 " in status or b" 301 " in status
+        finally:
+            if writer:
+                writer.close()
+                try:
+                    await asyncio.wait_for(writer.wait_closed(), timeout)
+                except (TimeoutError, OSError):
+                    pass
+            else:
+                sock.close()
+
     async def test_proxy(self, proxy_config: Dict, timeout: int = 10) -> Dict:
         """
         测试代理连接
@@ -342,6 +448,9 @@ class ProxyManager:
         start_time = datetime.now()
 
         try:
+            if proxy_config.get("protocol") in {"socks5", "socks4"}:
+                success = await asyncio.wait_for(self.test_socks_proxy(proxy_config, timeout), timeout * 3)
+                return {"success": success, "response_time": (datetime.now() - start_time).total_seconds() * 1000}
             # 构建代理URL
             protocol = proxy_config.get("protocol", "http")
             host = proxy_config.get("host")
@@ -372,9 +481,9 @@ class ProxyManager:
             return {"success": False, "error": f"HTTP {response.status}"}
 
         except asyncio.TimeoutError:
-            return {"success": False, "error": "连接超时"}
+            return {"success": False, "error": "Connection timed out"}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": type(e).__name__}
 
     async def test_all_proxies(self) -> Dict:
         """

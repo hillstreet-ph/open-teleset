@@ -40,23 +40,14 @@ from open_teleset.read_only_mcp import create_read_only_mcp
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
     # 启动时执行
-    # 初始化默认模板（如果没有模板）
-    if not template_manager.list_templates():
-        template_manager.add_template(
-            "greeting",
-            "问候消息",
-            "你好 {name}，现在是 {time}，祝你今天愉快！",
-            "general",
-            ["name", "time"]
-        )
-        template_manager.add_template(
-            "notification",
-            "通知消息",
-            "通知：{content}\n发送时间：{date} {time}",
-            "general",
-            ["content", "date", "time"]
-        )
-        print("✅ 已初始化默认消息模板")
+    template_manager.ensure_english_defaults()
+    async def initialize_free_proxy():
+        proxy_result = await proxy_manager.ensure_free_global_proxy()
+        log_manager.add_log("FreeProxy", "global", proxy_result["status"],
+                            "success" if proxy_result["success"] else "warning")
+
+    # Network discovery cannot delay liveness or authentication startup.
+    proxy_task = asyncio.create_task(initialize_free_proxy())
 
     # 启动定时任务调度器
     scheduler_task = asyncio.create_task(task_scheduler.start())
@@ -72,6 +63,11 @@ async def lifespan(app: FastAPI):
         yield
 
     # 关闭时执行
+    proxy_task.cancel()
+    try:
+        await proxy_task
+    except asyncio.CancelledError:
+        pass
     scheduler_task.cancel()
     health_monitor.stop_monitoring()
     print("🛴 定时任务调度器和健康监控已停止")
@@ -518,6 +514,14 @@ async def remove_global_proxy():
     proxy_manager.remove_global_proxy()
     log_manager.add_log("代理管理", "global", "移除全局代理", "warning")
     return {"success": True, "message": "全局代理已移除"}
+
+
+@app.post("/api/proxies/free-global")
+async def configure_free_global_proxy():
+    result = await proxy_manager.ensure_free_global_proxy(enable=True)
+    log_manager.add_log("FreeProxy", "global", result["status"],
+                        "success" if result["success"] else "warning")
+    return result
 
 
 @app.post("/api/proxies/assign")
