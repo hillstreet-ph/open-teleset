@@ -4,16 +4,19 @@ Use **Accounts → Check connection** to reconnect a saved Telegram session and
 run the existing authenticated health check. This performs read-only Telegram
 requests; it sends no messages and adds no members.
 
-Saved-session connection probes have a 20-second deadline. A Telegram data-center
-redirect may repeat the authorization probe once. Flood waits and other failures
-are surfaced without retrying. Failed or cancelled attempts disconnect their
-client; concurrent health and user requests share one connection attempt.
-Successful reconnection saves the current encrypted session so changed
-connection information survives restart. Existing outbound consent, suppression,
+Saved-session connection probes have a 20-second deadline, using a timeout
+supported by Python 3.10. The fixed read-only authorization probe does not follow
+data-center redirects: Telethon's generic redirect handler clears the original
+authorization key. A redirect instead requests a fresh sign-in while preserving
+the stored session. Flood waits and other failures are surfaced without retrying.
+Failed attempts disconnect their client; concurrent health and user requests
+share both success and failure results. Cancelling one waiter does not cancel
+another waiter's bounded probe. Successful reconnection saves the encrypted
+session. Existing outbound consent, suppression,
 rate cooldown and zero-retry behavior remains in force.
 
 The account list and sender distinguish expired/revoked sessions, timeouts,
-provider cooldowns, temporary server failures, and repeated redirects. An
+provider cooldowns, temporary server failures, and data-center redirects. An
 expired/revoked session needs a new Telegram sign-in; reconnecting cannot restore
 revoked authorization. Existing records and encrypted sessions are retained.
 
@@ -23,11 +26,14 @@ UTC. Tables scroll within mobile cards rather than widening the entire page.
 
 ## Verification
 
-The reconnection regressions use real Telethon RPC dispatch with synthetic
-responses. They cover bounded redirect handling, changed session persistence,
+The reconnection regressions use real Telethon clients with synthetic sender
+responses. They cover preservation of authorization on redirects, session persistence,
 unauthorized/server/flood/timeout failures, cancellation, invalid stored sessions,
-concurrent callers, health recovery, and QR persistence failure. DC switching is
-mocked; these tests do not establish that a real revoked session can recover.
+concurrent successful/failed callers, health client eviction, and QR persistence
+failure through the status endpoint and polling UI. Redirect tests assert that
+the saved-client migration guard preserves the original authorization, including
+during Telethon connection bootstrap. These tests do not establish that a revoked
+session can recover.
 
 Browser-script tests cover the existing health endpoint button and UTC rendering.
 Live UI inspection covers Accounts, Proxies, Health, Stats, Logs, Templates,
