@@ -15,7 +15,7 @@ import os
 from fastapi.testclient import TestClient
 import dashboard
 
-with TestClient(dashboard.app, base_url="https://app.open-teleset.site") as http:
+with TestClient(dashboard.app, base_url="https://open-teleset.site") as http:
     response = http.get("/", follow_redirects=False)
     assert response.status_code == 307
     assert response.headers["location"] == "/dashboard"
@@ -63,6 +63,19 @@ with TestClient(dashboard.app, base_url="https://app.open-teleset.site") as http
     assert response.status_code == 400
     assert "access-control-allow-origin" not in response.headers
     assert http.get("/readyz").status_code == 503
+http = TestClient(dashboard.app, base_url="https://app.open-teleset.site")
+for method in ["GET", "HEAD"]:
+    for path in ["/", "/dashboard"]:
+        response = http.request(method, path + "?code=synthetic-code", follow_redirects=False)
+        assert response.status_code == 307
+        assert response.headers["location"] == "https://open-teleset.site/dashboard?code=synthetic-code"
+        assert response.headers["cache-control"] == "no-store"
+# Redirects apply only to the public shell; private endpoints retain their gate.
+assert http.get("/api/auth/me").status_code == 401
+assert http.post("/dashboard").status_code == 401
+http = TestClient(dashboard.app, base_url="http://localhost:8080")
+assert http.get("/", follow_redirects=False).headers["location"] == "/dashboard"
+assert http.get("/dashboard").status_code == 200
 '''
     env = {key: value for key, value in os.environ.items() if not key.startswith((
         "SUPABASE_", "DATABASE_", "SENTRY_", "TELEGRAM_",

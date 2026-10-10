@@ -2247,7 +2247,7 @@
                         if (settings.external?.[provider] !== true) {
                             throw new Error(`${provider === 'google' ? 'Google' : 'GitHub'} sign-in is not configured yet. Please use email sign-in or contact your administrator.`)
                         }
-                        const options = { redirectTo: window.location.origin + '/dashboard' }
+                        const options = { redirectTo: (window.OPEN_TELESET_CONFIG?.pagesOrigin || window.location.origin) + '/dashboard' }
                         // Android uses a full-page redirect; Google lets the user
                         // choose either account instead of reusing the current one.
                         if (provider === 'google') {
@@ -2268,7 +2268,7 @@
                     if (!this.authEmail) { this.authError = 'Enter your email first'; return }
                     this.authError = ''; this.authSuccess = ''; this.authSubmitting = true
                     try {
-                        const { error } = await _supabase.auth.resetPasswordForEmail(this.authEmail, { redirectTo: window.location.origin + '/dashboard' })
+                        const { error } = await _supabase.auth.resetPasswordForEmail(this.authEmail, { redirectTo: (window.OPEN_TELESET_CONFIG?.pagesOrigin || window.location.origin) + '/dashboard' })
                         if (error) throw error
                         this.authSuccess = 'Password reset email sent!'
                     } catch (e) { this.authError = e.message || 'Reset failed' }

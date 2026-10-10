@@ -57,8 +57,8 @@ test('password SDK failure and duplicate submissions release or retain the guard
 function harness(external = {}, fetchError = null, sdkError = null) {
   const calls = [];
   const context = {
-    window: { location: { origin: 'https://open-teleset.site' }, OPEN_TELESET_CONFIG: {
-      supabaseUrl: 'https://project.supabase.co/', supabaseAnonKey: 'public-key'
+    window: { location: { origin: 'https://app.open-teleset.site' }, OPEN_TELESET_CONFIG: {
+      supabaseUrl: 'https://project.supabase.co/', supabaseAnonKey: 'public-key', pagesOrigin: 'https://open-teleset.site'
     } },
     AbortSignal,
     fetch: async (url, init) => {
@@ -82,7 +82,7 @@ test('disabled provider stays on dashboard with actionable error', async () => {
   assert.equal(state.authSuccess, '');
 });
 
-test('Google uses current dashboard origin and account chooser for either email', async () => {
+test('Google returns to the canonical dashboard from the secondary host', async () => {
   for (const email of ['tanauancharles1@gmail.com', 'kairocasino8@gmail.com']) {
     const { state, calls } = harness({ google: true });
     state.authEmail = email;
@@ -129,4 +129,17 @@ test('duplicate submission and unknown providers never start OAuth', async () =>
   await state.signInWithOAuth('unknown');
   assert.equal(calls.length, 0);
   assert.match(state.authError, /Unsupported/);
+});
+
+const resetMethod = html.slice(html.indexOf('async sendPasswordReset() {'), html.indexOf('async updatePassword() {'));
+test('password recovery returns to the canonical dashboard', async () => {
+  const calls = [];
+  const state = { authEmail: 'account@example.com', authError: '', authSuccess: '', authSubmitting: false };
+  state.sendPasswordReset = vm.runInNewContext(`({${resetMethod}}).sendPasswordReset`, {
+    window: { location: { origin: 'https://app.open-teleset.site' }, OPEN_TELESET_CONFIG: { pagesOrigin: 'https://open-teleset.site' } },
+    _supabase: { auth: { resetPasswordForEmail: async (email, options) => { calls.push({ email, options }); return { error: null }; } } }
+  });
+  await state.sendPasswordReset();
+  assert.equal(calls[0].options.redirectTo, 'https://open-teleset.site/dashboard');
+  assert.equal(state.authSubmitting, false);
 });
