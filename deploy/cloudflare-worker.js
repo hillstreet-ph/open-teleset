@@ -2,7 +2,7 @@ const SITE = "https://open-teleset.site";
 const HEALTH_TIMEOUT_MS = 10_000;
 const HEALTH_MAX_AGE_MS = 2 * 60_000;
 
-const ALLOWED_ORIGINS = new Set([SITE, "https://www.open-teleset.site", "https://open-teleset-dashboard.pages.dev"]);
+const ALLOWED_ORIGINS = new Set([SITE, "https://www.open-teleset.site", "https://app.open-teleset.site", "https://open-teleset-dashboard.pages.dev"]);
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",

@@ -391,8 +391,8 @@
                         <input type="text" v-model="authDisplayName" placeholder="Your name" />
                     </div>
                     <div class="form-group">
-                        <label>Email</label>
-                        <input type="email" v-model="authEmail" placeholder="you@example.com" required />
+                        <label>{{ authMode === 'login' ? 'Email or username' : 'Email' }}</label>
+                        <input :type="authMode === 'login' ? 'text' : 'email'" v-model="authEmail" placeholder="you@example.com" required />
                     </div>
                     <div class="form-group">
                         <label>Password</label>
@@ -2206,9 +2206,14 @@
                     } catch (_) { this.liveStatus = 'Refreshing periodically' }
                 },
                 async signIn() {
+                    if (this.authSubmitting) return
                     this.authError = ''; this.authSuccess = ''; this.authSubmitting = true
                     try {
-                        const { error } = await _supabase.auth.signInWithPassword({ email: this.authEmail, password: this.authPassword })
+                        const input = this.authEmail.trim()
+                        const aliases = window.OPEN_TELESET_CONFIG?.loginAliases || {}
+                        const email = Object.prototype.hasOwnProperty.call(aliases, input) ? aliases[input] : input
+                        if (!email.includes('@')) throw new Error('Use your email or a configured username.')
+                        const { error } = await _supabase.auth.signInWithPassword({ email, password: this.authPassword })
                         if (error) throw error
                     } catch (e) { this.authError = e.message || 'Sign in failed' }
                     this.authSubmitting = false
@@ -2247,7 +2252,7 @@
                         // choose either account instead of reusing the current one.
                         if (provider === 'google') {
                             options.queryParams = { prompt: 'select_account' }
-                            if (this.authEmail) options.queryParams.login_hint = this.authEmail.trim()
+                            if (this.authEmail.includes('@')) options.queryParams.login_hint = this.authEmail.trim()
                         } else {
                             options.scopes = 'user:email'
                         }

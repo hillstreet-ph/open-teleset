@@ -5,6 +5,54 @@ import assert from 'node:assert/strict';
 
 const html = readFileSync('static/dashboard.html', 'utf8');
 const method = html.slice(html.indexOf('async signInWithOAuth(provider) {'), html.indexOf('async sendPasswordReset() {'));
+const passwordMethod = html.slice(html.indexOf('async signIn() {'), html.indexOf('async signUp() {'));
+
+function passwordHarness(aliases = {}, sdkError = null) {
+  const calls = [];
+  const context = {
+    window: { OPEN_TELESET_CONFIG: { loginAliases: aliases } },
+    _supabase: { auth: { signInWithPassword: async args => { calls.push(args); return { error: sdkError }; } } }
+  };
+  const state = { authSubmitting: false, authError: '', authSuccess: '', authEmail: '', authPassword: 'synthetic-password' };
+  state.signIn = vm.runInNewContext(`({${passwordMethod}}).signIn`, context);
+  return { state, calls };
+}
+
+test('email and configured username use the same Supabase password identity', async () => {
+  for (const input of [' admin ', ' account@example.com ']) {
+    const { state, calls } = passwordHarness({ admin: 'account@example.com' });
+    state.authEmail = input;
+    await state.signIn();
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].email, 'account@example.com');
+    assert.equal(calls[0].password, 'synthetic-password');
+    assert.equal(state.authSubmitting, false);
+    assert.equal(state.authError, '');
+  }
+});
+
+test('unknown and inherited usernames cannot select an identity', async () => {
+  for (const input of ['unknown', 'admin', 'constructor']) {
+    const { state, calls } = passwordHarness(Object.create({ admin: 'account@example.com' }));
+    state.authEmail = input;
+    await state.signIn();
+    assert.equal(calls.length, 0);
+    assert.match(state.authError, /configured username/);
+    assert.equal(state.authSubmitting, false);
+  }
+});
+
+test('password SDK failure and duplicate submissions release or retain the guard', async () => {
+  const { state, calls } = passwordHarness({}, new Error('Invalid credentials'));
+  state.authEmail = 'account@example.com';
+  state.authSubmitting = true;
+  await state.signIn();
+  assert.equal(calls.length, 0);
+  state.authSubmitting = false;
+  await state.signIn();
+  assert.match(state.authError, /Invalid credentials/);
+  assert.equal(state.authSubmitting, false);
+});
 
 function harness(external = {}, fetchError = null, sdkError = null) {
   const calls = [];
@@ -54,6 +102,13 @@ test('GitHub requests email identity without repository access', async () => {
   assert.equal(calls[1].provider, 'github');
   assert.equal(calls[1].options.scopes, 'user:email');
   assert.equal(calls[1].options.queryParams, undefined);
+});
+
+test('username does not become a Google email hint', async () => {
+  const { state, calls } = harness({ google: true });
+  state.authEmail = 'admin';
+  await state.signInWithOAuth('google');
+  assert.equal(calls[1].options.queryParams.login_hint, undefined);
 });
 
 test('network and SDK failures release the button for retry', async () => {
