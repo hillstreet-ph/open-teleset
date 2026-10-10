@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "application": "open-teleset",
+  "repository": "hillstreet-ph/open-teleset",
+  "production": {
+    "supabase": {
+      "project": "open-operations",
+      "project_ref": "hoseohvgoiarxluxqwqv",
+      "url": "https://hoseohvgoiarxluxqwqv.supabase.co",
+      "schema": "open_teleset",
+      "oauth_callback": "https://hoseohvgoiarxluxqwqv.supabase.co/auth/v1/callback"
+    },
+    "cloudflare": {
+      "pages_project": "open-teleset-dashboard",
+      "worker": "open-teleset",
+      "public_url": "https://open-teleset.site"
+    },
+    "zeabur": {
+      "service": "open-teleset",
+      "origin": "https://open-teleset-prod.zeabur.app",
+      "liveness_path": "/health",
+      "readiness_path": "/readyz",
+      "persistent_paths": ["/app/accounts"]
+    },
+    "dockerhub": {"image": "hillstreet/open-teleset"},
+    "sentry": {"organization": "hillstreet", "project": "open-teleset"}
+  },
+  "secret_consumers": {
+    "runtime": ["DATABASE_POOLER_URL", "SUPABASE_SERVICE_ROLE_KEY", "SESSION_ENCRYPTION_KEY", "TELEGRAM_API_ID", "TELEGRAM_API_HASH"],
+    "github_production": ["DATABASE_POOLER_URL", "DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "CLOUDFLARE_API_TOKEN", "SUPABASE_TOKEN"],
+    "supabase_auth": ["external_github_secret", "external_google_secret"],
+    "release_uploads": ["SENTRY_AUTH_TOKEN"]
+  },
+  "documentation": {
+    "deployment": "docs/DEPLOYMENT_RUNBOOK.md",
+    "credentials": "docs/CREDENTIALS-SETUP.md",
+    "backend": "docs/PLATFORM_BACKEND.md"
+  }
+}

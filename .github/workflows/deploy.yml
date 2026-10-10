@@ -143,7 +143,9 @@ jobs:
 
   # ─── 4. CLOUDFLARE WORKER ────────────────────────────────────────
   deploy-worker:
-    needs: [test, docker, migrate]
+    # This Worker is built from source; registry publication is a separate job.
+    # Keep both application and container validation before publishing the edge.
+    needs: [test, container-test, migrate]
     if: |
       github.event_name != 'pull_request' &&
       github.ref == 'refs/heads/main' &&
