@@ -213,6 +213,41 @@ class OutreachDenied(ValueError):
     """Safe to log: contains a policy reason, never recipient or message data."""
 
 
+def _rate_path():
+    return Path(os.getenv("OUTREACH_RATE_DB", "./accounts/outreach_rate.sqlite3"))
+
+
+def account_cooldown(account_id, seconds):
+    """Persist provider restrictions across batches, processes and restarts."""
+    if not isinstance(seconds, (int, float)) or not math.isfinite(seconds) or seconds <= 0:
+        raise OutreachDenied("invalid_cooldown")
+    path = _rate_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(path, timeout=1) as db:
+            db.execute("CREATE TABLE IF NOT EXISTS cooldowns (account TEXT PRIMARY KEY, until REAL NOT NULL)")
+            db.execute("INSERT INTO cooldowns VALUES (?, ?) ON CONFLICT(account) DO UPDATE SET until=MAX(until, excluded.until)",
+                       (hash_identifier(account_id), time.time() + seconds))
+    except (OSError, sqlite3.Error):
+        raise OutreachDenied("rate_store_unavailable") from None
+
+
+def _check_cooldown(db, key):
+    db.execute("CREATE TABLE IF NOT EXISTS cooldowns (account TEXT PRIMARY KEY, until REAL NOT NULL)")
+    row = db.execute("SELECT until FROM cooldowns WHERE account=?", (key,)).fetchone()
+    if row and row[0] > time.time():
+        raise OutreachDenied("account_cooldown")
+
+
+def record_provider_restriction(account_id, exc):
+    from telethon import errors
+    if isinstance(exc, errors.FloodWaitError):
+        account_cooldown(account_id, max(1, exc.seconds))
+    elif isinstance(exc, (errors.PeerFloodError, errors.UserDeactivatedBanError,
+                          errors.AuthKeyUnregisteredError, errors.FrozenMethodInvalidError)):
+        account_cooldown(account_id, 86400)
+
+
 async def dispatch_outreach(*, action, subject, account_id, approval_id, send, delay=None):
     """Pace every attempt across processes, then revalidate immediately before sending.
 
@@ -224,7 +259,7 @@ async def dispatch_outreach(*, action, subject, account_id, approval_id, send, d
     if not valid_bounds(1, 1, delay, minimum):
         raise OutreachDenied("invalid_rate_bounds")
     key = hash_identifier(account_id)
-    rate_path = Path(os.getenv("OUTREACH_RATE_DB", "./accounts/outreach_rate.sqlite3"))
+    rate_path = _rate_path()
     while True:
         decision = outreach_policy.authorize(action=action, subject=subject,
                                              account_id=account_id, approval_id=approval_id)
@@ -235,6 +270,7 @@ async def dispatch_outreach(*, action, subject, account_id, approval_id, send, d
             with sqlite3.connect(rate_path, timeout=1) as db:
                 db.execute("CREATE TABLE IF NOT EXISTS attempts (account TEXT PRIMARY KEY, until REAL NOT NULL)")
                 db.execute("BEGIN IMMEDIATE")
+                _check_cooldown(db, key)
                 now = time.time()
                 row = db.execute("SELECT until FROM attempts WHERE account=?", (key,)).fetchone()
                 wait = max(0, row[0] - now) if row else 0
@@ -250,11 +286,17 @@ async def dispatch_outreach(*, action, subject, account_id, approval_id, send, d
     if not decision.allowed:
         raise OutreachDenied(decision.reason)
     try:
+        with sqlite3.connect(rate_path, timeout=1) as db:
+            _check_cooldown(db, key)
+    except (OSError, sqlite3.Error):
+        raise OutreachDenied("rate_store_unavailable") from None
+    try:
         from outreach_client import outreach_context
         with outreach_context(action=action, subject=subject, account_id=account_id,
                               approval_id=approval_id, delay=delay):
             result = await send()
     except Exception as exc:
+        record_provider_restriction(account_id, exc)
         logging.getLogger("outreach.audit").warning(
             "outreach_attempt action=%s account=%s subject=%s outcome=%s",
             action, key[:12], decision.subject_ref, type(exc).__name__,

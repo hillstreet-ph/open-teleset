@@ -934,9 +934,17 @@
                             </select>
                         </div>
                     </div>
+                    <div class="form-group">
+                        <label>Member activity</label>
+                        <select class="form-control" v-model="scraper.activityFilter">
+                            <option v-for="option in activityOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+                        </select>
+                        <small>Uses Telegram's visible last-seen status. Unknown activity is excluded when filtering; an approximate month does not qualify for 15 days.</small>
+                    </div>
                     <button class="btn btn-primary" @click="runScraper" :disabled="scraper.loading || !scraper.accountId || !scraper.target">
                         {{ scraper.loading ? '⏳ Scraping...' : '🔍 Scrape Members' }}
                     </button>
+                    <p v-if="scraper.summary" style="margin-top: 12px;">{{ scraper.summary }}</p>
 
                     <!-- Results -->
                     <div v-if="scraper.results.length" style="margin-top: 20px;">
@@ -952,6 +960,7 @@
                                         <th style="padding: 8px 12px; text-align: left;">ID</th>
                                         <th style="padding: 8px 12px; text-align: left;">Username</th>
                                         <th style="padding: 8px 12px; text-align: left;">Name</th>
+                                        <th style="padding: 8px 12px; text-align: left;">Activity</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -960,6 +969,7 @@
                                         <td style="padding: 6px 12px;">{{ m.id }}</td>
                                         <td style="padding: 6px 12px; color: #667eea;">{{ m.username || '—' }}</td>
                                         <td style="padding: 6px 12px;">{{ m.first_name }} {{ m.last_name }}</td>
+                                        <td style="padding: 6px 12px;">{{ m.last_seen || m.activity }}</td>
                                     </tr>
                                 </tbody>
                             </table>
@@ -1024,9 +1034,25 @@
                     <div class="card-header">
                         <h3>📨 Bulk Personal Sender</h3>
                     </div>
-                    <p style="color: #999; margin-bottom: 20px;">Send a personal message from one account to many individual users</p>
+                    <p style="color: #999; margin-bottom: 20px;">Send once to each consenting recipient, using one account or rotating selected accounts.</p>
 
                     <div class="form-group">
+                        <label>Sender mode</label>
+                        <select class="form-control" v-model="bulksend.rotationMode">
+                            <option value="single">Single account</option>
+                            <option value="round_robin">Automatic rotation (round robin)</option>
+                        </select>
+                    </div>
+                    <div class="form-group" v-if="bulksend.rotationMode === 'round_robin'">
+                        <label>Rotation accounts (select up to 5)</label>
+                        <select class="form-control" v-model="bulksend.accountIds" multiple size="5">
+                            <option v-for="acc in accounts" :key="acc.account_id" :value="acc.account_id">
+                                {{ acc.phone || acc.account_id }} {{ acc.username ? '(@' + acc.username + ')' : '' }}
+                            </option>
+                        </select>
+                        <small>Approval and recipient consent must cover the selected sender. A Telegram restriction stops the batch; recipients are never retried through another account.</small>
+                    </div>
+                    <div class="form-group" v-else>
                         <label>Account</label>
                         <select class="form-control" v-model="bulksend.accountId">
                             <option value="">-- Select account --</option>
@@ -1043,6 +1069,18 @@
                         <label>Consenting recipients (usernames or IDs, one per line; maximum 20)</label>
                         <textarea class="form-control" v-model="bulksend.targets" rows="5" placeholder="user1&#10;user2&#10;@username3"></textarea>
                     </div>
+                    <div class="form-group">
+                        <label>Recipient activity</label>
+                        <select class="form-control" v-model="bulksend.activityFilter">
+                            <option v-for="option in activityOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+                        </select>
+                        <small>Checked using the selected sender's visible Telegram status. Activity does not establish consent. Unknown statuses are skipped when filtering.</small>
+                    </div>
+                    <div class="form-group">
+                        <label>Maximum recipients per account in this run</label>
+                        <input class="form-control" type="number" v-model.number="bulksend.perAccountLimit" min="1" max="20">
+                        <small>Maximum 20 recipients across all accounts. The delay also applies between accounts.</small>
+                    </div>
                     <div style="display: flex; gap: 15px;">
                         <div class="form-group" style="flex:1;">
                             <label>Delay Between Sends (sec)</label>
@@ -1053,7 +1091,7 @@
                             <input class="form-control" v-model.trim="bulksend.approvalId" placeholder="Approved personal-send reference" autocomplete="off">
                         </div>
                     </div>
-                    <button class="btn btn-primary" @click="runBulkSend" :disabled="bulksend.loading || !bulksend.accountId || !bulksend.message || !bulksend.targets || !bulksend.approvalId">
+                    <button class="btn btn-primary" @click="runBulkSend" :disabled="bulksend.loading || (bulksend.rotationMode === 'single' ? !bulksend.accountId : !bulksend.accountIds.length) || !bulksend.message || !bulksend.targets || !bulksend.approvalId">
                         {{ bulksend.loading ? '⏳ Sending...' : '📨 Send Messages' }}
                     </button>
 
@@ -1061,6 +1099,11 @@
                     <div v-if="bulksend.resultMsg" style="margin-top: 15px; padding: 12px; border-radius: 8px; background: rgba(255,255,255,0.05);">
                         <span>{{ bulksend.resultMsg }}</span>
                     </div>
+                    <ul v-if="bulksend.results.length" style="margin-top: 12px; padding-left: 20px;">
+                        <li v-for="(result, index) in bulksend.results" :key="index">
+                            {{ result.target }} · {{ result.account_id }} · {{ result.success ? 'Sent' : (result.skipped || result.error || 'Failed') }}
+                        </li>
+                    </ul>
                 </div>
             </div>
 
@@ -1873,11 +1916,20 @@
                         validateUsernames: true
                     },
                     // Scraper
+                    activityOptions: [
+                        {value: 'all', label: 'All members'},
+                        {value: 'recently', label: 'Active recently (up to 3 days)'},
+                        {value: '7_days', label: 'Active in the last 7 days'},
+                        {value: '15_days', label: 'Active in the last 15 days'},
+                        {value: '30_days', label: 'Active in the last 30 days'},
+                    ],
                     scraper: {
                         accountId: '',
                         target: '',
                         limit: 200,
                         filterBots: true,
+                        activityFilter: 'all',
+                        summary: '',
                         loading: false,
                         results: [],
                     },
@@ -1895,12 +1947,17 @@
                     // BulkSend
                     bulksend: {
                         accountId: '',
+                        accountIds: [],
+                        rotationMode: 'single',
+                        activityFilter: 'all',
+                        perAccountLimit: 20,
                         message: '',
                         targets: '',
                         approvalId: '',
                         delay: 3,
                         loading: false,
                         resultMsg: '',
+                        results: [],
                     },
                     // Pagination
                     accountPage: 1,
@@ -1978,14 +2035,17 @@
                 async runScraper() {
                     this.scraper.loading = true;
                     this.scraper.results = [];
+                    this.scraper.summary = '';
                     try {
                         const res = await _api.post('/api/scraper/members', {
                             account_id: this.scraper.accountId,
                             target: this.scraper.target,
                             limit: this.scraper.limit,
                             filter_bots: this.scraper.filterBots,
+                            activity_filter: this.scraper.activityFilter,
                         });
                         this.scraper.results = res.data.members || [];
+                        this.scraper.summary = `Matched ${res.data.total || 0}, scanned ${res.data.scanned || 0}, excluded ${res.data.excluded || 0}.`;
                     } catch (e) {
                         alert('Scrape failed: ' + (e.response?.data?.detail || e.message));
                     } finally {
@@ -2031,14 +2091,26 @@
                 async runBulkSend() {
                     this.bulksend.loading = true;
                     this.bulksend.resultMsg = '';
+                    this.bulksend.results = [];
                     try {
-                        const targets = this.bulksend.targets.trim().split('\n').map(t => t.trim()).filter(Boolean);
+                        const targets = [...new Set(this.bulksend.targets.trim().split('\n').map(t => t.trim().toLowerCase().replace(/^@/, '')).filter(Boolean))];
+                        const rotating = this.bulksend.rotationMode === 'round_robin';
+                        const accountIds = rotating ? this.bulksend.accountIds : [this.bulksend.accountId];
                         if (!this.bulksend.approvalId || !targets.length || targets.length > 20 ||
                             !Number.isFinite(this.bulksend.delay) || this.bulksend.delay < 3 || this.bulksend.delay > 3600) {
                             throw new Error('Provide an approval reference, 1–20 consenting recipients, and a delay of at least 3 seconds.');
                         }
+                        if (!accountIds.length || accountIds.length > 5 || accountIds.some(id => !id) ||
+                            !Number.isInteger(this.bulksend.perAccountLimit) || this.bulksend.perAccountLimit < 1 || this.bulksend.perAccountLimit > 20 ||
+                            targets.length > accountIds.length * this.bulksend.perAccountLimit) {
+                            throw new Error('Select 1–5 accounts and enough per-account capacity for this run.');
+                        }
                         const res = await _api.post('/api/bulk/send-personal', {
-                            account_id: this.bulksend.accountId,
+                            account_id: rotating ? '' : this.bulksend.accountId,
+                            account_ids: rotating ? accountIds : [],
+                            rotation_mode: this.bulksend.rotationMode,
+                            per_account_limit: this.bulksend.perAccountLimit,
+                            activity_filter: this.bulksend.activityFilter,
                             message: this.bulksend.message,
                             targets: targets,
                             delay: this.bulksend.delay,
@@ -2046,7 +2118,9 @@
                         });
                         const d = res.data;
                         const outcome = d.success === true && !d.failed ? 'Completed' : 'Incomplete or denied';
-                        this.bulksend.resultMsg = `${outcome}: sent ${d.sent || 0}, failed ${d.failed || 0}, total ${d.total || 0}.`;
+                        this.bulksend.results = d.results || [];
+                        this.bulksend.resultMsg = `${outcome}: sent ${d.sent || 0}, failed ${d.failed || 0}, skipped ${d.skipped || 0}, pending ${d.pending || 0}, total ${d.total || 0}.`;
+                        if (d.stopped_reason) this.bulksend.resultMsg += ' Stopped: ' + d.stopped_reason;
                         if (d.error) this.bulksend.resultMsg += ' ' + d.error;
                     } catch (e) {
                         this.bulksend.resultMsg = '❌ ' + (e.response?.data?.detail || e.message);
