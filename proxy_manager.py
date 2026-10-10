@@ -8,6 +8,9 @@ import json
 import os
 import ipaddress
 import ssl
+import tempfile
+import time
+from copy import deepcopy
 from urllib.parse import urlsplit
 from datetime import datetime
 from typing import Dict, Optional
@@ -28,6 +31,8 @@ class ProxyManager:
         self.global_proxy: Optional[Dict] = None  # 全局代理
         self.proxy_stats: Dict[str, Dict] = {}  # 代理统计
         self.free_global_enabled = True
+        self.auto_failover_enabled = True
+        self.maintenance = {}
         self._free_proxy_lock = asyncio.Lock()
         self._load_proxies()
 
@@ -37,20 +42,33 @@ class ProxyManager:
             with open(PROXIES_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 self.free_global_enabled = data.get("free_global_enabled", True)
+                self.auto_failover_enabled = data.get("auto_failover_enabled", True)
+                self.maintenance = data.get("maintenance", {})
                 self.global_proxy = data.get("global")
                 self.proxies = data.get("proxies", {})
                 self.proxy_stats = data.get("stats", {})
 
     def _save_proxies(self):
         """保存代理配置"""
-        os.makedirs(ACCOUNTS_DIR, exist_ok=True)
-        with open(PROXIES_FILE, 'w', encoding='utf-8') as f:
-            json.dump({
-                "free_global_enabled": self.free_global_enabled,
-                "global": self.global_proxy,
-                "proxies": self.proxies,
-                "stats": self.proxy_stats
-            }, f, ensure_ascii=False, indent=2)
+        directory = os.path.dirname(os.path.abspath(PROXIES_FILE))
+        os.makedirs(directory, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix=".proxies-", dir=directory)
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                json.dump({
+                    "free_global_enabled": self.free_global_enabled,
+                    "auto_failover_enabled": self.auto_failover_enabled,
+                    "maintenance": self.maintenance,
+                    "global": self.global_proxy,
+                    "proxies": self.proxies,
+                    "stats": self.proxy_stats
+                }, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temporary, PROXIES_FILE)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
 
     def list_proxies(self) -> Dict:
         """
@@ -65,6 +83,8 @@ class ProxyManager:
         """
         return {
             "free_global_enabled": self.free_global_enabled,
+            "auto_failover_enabled": self.auto_failover_enabled,
+            "maintenance": self.maintenance,
             "global": self.global_proxy,
             "proxies": self.proxies,
             "stats": self.proxy_stats
@@ -171,6 +191,7 @@ class ProxyManager:
             "password": password,
             "updated_at": datetime.now().isoformat()
         }
+        self.maintenance = {}
 
         self._save_proxies()
         return True
@@ -184,6 +205,7 @@ class ProxyManager:
         """
         self.global_proxy = None
         self.free_global_enabled = False
+        self.maintenance = {"status": "disabled"}
         self._save_proxies()
         return True
 
@@ -411,6 +433,78 @@ class ProxyManager:
                 return {"success": False, "status": "no_verified_free_proxy", "tested": len(selected)}
             except Exception as error:
                 return {"success": False, "status": "free_proxy_source_unavailable", "error": type(error).__name__}
+
+    async def maintain_free_global_proxy(self):
+        """Replace only an unhealthy managed proxy, never on a Telegram RPC error.
+
+        Keep live sessions connected. Disconnected sessions select the new proxy
+        through the existing serialized account reconnect path. Never replay sends.
+        """
+        async with self._free_proxy_lock:
+            if not self.free_global_enabled or not self.auto_failover_enabled:
+                return {"status": "disabled"}
+            if self.global_proxy and not self.global_proxy.get("free"):
+                return {"status": "manual_global_preserved"}
+            now = time.time()
+            if now < self.maintenance.get("next_check", 0):
+                return {"status": "backoff"}
+            original = deepcopy(self.global_proxy)
+            previous = deepcopy(self.maintenance)
+            published = False
+
+            def unchanged():
+                return (self.global_proxy == original and self.free_global_enabled
+                        and self.auto_failover_enabled)
+
+            try:
+                if original:
+                    result = await self.test_proxy(original, timeout=3)
+                    if not unchanged():
+                        return {"status": "configuration_changed"}
+                    failures = 0 if result.get("success") else previous.get("consecutive_failures", 0) + 1
+                    self.maintenance = {**previous, "last_check": now, "next_check": now + 300,
+                                        "consecutive_failures": failures,
+                                        "status": "healthy" if not failures else "probe_failed"}
+                    if failures < 2:
+                        self._save_proxies()
+                        return {"status": self.maintenance["status"]}
+
+                # Discovery is bounded and excludes the failed endpoint.
+                candidates = await self.fetch_free_candidates()
+                candidates = [p for p in candidates if not original or
+                              (p["host"], p["port"]) != (original["host"], original["port"])][:24]
+                replacement = None
+                for start in range(0, len(candidates), 4):
+                    group = candidates[start:start + 4]
+                    results = await asyncio.gather(*(self.test_proxy(p, timeout=3) for p in group))
+                    replacement = next((p for p, r in zip(group, results) if r.get("success")), None)
+                    if replacement:
+                        break
+                if not unchanged():
+                    return {"status": "configuration_changed"}
+                if replacement:
+                    self.global_proxy = {**replacement, "free": True, "source": "verified_public_list",
+                                         "verified_at": datetime.now().isoformat()}
+                    published = True
+                    self.maintenance = {"status": "replaced" if original else "initialized",
+                                        "last_check": now, "next_check": now + 300,
+                                        "last_failover": now, "consecutive_failures": 0}
+                else:
+                    self.maintenance.update(status="no_verified_replacement", last_check=now, next_check=now + 900)
+                self._save_proxies()
+                return {"status": self.maintenance["status"]}
+            except Exception as exc:
+                # Never discard the saved endpoint or change to direct transport
+                # when a source, candidate or disk operation fails.
+                if unchanged() or published:
+                    self.global_proxy = original
+                    self.maintenance = {**previous, "status": "maintenance_failed", "last_check": now,
+                                        "next_check": now + 900, "error": type(exc).__name__}
+                    try:
+                        self._save_proxies()
+                    except OSError:
+                        pass
+                return {"status": "maintenance_failed", "error": type(exc).__name__}
 
     async def test_socks_proxy(self, proxy_config, timeout):
         from python_socks import ProxyType

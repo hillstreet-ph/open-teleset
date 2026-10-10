@@ -295,6 +295,21 @@ def _check_cooldown(db, key):
         raise OutreachDenied("account_cooldown")
 
 
+def account_cooldown_remaining(account_id):
+    """Read persisted provider waits without extending or clearing them."""
+    path = _rate_path()
+    if not path.exists():
+        return 0
+    try:
+        with sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=1) as db:
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='cooldowns'").fetchone():
+                return 0
+            row = db.execute("SELECT until FROM cooldowns WHERE account=?", (hash_identifier(account_id),)).fetchone()
+        return max(0, row[0] - time.time()) if row else 0
+    except (OSError, sqlite3.Error):
+        raise OutreachDenied("rate_store_unavailable") from None
+
+
 def record_provider_restriction(account_id, exc):
     from telethon import errors
     if isinstance(exc, errors.FloodWaitError):

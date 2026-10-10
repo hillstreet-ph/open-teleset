@@ -7,10 +7,12 @@ import asyncio
 from contextlib import suppress
 import json
 import os
+import logging
 from datetime import datetime
 from typing import Dict, List
 from account_manager import account_manager
 from proxy_manager import proxy_manager
+from outreach_policy import account_cooldown_remaining, record_provider_restriction
 
 
 ACCOUNTS_DIR = "./accounts"
@@ -24,6 +26,7 @@ class HealthMonitor:
         self.health_data: Dict = {}
         self._load_health()
         self._monitoring = False
+        self._task = None
 
     def _load_health(self):
         """加载健康数据"""
@@ -176,8 +179,14 @@ class HealthMonitor:
             健康状态
         """
         try:
+            remaining = account_cooldown_remaining(account_id)
+            if remaining:
+                return {"status": "cooldown", "retry_after": int(remaining) + 1}
             client = await account_manager.get_client(account_id)
             if not client:
+                remaining = account_cooldown_remaining(account_id)
+                if remaining:
+                    return {"status": "cooldown", "retry_after": int(remaining) + 1}
                 error = account_manager.connection_errors.get(account_id, "Account unavailable. Sign in again.")
                 self.record_login_failure(account_id, error)
                 return {"status": "unhealthy", "error": error}
@@ -208,14 +217,13 @@ class HealthMonitor:
             if proxy:
                 # 转换回原始格式用于测试
                 proxy_for_test = None
-                if proxy_manager.global_proxy and proxy_manager.global_proxy.get("host"):
+                for proxy_config in proxy_manager.proxies.values():
+                    if (account_id in proxy_config.get("assigned_to", [])
+                            and proxy_config.get("host") and proxy_config.get("port")):
+                        proxy_for_test = proxy_config
+                        break
+                if proxy_for_test is None:
                     proxy_for_test = proxy_manager.global_proxy
-                else:
-                    # 查找账号关联的独立代理
-                    for proxy_id, proxy_config in proxy_manager.proxies.items():
-                        if "assigned_to" in proxy_config and account_id in proxy_config["assigned_to"]:
-                            proxy_for_test = proxy_config
-                            break
 
                 if proxy_for_test:
                     result = await proxy_manager.test_proxy(proxy_for_test)
@@ -230,7 +238,13 @@ class HealthMonitor:
                 "risk_level": self.health_data.get(account_id, {}).get("risk_level", "low")
             }
 
-        except Exception:
+        except Exception as exc:
+            record_provider_restriction(account_id, exc)
+            remaining = account_cooldown_remaining(account_id)
+            if remaining:
+                error = f"Telegram requires a wait of {int(remaining) + 1} seconds. Try after the cooldown."
+                account_manager.connection_errors[account_id] = error
+                return {"status": "cooldown", "retry_after": int(remaining) + 1}
             error = "Connection check failed. Test the assigned proxy and try again."
             account_manager.connection_errors[account_id] = error
             self.record_login_failure(account_id, error)
@@ -250,15 +264,23 @@ class HealthMonitor:
 
         async def monitor_loop():
             while self._monitoring:
-                for account_id in account_manager.accounts.keys():
-                    await self.check_account_health(account_id)
+                try:
+                    result = await proxy_manager.maintain_free_global_proxy()
+                    logging.getLogger(__name__).info("proxy_maintenance status=%s", result["status"])
+                    for account_id in list(account_manager.accounts):
+                        await self.check_account_health(account_id)
+                except Exception as exc:
+                    logging.getLogger(__name__).warning("health_monitor error=%s", type(exc).__name__)
                 await asyncio.sleep(interval)
 
-        asyncio.create_task(monitor_loop())
+        self._task = asyncio.create_task(monitor_loop())
 
     def stop_monitoring(self):
         """停止监控"""
         self._monitoring = False
+        if self._task is not None:
+            self._task.cancel()
+            self._task = None
 
     def get_risk_accounts(self) -> List[str]:
         """获取高风险账号列表"""

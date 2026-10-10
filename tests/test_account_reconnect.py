@@ -14,6 +14,7 @@ from outreach_client import ConsentTelegramClient
 
 @pytest.fixture
 def manager(tmp_path, monkeypatch):
+    monkeypatch.setenv('OUTREACH_RATE_DB', str(tmp_path / 'rate.sqlite'))
     monkeypatch.setattr(module, 'ACCOUNTS_DIR', str(tmp_path))
     monkeypatch.setattr(module, 'CONFIG_FILE', str(tmp_path / 'config.json'))
     result = module.AccountManager()
@@ -185,3 +186,26 @@ async def test_successful_health_check_clears_old_connection_error(manager, monk
     monitor.record_login_success = Mock()
     assert (await monitor.check_account_health('saved'))['status'] == 'healthy'
     assert 'saved' not in manager.connection_errors
+
+
+@pytest.mark.asyncio
+async def test_reconnect_flood_wait_persists_and_blocks_concurrent_attempts(manager, monkeypatch):
+    from outreach_policy import account_cooldown_remaining
+    client, requests = client_with_replies(monkeypatch, [errors.FloodWaitError(None, capture=3600)])
+    results = await asyncio.gather(manager.get_client('saved'), manager.get_client('saved'))
+    assert results == [None, None]
+    assert len(requests) == 1
+    assert 3599 < account_cooldown_remaining('saved') <= 3600
+    assert await manager.get_client('saved') is None
+    assert len(requests) == 1
+    client.disconnect.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_reconnect_banned_session_keeps_provider_cooldown(manager, monkeypatch):
+    from outreach_policy import account_cooldown_remaining
+    _, requests = client_with_replies(monkeypatch, [errors.UserDeactivatedBanError(None)])
+    assert await manager.get_client('saved') is None
+    assert account_cooldown_remaining('saved') > 86399
+    assert await manager.get_client('saved') is None
+    assert len(requests) == 1

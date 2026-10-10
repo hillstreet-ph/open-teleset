@@ -10,6 +10,7 @@ import os
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 from outreach_client import ConsentTelegramClient as TelegramClient
+from outreach_policy import account_cooldown_remaining, record_provider_restriction, OutreachDenied
 from telethon.sessions import StringSession
 from telethon import functions
 from telethon.errors import (
@@ -484,6 +485,17 @@ class AccountManager:
         self._save_config()
         return True
 
+    def _paused_by_cooldown(self, account_id):
+        try:
+            remaining = account_cooldown_remaining(account_id)
+        except OutreachDenied:
+            self.connection_errors[account_id] = "Provider cooldown storage is unavailable. Connection paused."
+            return True
+        if remaining:
+            self.connection_errors[account_id] = f"Telegram requires a wait of {int(remaining) + 1} seconds. Try after the cooldown."
+            return True
+        return False
+
     async def get_client(self, account_id: str = "default", proxy: Dict = None) -> Optional[TelegramClient]:
         """
         获取指定账号的客户端
@@ -495,6 +507,9 @@ class AccountManager:
         Returns:
             TelegramClient 实例
         """
+        if self._paused_by_cooldown(account_id):
+            return None
+
         # 处理默认账号
         if account_id == "default":
             if "default" not in self.clients:
@@ -519,7 +534,10 @@ class AccountManager:
         # performed inside connect(), before this explicit read-only probe.
         await client(functions.updates.GetStateRequest())
 
+
     async def _connect_saved_account(self, account_id: str, proxy: Dict = None):
+        if self._paused_by_cooldown(account_id):
+            return None
         if account_id not in self.accounts:
             self.connection_errors[account_id] = "Account no longer exists. Refresh the account list."
             return None
@@ -564,10 +582,12 @@ class AccountManager:
         except (asyncio.TimeoutError, TimeoutError):
             self.connection_errors[account_id] = "Connection timed out. Check the assigned proxy and try again."
             return None
-        except (UnauthorizedError, AuthKeyDuplicatedError):
+        except (UnauthorizedError, AuthKeyDuplicatedError) as exc:
+            record_provider_restriction(account_id, exc)
             self.connection_errors[account_id] = "Telegram session expired or revoked. Sign in again using Add account."
             return None
         except FloodWaitError as exc:
+            record_provider_restriction(account_id, exc)
             self.connection_errors[account_id] = f"Telegram requires a wait of {exc.seconds} seconds. Try after the cooldown."
             return None
         except ServerError:
@@ -576,7 +596,8 @@ class AccountManager:
         except (UserMigrateError, NetworkMigrateError, PhoneMigrateError):
             self.connection_errors[account_id] = "Telegram requires a different data center. Sign in again using Add account."
             return None
-        except Exception:
+        except Exception as exc:
+            record_provider_restriction(account_id, exc)
             # Provider exceptions may contain phone numbers or proxy credentials.
             self.connection_errors[account_id] = "Telegram connection failed. Check the proxy or sign in again."
             return None
