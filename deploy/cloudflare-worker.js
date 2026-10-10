@@ -37,7 +37,6 @@ async function fetchOriginHealth(origin, request) {
     const response = await fetch(target, {
       headers: { Accept: "application/json", "Cache-Control": "no-cache" },
       cache: "no-store",
-      cf: { cacheTtl: 0, cacheEverything: false },
       signal: controller.signal,
     });
 
