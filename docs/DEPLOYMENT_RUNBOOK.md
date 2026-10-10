@@ -5,6 +5,23 @@ gates. Provider changes require an authorized connector or verified console
 session. A successful frontend deployment does not prove runtime or OAuth
 readiness.
 
+## Explicit Worker-only rollout
+
+Normal releases retain Docker publication before the Worker job. For a bounded
+edge-only maintenance rollout, dispatch `deploy.yml` on `main` with
+`worker_only=true` and `skip_deploy=false`. This skips Docker, Pages, and Edge
+Function publication, but still requires application/container validation and
+the migration gate. `scripts/worker_preflight.py` then requires the existing
+origin to return fresh liveness metadata, database readiness, and `401` for
+anonymous operational requests before the Worker can deploy. An unreachable,
+degraded, or anonymously accessible backend blocks this path; it is not an
+automatic fallback after a normal release fails.
+
+The reviewed provider targets and environment consumer names are recorded in
+`platform.json`. Database configuration prefers `DATABASE_POOLER_URL`, with
+`DATABASE_URL` as a fallback. The manifest describes intended configuration;
+verify the live bindings and acceptance checks in this runbook separately.
+
 ## Environment separation
 
 | Environment | Runtime and data | Credentials | Release gate |
