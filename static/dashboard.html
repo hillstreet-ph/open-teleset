@@ -1288,7 +1288,7 @@
                         <button class="btn btn-primary" @click="verifyPhoneCode" :disabled="!phoneData.code || phoneLoading" style="width: 100%;">
                             {{ phoneLoading ? 'Verifying...' : 'Verify' }}
                         </button>
-                        <button class="btn btn-outline" @click="phoneStep = 'input'" style="margin-top: 10px; width: 100%;">Back</button>
+                        <button class="btn btn-outline" @click="backToPhoneInput" :disabled="phoneLoading" style="margin-top: 10px; width: 100%;">Back</button>
                     </div>
 
                     <!-- Step 3: Enter 2FA password -->
@@ -2771,6 +2771,27 @@
                         this.phoneError = e.response?.data?.detail || 'Verification failed'
                     }
                     this.phoneLoading = false
+                },
+
+                async backToPhoneInput() {
+                    if (this.phoneLoading) return
+                    this.phoneLoading = true
+                    this.phoneError = ''
+                    try {
+                        try {
+                            await _api.delete(`/api/accounts/${this.phoneAccountId}/phone-login`)
+                        } catch (e) {
+                            // An absent session is already safe to replace.
+                            if (e.response?.status !== 404) throw e
+                        }
+                        this.phoneData.code = ''
+                        this.phoneData.password = ''
+                        this.phoneStep = 'input'
+                    } catch (e) {
+                        this.phoneError = e.response?.data?.detail || 'Could not cancel the previous login. Try again.'
+                    } finally {
+                        this.phoneLoading = false
+                    }
                 },
 
                 async cancelPhoneLogin() {
