@@ -1,14 +1,13 @@
 # Supabase local/linked project config (no secrets)
 # Link with: supabase link --project-ref YOUR_REF
 
-[project]
-id = "open-teleset"
+project_id = "open-teleset"
 
 [api]
 enabled = true
 
 [db]
-major_version = 15
+major_version = 17
 
 [auth]
 enabled = true
@@ -23,5 +22,12 @@ enable_confirmations = false
 # OAuth providers: enable in Dashboard → Authentication → Providers
 # (Google, GitHub, etc.) — client IDs live in Supabase secrets, not git.
 
-[functions]
-enabled = true
+# Keep the deployed authentication policy explicit for each function.
+[functions.health-ping]
+verify_jwt = false
+
+[functions.run-schedules]
+verify_jwt = true
+
+[functions.send-message]
+verify_jwt = true
