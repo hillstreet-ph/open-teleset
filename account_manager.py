@@ -7,13 +7,15 @@ import asyncio
 from contextlib import suppress
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 from outreach_client import ConsentTelegramClient as TelegramClient
 from telethon.sessions import StringSession
+from telethon import functions
 from telethon.errors import (
     NetworkMigrateError, PhoneMigrateError, SessionPasswordNeededError,
     PasswordHashInvalidError, PhoneCodeInvalidError, PhoneCodeExpiredError, FloodWaitError,
+    UserMigrateError, UnauthorizedError, AuthKeyDuplicatedError, ServerError,
 )
 import qrcode
 from io import BytesIO
@@ -34,6 +36,8 @@ class AccountManager:
     def __init__(self):
         self.accounts: Dict[str, Dict] = {}
         self.clients: Dict[str, TelegramClient] = {}
+        self._client_locks: Dict[str, asyncio.Lock] = {}
+        self.connection_errors: Dict[str, str] = {}
         self.qr_sessions: Dict[str, Dict] = {}  # QR登录会话
         self.phone_sessions: Dict[str, Dict] = {}  # 手机号登录会话
         self._load_config()
@@ -104,6 +108,7 @@ class AccountManager:
                 "last_name": account.get("last_name", ""),
                 "is_premium": account.get("is_premium", False),
                 "status": "online" if is_online else "offline",
+                "connection_error": self.connection_errors.get(account_id),
                 "last_online": account.get("last_online", "N/A"),
                 "use_count": account.get("use_count", 0)
             })
@@ -176,8 +181,8 @@ class AccountManager:
                 "last_name": me.last_name or "",
                 "is_premium": getattr(me, 'premium', False) or False,
                 "status": "offline",
-                "created_at": datetime.now().isoformat(),
-                "last_online": datetime.now().isoformat(),
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "last_online": datetime.now(timezone.utc).isoformat(),
                 "use_count": 0
             }
             self._save_config()
@@ -338,17 +343,20 @@ class AccountManager:
                 "last_name": me.last_name or "",
                 "is_premium": getattr(me, 'premium', False) or False,
                 "status": "online",
-                "created_at": datetime.now().isoformat(),
-                "last_online": datetime.now().isoformat(),
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "last_online": datetime.now(timezone.utc).isoformat(),
                 "use_count": 0
             }
             self._save_config()
             session["status"] = "success"
-        except Exception as e:
+        except Exception:
+            self.accounts.pop(account_id, None)
             session["status"] = "failed"
-            session["error"] = str(e)
+            session["error"] = "Unable to save the Telegram session. Try signing in again."
+            raise
         finally:
-            await client.disconnect()
+            with suppress(Exception):
+                await client.disconnect()
 
     async def submit_2fa_password(self, account_id: str, password: str) -> Dict:
         """
@@ -494,8 +502,13 @@ class AccountManager:
                 self.clients["default"] = await get_client()
             return self.clients["default"]
 
-        # 检查账号是否存在
+        # Serialize health checks and user actions for the same saved session.
+        async with self._client_locks.setdefault(account_id, asyncio.Lock()):
+            return await self._connect_saved_account(account_id, proxy)
+
+    async def _connect_saved_account(self, account_id: str, proxy: Dict = None):
         if account_id not in self.accounts:
+            self.connection_errors[account_id] = "Account no longer exists. Refresh the account list."
             return None
 
         # 如果已连接，直接返回
@@ -505,6 +518,9 @@ class AccountManager:
                 # 更新使用统计
                 self._update_use_count(account_id)
                 return client
+            self.clients.pop(account_id, None)
+            with suppress(Exception):
+                await asyncio.wait_for(client.disconnect(), timeout=2)
 
         # 如果没有指定代理，自动从 proxy_manager 获取
         if proxy is None:
@@ -515,24 +531,58 @@ class AccountManager:
         account = self.accounts[account_id]
         session_string = account["session_string"]
 
-        client = TelegramClient(
-            StringSession(session_string),
-            API_ID,
-            API_HASH,
-            proxy=proxy,
-            outreach_account_id=account_id
-        )
-        await client.connect()
-
-        if not await client.is_user_authorized():
-            await client.disconnect()
+        client = None
+        try:
+            client = TelegramClient(
+                StringSession(session_string),
+                API_ID,
+                API_HASH,
+                proxy=proxy,
+                outreach_account_id=account_id
+            )
+            async with asyncio.timeout(20):
+                await client.connect()
+                # is_user_authorized() hides every RPCError as False, including
+                # transient server failures and a successful DC migration.
+                # Only this read-only probe may repeat once after a redirect.
+                for attempt in range(2):
+                    try:
+                        await client(functions.updates.GetStateRequest())
+                        break
+                    except (UserMigrateError, NetworkMigrateError, PhoneMigrateError) as exc:
+                        if attempt:
+                            raise
+                        if client.session.dc_id != exc.new_dc:
+                            await client._switch_dc(exc.new_dc)
+                account["session_string"] = client.session.save()
+                self._update_use_count(account_id)
+                self._update_online_status(account_id)
+                self.clients[account_id] = client
+                self.connection_errors.pop(account_id, None)
+                return client
+        except TimeoutError:
+            self.connection_errors[account_id] = "Connection timed out. Check the assigned proxy and try again."
             return None
-
-        self.clients[account_id] = client
-        self._update_use_count(account_id)
-        self._update_online_status(account_id)
-
-        return client
+        except (UnauthorizedError, AuthKeyDuplicatedError):
+            self.connection_errors[account_id] = "Telegram session expired or revoked. Sign in again using Add account."
+            return None
+        except FloodWaitError as exc:
+            self.connection_errors[account_id] = f"Telegram requires a wait of {exc.seconds} seconds. Try after the cooldown."
+            return None
+        except ServerError:
+            self.connection_errors[account_id] = "Telegram is temporarily unavailable. Try again later."
+            return None
+        except (UserMigrateError, NetworkMigrateError, PhoneMigrateError):
+            self.connection_errors[account_id] = "Telegram redirected the session again. Try the connection check later."
+            return None
+        except Exception:
+            # Provider exceptions may contain phone numbers or proxy credentials.
+            self.connection_errors[account_id] = "Telegram connection failed. Check the proxy or sign in again."
+            return None
+        finally:
+            if client is not None and self.clients.get(account_id) is not client:
+                with suppress(Exception):
+                    await asyncio.wait_for(client.disconnect(), timeout=2)
 
     def _update_use_count(self, account_id: str):
         """更新使用次数"""
@@ -543,7 +593,7 @@ class AccountManager:
     def _update_online_status(self, account_id: str):
         """更新在线状态"""
         if account_id in self.accounts:
-            self.accounts[account_id]["last_online"] = datetime.now().isoformat()
+            self.accounts[account_id]["last_online"] = datetime.now(timezone.utc).isoformat()
             self.accounts[account_id]["status"] = "online"
             self._save_config()
 
@@ -773,8 +823,8 @@ class AccountManager:
                 "last_name": me.last_name or "",
                 "is_premium": getattr(me, 'premium', False) or False,
                 "status": "online",
-                "created_at": datetime.now().isoformat(),
-                "last_online": datetime.now().isoformat(),
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "last_online": datetime.now(timezone.utc).isoformat(),
                 "use_count": 0
             }
             self._save_config()

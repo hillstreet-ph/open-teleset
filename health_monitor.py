@@ -177,17 +177,22 @@ class HealthMonitor:
         try:
             client = await account_manager.get_client(account_id)
             if not client:
-                self.record_login_failure(account_id, "无法获取客户端")
-                return {"status": "unhealthy", "error": "无法连接"}
-
-            if not await client.is_user_authorized():
-                self.record_login_failure(account_id, "未授权")
-                return {"status": "unhealthy", "error": "未授权"}
+                error = account_manager.connection_errors.get(account_id, "Account unavailable. Sign in again.")
+                self.record_login_failure(account_id, error)
+                return {"status": "unhealthy", "error": error}
 
             # 测试发送消息能力（获取me）
-            me = await client.get_me()
+            me = await asyncio.wait_for(client.get_me(), timeout=10)
+            if me is None:
+                error = "Telegram session expired or revoked. Sign in again using Add account."
+                account_manager.connection_errors[account_id] = error
+                account_manager.clients.pop(account_id, None)
+                await asyncio.wait_for(client.disconnect(), timeout=2)
+                self.record_login_failure(account_id, error)
+                return {"status": "unhealthy", "error": error}
 
-            # 记录成功
+            # Clear a previous transient error even when the client was cached.
+            account_manager.connection_errors.pop(account_id, None)
             self.record_login_success(account_id)
 
             # 检查代理响应时间
@@ -217,9 +222,11 @@ class HealthMonitor:
                 "risk_level": self.health_data.get(account_id, {}).get("risk_level", "low")
             }
 
-        except Exception as e:
-            self.record_login_failure(account_id, str(e))
-            return {"status": "unhealthy", "error": str(e)}
+        except Exception:
+            error = "Connection check failed. Test the assigned proxy and try again."
+            account_manager.connection_errors[account_id] = error
+            self.record_login_failure(account_id, error)
+            return {"status": "unhealthy", "error": error}
 
     async def start_monitoring(self, interval: int = 60):
         """

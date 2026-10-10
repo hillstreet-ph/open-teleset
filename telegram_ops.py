@@ -342,7 +342,8 @@ async def bulk_send_personal(request: BulkSendRequest, http_request: Request = N
         for account_id in account_ids:
             clients[account_id] = await account_manager.get_client(account_id)
             if not clients[account_id]:
-                raise HTTPException(status_code=400, detail="Selected account unavailable; no messages sent")
+                reason = account_manager.connection_errors.get(account_id, "Check the connection from Accounts.")
+                raise HTTPException(status_code=400, detail=f"Selected account unavailable; no messages sent. {reason}")
 
         message_text = request.message
 
