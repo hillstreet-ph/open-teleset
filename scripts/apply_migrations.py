@@ -69,62 +69,20 @@ def _ensure_sslmode(dsn: str) -> str:
     return f"{dsn}{sep}sslmode=require"
 
 
-def _derive_pooler(dsn: str) -> str | None:
-    """Map a Supabase direct DSN to its IPv4 pooler equivalent.
-
-    Direct `db.<ref>.supabase.co` hosts are frequently IPv6-only or absent from
-    CI DNS. The Supavisor pooler host (`aws-0-<region>.pooler.supabase.com`)
-    resolves everywhere and is the supported connection path for CI/runtime.
-    """
-    try:
-        parsed = urlparse(dsn)
-    except ValueError:
-        return None
-    host = parsed.hostname or ""
-    if not (host.startswith("db.") and host.endswith(".supabase.co")):
-        return None
-    ref = host[len("db.") : -len(".supabase.co")]
-    region = os.getenv("SUPABASE_REGION", "ap-southeast-1")
-    user = parsed.username or "postgres"
-    pool_user = user if "." in user else f"postgres.{ref}"
-    password = parsed.password or ""
-    auth = f"{pool_user}:{password}@" if password else f"{pool_user}@"
-    pool_host = f"aws-0-{region}.pooler.supabase.com"
-    return f"postgresql://{auth}{pool_host}:6543{parsed.path or '/postgres'}?sslmode=require"
-
-
-def _host_of(dsn: str) -> str:
-    try:
-        return (urlparse(dsn).hostname or "").lower()
-    except ValueError:
-        return ""
-
-
-def _is_pooler_host(host: str) -> bool:
-    return host == "pooler.supabase.com" or host.endswith(".pooler.supabase.com")
-
-
 def _candidate_dsns() -> list[str]:
-    """Pooler first, then direct — every resolvable Supabase variant is offered."""
-    poolers: list[str] = []
-    directs: list[str] = []
+    """Use only provider-issued endpoints, in explicit preference order.
+
+    A shared pooler host cannot be derived from region: a region can have
+    several pooler clusters. Never send credentials to a guessed endpoint.
+    """
+    ordered: list[str] = []
     for key in ("DATABASE_POOLER_URL", "DATABASE_URL"):
         value = (os.getenv(key) or "").strip()
-        if not value or "YOUR_PASSWORD" in value:
+        if not value or "YOUR_PASSWORD" in value or "YOUR-PASSWORD" in value:
             continue
         normalized = _ensure_sslmode(value)
-        if _is_pooler_host(_host_of(normalized)):
-            poolers.append(normalized)
-            continue
-        directs.append(normalized)
-        derived = _derive_pooler(normalized)
-        if derived:
-            poolers.append(derived)
-
-    ordered: list[str] = []
-    for candidate in [*poolers, *directs]:
-        if candidate not in ordered:
-            ordered.append(candidate)
+        if normalized not in ordered:
+            ordered.append(normalized)
     return ordered
 
 

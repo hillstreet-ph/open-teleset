@@ -1,7 +1,6 @@
 """Legacy migrations must never replace canonical shared Auth contracts."""
 from unittest.mock import AsyncMock
 import ssl
-from urllib.parse import urlparse
 
 import pytest
 
@@ -79,35 +78,29 @@ async def test_unexpected_schema_result_fails_closed(target):
     target.execute.assert_not_awaited()
 
 
-def test_direct_dsn_is_mapped_to_resolvable_pooler(monkeypatch):
-    monkeypatch.setenv("SUPABASE_REGION", "ap-southeast-1")
-    derived = migrations._derive_pooler(
-        "postgresql://postgres:secret@db.hoseohvgoiarxluxqwqv.supabase.co:5432/postgres"
-    )
-    assert derived is not None
-    parsed = urlparse(derived)
-    assert parsed.hostname == "aws-0-ap-southeast-1.pooler.supabase.com"
-    assert parsed.port == 6543
-    assert parsed.username == "postgres.hoseohvgoiarxluxqwqv"
-    assert parsed.password == "secret"
-    assert "sslmode=require" in derived
-
-
-def test_non_supabase_dsn_is_not_rewritten():
-    assert migrations._derive_pooler("postgresql://user:pw@localhost:5432/db") is None
-
-
-def test_candidate_dsns_prefers_pooler_before_direct(monkeypatch):
-    monkeypatch.setenv("SUPABASE_REGION", "ap-southeast-1")
+def test_configured_dedicated_endpoint_is_not_rewritten(monkeypatch):
     monkeypatch.delenv("DATABASE_POOLER_URL", raising=False)
-    monkeypatch.setenv(
-        "DATABASE_URL",
-        "postgresql://postgres:pw@db.hoseohvgoiarxluxqwqv.supabase.co:5432/postgres",
-    )
-    candidates = migrations._candidate_dsns()
-    assert len(candidates) == 2
-    assert urlparse(candidates[0]).hostname == "aws-0-ap-southeast-1.pooler.supabase.com"
-    assert urlparse(candidates[1]).hostname == "db.hoseohvgoiarxluxqwqv.supabase.co"
+    dsn = "postgresql://postgres@db.hoseohvgoiarxluxqwqv.supabase.co:6543/postgres?sslmode=verify-full"
+    monkeypatch.setenv("DATABASE_URL", dsn)
+    monkeypatch.setenv("SUPABASE_REGION", "untrusted-region")
+    assert migrations._candidate_dsns() == [dsn]
+
+
+def test_candidate_dsns_preserves_explicit_preference_and_deduplicates(monkeypatch):
+    pooler = "postgresql://postgres@dedicated.example:6543/postgres?sslmode=verify-full"
+    direct = "postgresql://postgres@direct.example:5432/postgres?sslmode=verify-full"
+    monkeypatch.setenv("DATABASE_POOLER_URL", pooler)
+    monkeypatch.setenv("DATABASE_URL", direct)
+    assert migrations._candidate_dsns() == [pooler, direct]
+    monkeypatch.setenv("DATABASE_URL", pooler)
+    assert migrations._candidate_dsns() == [pooler]
+
+
+@pytest.mark.parametrize("placeholder", ["YOUR_PASSWORD", "YOUR-PASSWORD"])
+def test_placeholder_connection_is_not_attempted(monkeypatch, placeholder):
+    monkeypatch.delenv("DATABASE_POOLER_URL", raising=False)
+    monkeypatch.setenv("DATABASE_URL", f"postgresql://postgres:{placeholder}@localhost/postgres")
+    assert migrations._candidate_dsns() == []
 
 
 @pytest.mark.asyncio
