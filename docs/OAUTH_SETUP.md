@@ -15,22 +15,21 @@ Supabase redirect allowlist entries:
 - `https://www.open-teleset.site/dashboard`
 - `https://open-teleset-dashboard.pages.dev/dashboard`
 
-The direct Zeabur app host also serves the existing login dashboard at
-`https://app.open-teleset.site/dashboard`; `/` redirects there. Its `/config.js`
-renders only the runtime `SUPABASE_PUBLISHABLE_KEY` into the existing public
-configuration. A missing, secret, or service-role key returns `503` and is never
-published. Add `https://app.open-teleset.site/dashboard` to the shared Auth
-redirect allowlist before accepting OAuth or recovery flows on that host;
-preserve every existing application entry. App-host origins are explicitly
-permitted by the API, WebSocket and remote MCP allowlists.
+The canonical login URL is `https://open-teleset.site/dashboard`. The app
+subdomain's `/` and `/dashboard` redirect there, preserving callback query
+parameters. Google, GitHub and password recovery explicitly return to the
+canonical dashboard, including when the shell is reached through another host.
+Keep the app subdomain provisioned as a runtime address; its private APIs keep
+the existing authentication gate. Cloudflare routes `/api/*`, `/health`,
+`/readyz`, `/ws`, `/mcp` and `/mcp/*` to the existing Worker; Pages owns the shell.
 
-Email/password sign-in uses the existing Supabase identity. To enable a username
-alias on the direct app host, set `DASHBOARD_USER=admin` and
-`DASHBOARD_LOGIN_EMAIL` to the existing account's email. This alias and email
-are public login configuration. The existing Supabase account password is
-still required; `DASHBOARD_PASSWORD` does not replace it or create another
-administrator. The Pages artifact has no alias unless explicitly configured.
-Google and GitHub buttons remain dependent on the provider configuration below.
+`APP_BASE_URL=https://open-teleset.site` is the runtime setting. Runtime
+`/config.js` publishes only the public key and optional public username alias.
+A missing or secret key returns `503`. Email sign-in requires the existing
+Supabase password. `DASHBOARD_USER` and `DASHBOARD_LOGIN_EMAIL` optionally map a
+username to that identity; `DASHBOARD_PASSWORD` alone grants no access. Pages
+uses email sign-in. Supabase authentication and approved administrator plus
+project access checks must both succeed.
 
 ## Google
 
@@ -101,8 +100,13 @@ generation stopped at GitHub's account-verification screen; no secret was
 generated or enabled. Supabase dashboard sign-in did not complete. The Google
 Cloud console was unavailable in this browser, so no separate Google client
 was created. Both built-in providers remain disabled. Callback allowlist
-entries are configured and the existing password identity was repaired without
-changing the owner's UUID or project roles.
+entries are configured. The requested account's existing verified UUID was
+preserved during password repair. Its previously unapproved `user` record was
+approved as `admin`, and an explicit `open-teleset` administrator assignment was
+added as requested. The shared global role is therefore also administrator;
+other project assignments were not added or modified. Password sign-in and
+`/api/auth/me` were verified with HTTP 200 without recording session tokens.
+The database readiness check still fails and does not certify deployment health.
 
 This is a setup record, not an OAuth completion claim. Acceptance requires a
 real sign-in for both Google accounts and the GitHub account, a restored session,

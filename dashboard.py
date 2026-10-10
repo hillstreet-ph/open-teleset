@@ -186,13 +186,21 @@ async def readiness_check():
 # ============ API 端点 ============
 
 @app.api_route("/", methods=["GET", "HEAD"])
-async def root():
-    """Open the existing login dashboard on the direct runtime host."""
-    return RedirectResponse("/dashboard", status_code=307)
+async def root(request: Request):
+    """Use one production login host while keeping the runtime API available."""
+    target = "https://open-teleset.site/dashboard" if request.url.hostname == "app.open-teleset.site" else "/dashboard"
+    if request.url.query:
+        target += "?" + request.url.query
+    return RedirectResponse(target, status_code=307, headers={"Cache-Control": "no-store"})
 
 
 @app.api_route("/dashboard", methods=["GET", "HEAD"])
-async def dashboard_page():
+async def dashboard_page(request: Request):
+    if request.url.hostname == "app.open-teleset.site":
+        target = "https://open-teleset.site/dashboard"
+        if request.url.query:
+            target += "?" + request.url.query
+        return RedirectResponse(target, status_code=307, headers={"Cache-Control": "no-store"})
     return FileResponse("static/dashboard.html", media_type="text/html")
 
 

@@ -13,29 +13,77 @@
     "cloudflare": {
       "pages_project": "open-teleset-dashboard",
       "worker": "open-teleset",
-      "public_url": "https://open-teleset.site"
+      "public_url": "https://open-teleset.site",
+      "login_url": "https://open-teleset.site/dashboard"
     },
     "zeabur": {
       "service": "open-teleset",
       "origin": "https://open-teleset-prod.zeabur.app",
       "liveness_path": "/health",
       "readiness_path": "/readyz",
-      "persistent_paths": ["/app/accounts"]
+      "persistent_paths": [
+        "/app/accounts"
+      ],
+      "secondary_login_url": "https://app.open-teleset.site/dashboard",
+      "login_redirect": "https://open-teleset.site/dashboard"
     },
-    "dockerhub": {"image": "hillstreet/open-teleset"},
-    "sentry": {"organization": "hillstreet", "project": "open-teleset"}
+    "dockerhub": {
+      "image": "hillstreet/open-teleset"
+    },
+    "sentry": {
+      "organization": "hillstreet",
+      "project": "open-teleset"
+    }
   },
   "environment_consumers": {
-    "runtime": ["DATABASE_POOLER_URL", "DATABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "SESSION_ENCRYPTION_KEY", "TELEGRAM_API_ID", "TELEGRAM_API_HASH", "SENTRY_DSN"],
-    "github_production": ["DATABASE_POOLER_URL", "DATABASE_URL", "SUPABASE_PUBLISHABLE_KEY", "DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "SUPABASE_TOKEN"],
-    "supabase_auth": ["external_github_secret", "external_google_secret"],
-    "release_uploads": ["SENTRY_AUTH_TOKEN"]
+    "runtime": [
+      "DATABASE_POOLER_URL",
+      "DATABASE_URL",
+      "SUPABASE_SERVICE_ROLE_KEY",
+      "SESSION_ENCRYPTION_KEY",
+      "TELEGRAM_API_ID",
+      "TELEGRAM_API_HASH",
+      "SENTRY_DSN"
+    ],
+    "github_production": [
+      "DATABASE_POOLER_URL",
+      "DATABASE_URL",
+      "SUPABASE_PUBLISHABLE_KEY",
+      "DOCKERHUB_USERNAME",
+      "DOCKERHUB_TOKEN",
+      "CLOUDFLARE_API_TOKEN",
+      "CLOUDFLARE_ACCOUNT_ID",
+      "SUPABASE_TOKEN"
+    ],
+    "supabase_auth": [
+      "external_github_secret",
+      "external_google_secret"
+    ],
+    "release_uploads": [
+      "SENTRY_AUTH_TOKEN"
+    ]
   },
   "non_secret_environment": {
-    "runtime": ["SUPABASE_URL", "SUPABASE_JWT_ISSUER", "SUPABASE_JWT_AUDIENCE", "APP_ENV", "PORT", "SENTRY_RELEASE"],
-    "github_production": ["CLOUDFLARE_ACCOUNT_ID"]
+    "runtime": [
+      "SUPABASE_URL",
+      "SUPABASE_JWT_ISSUER",
+      "SUPABASE_JWT_AUDIENCE",
+      "APP_ENV",
+      "PORT",
+      "SENTRY_RELEASE",
+      "APP_BASE_URL",
+      "ALLOWED_ORIGINS",
+      "DASHBOARD_USER",
+      "DASHBOARD_LOGIN_EMAIL"
+    ],
+    "github_production": [
+      "CLOUDFLARE_ACCOUNT_ID"
+    ]
   },
-  "database_precedence": ["DATABASE_POOLER_URL", "DATABASE_URL"],
+  "database_precedence": [
+    "DATABASE_POOLER_URL",
+    "DATABASE_URL"
+  ],
   "documentation": {
     "deployment": "docs/DEPLOYMENT_RUNBOOK.md",
     "credentials": "docs/CREDENTIALS-SETUP.md",
