@@ -36,7 +36,7 @@ class AccountManager:
     def __init__(self):
         self.accounts: Dict[str, Dict] = {}
         self.clients: Dict[str, TelegramClient] = {}
-        self._client_locks: Dict[str, asyncio.Lock] = {}
+        self._client_tasks: Dict[str, asyncio.Task] = {}
         self.connection_errors: Dict[str, str] = {}
         self.qr_sessions: Dict[str, Dict] = {}  # QR登录会话
         self.phone_sessions: Dict[str, Dict] = {}  # 手机号登录会话
@@ -315,15 +315,13 @@ class AccountManager:
         except asyncio.TimeoutError:
             session["status"] = "timeout"
             await client.disconnect()
-        except Exception as e:
-            error_msg = str(e)
-            if "password" in error_msg.lower() or "2fa" in error_msg.lower() or "two-step" in error_msg.lower():
-                # 需要两步验证
-                session["status"] = "need_password"
-                session["password_hint"] = ""
-            else:
-                session["status"] = "failed"
-                session["error"] = error_msg
+        except SessionPasswordNeededError:
+            session["status"] = "need_password"
+            session["password_hint"] = ""
+        except Exception:
+            session["status"] = "failed"
+            session.setdefault("error", "Telegram sign-in failed. Try signing in again.")
+            with suppress(Exception):
                 await client.disconnect()
 
     async def _complete_login(self, account_id: str, client, session: Dict):
@@ -349,11 +347,12 @@ class AccountManager:
             }
             self._save_config()
             session["status"] = "success"
+            return True
         except Exception:
             self.accounts.pop(account_id, None)
             session["status"] = "failed"
             session["error"] = "Unable to save the Telegram session. Try signing in again."
-            raise
+            return False
         finally:
             with suppress(Exception):
                 await client.disconnect()
@@ -384,8 +383,8 @@ class AccountManager:
             await client.sign_in(password=password)
 
             if await client.is_user_authorized():
-                await self._complete_login(account_id, client, session)
-                return {"success": True}
+                saved = await self._complete_login(account_id, client, session)
+                return {"success": saved, **({} if saved else {"error": session["error"]})}
             else:
                 return {"success": False, "error": "验证失败"}
 
@@ -429,6 +428,8 @@ class AccountManager:
         # 如果需要密码，返回提示
         if session["status"] == "need_password":
             result["password_hint"] = session.get("password_hint", "")
+        elif session["status"] == "failed":
+            result["error"] = session.get("error", "Telegram sign-in failed. Try signing in again.")
 
         return result
 
@@ -502,9 +503,21 @@ class AccountManager:
                 self.clients["default"] = await get_client()
             return self.clients["default"]
 
-        # Serialize health checks and user actions for the same saved session.
-        async with self._client_locks.setdefault(account_id, asyncio.Lock()):
-            return await self._connect_saved_account(account_id, proxy)
+        # Concurrent callers share success AND failure; a cancelled waiter does
+        # not cancel another caller's bounded connection attempt.
+        task = self._client_tasks.get(account_id)
+        if task is None:
+            task = asyncio.create_task(self._connect_saved_account(account_id, proxy))
+            self._client_tasks[account_id] = task
+            task.add_done_callback(lambda completed: self._client_tasks.pop(account_id, None)
+                                   if self._client_tasks.get(account_id) is completed else None)
+        return await asyncio.shield(task)
+
+    async def _probe_saved_authorization(self, client):
+        await client.connect()
+        # The saved-client migration guard also protects authorization RPCs
+        # performed inside connect(), before this explicit read-only probe.
+        await client(functions.updates.GetStateRequest())
 
     async def _connect_saved_account(self, account_id: str, proxy: Dict = None):
         if account_id not in self.accounts:
@@ -538,29 +551,17 @@ class AccountManager:
                 API_ID,
                 API_HASH,
                 proxy=proxy,
-                outreach_account_id=account_id
+                outreach_account_id=account_id,
+                preserve_saved_authorization=True,
             )
-            async with asyncio.timeout(20):
-                await client.connect()
-                # is_user_authorized() hides every RPCError as False, including
-                # transient server failures and a successful DC migration.
-                # Only this read-only probe may repeat once after a redirect.
-                for attempt in range(2):
-                    try:
-                        await client(functions.updates.GetStateRequest())
-                        break
-                    except (UserMigrateError, NetworkMigrateError, PhoneMigrateError) as exc:
-                        if attempt:
-                            raise
-                        if client.session.dc_id != exc.new_dc:
-                            await client._switch_dc(exc.new_dc)
-                account["session_string"] = client.session.save()
-                self._update_use_count(account_id)
-                self._update_online_status(account_id)
-                self.clients[account_id] = client
-                self.connection_errors.pop(account_id, None)
-                return client
-        except TimeoutError:
+            await asyncio.wait_for(self._probe_saved_authorization(client), timeout=20)
+            account["session_string"] = client.session.save()
+            self._update_use_count(account_id)
+            self._update_online_status(account_id)
+            self.clients[account_id] = client
+            self.connection_errors.pop(account_id, None)
+            return client
+        except (asyncio.TimeoutError, TimeoutError):
             self.connection_errors[account_id] = "Connection timed out. Check the assigned proxy and try again."
             return None
         except (UnauthorizedError, AuthKeyDuplicatedError):
@@ -573,7 +574,7 @@ class AccountManager:
             self.connection_errors[account_id] = "Telegram is temporarily unavailable. Try again later."
             return None
         except (UserMigrateError, NetworkMigrateError, PhoneMigrateError):
-            self.connection_errors[account_id] = "Telegram redirected the session again. Try the connection check later."
+            self.connection_errors[account_id] = "Telegram requires a different data center. Sign in again using Add account."
             return None
         except Exception:
             # Provider exceptions may contain phone numbers or proxy credentials.

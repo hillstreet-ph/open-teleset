@@ -2658,6 +2658,13 @@
                             } else if (res.data.status === 'need_password') {
                                 this.qrStatus = 'need_password'
                                 this.stopQrPolling()
+                            } else if (res.data.status === 'failed' || res.data.status === 'not_found') {
+                                this.qrStatus = 'error'
+                                this.qrError = res.data.error || 'Telegram sign-in failed. Try signing in again.'
+                                this.stopQrPolling()
+                            } else if (res.data.status === 'timeout') {
+                                this.qrStatus = 'timeout'
+                                this.stopQrPolling()
                             } else if (this.qrRemaining <= 0) {
                                 this.qrStatus = 'timeout'
                                 this.stopQrPolling()

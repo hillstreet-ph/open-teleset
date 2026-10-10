@@ -4,6 +4,7 @@
 监控账号健康度、代理响应时间、风险评估
 """
 import asyncio
+from contextlib import suppress
 import json
 import os
 from datetime import datetime
@@ -182,7 +183,14 @@ class HealthMonitor:
                 return {"status": "unhealthy", "error": error}
 
             # 测试发送消息能力（获取me）
-            me = await asyncio.wait_for(client.get_me(), timeout=10)
+            try:
+                me = await asyncio.wait_for(client.get_me(), timeout=10)
+            except (Exception, asyncio.CancelledError):
+                if account_manager.clients.get(account_id) is client:
+                    account_manager.clients.pop(account_id, None)
+                with suppress(Exception):
+                    await asyncio.wait_for(client.disconnect(), timeout=2)
+                raise
             if me is None:
                 error = "Telegram session expired or revoked. Sign in again using Add account."
                 account_manager.connection_errors[account_id] = error

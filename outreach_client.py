@@ -9,6 +9,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 
 from telethon import TelegramClient, functions, types, utils
+from telethon.errors import UserMigrateError
 from telethon.tl.tlobject import TLRequest
 
 
@@ -88,12 +89,21 @@ def _validate_shape(request):
 class ConsentTelegramClient(TelegramClient):
     """Require fresh approval for each outbound RPC, including album chunks."""
 
-    def __init__(self, *args, outreach_account_id=None, **kwargs):
+    def __init__(self, *args, outreach_account_id=None, preserve_saved_authorization=False, **kwargs):
         kwargs["request_retries"] = 0
         kwargs["flood_sleep_threshold"] = 0
         kwargs["raise_last_call_error"] = True
         super().__init__(*args, **kwargs)
         self.outreach_account_id = outreach_account_id
+        self._preserve_saved_authorization = preserve_saved_authorization
+
+    async def _switch_dc(self, new_dc):
+        # connect() itself can run authorization RPCs before a caller's probe.
+        # Saved sessions must never lose their key to an implicit redirect.
+        # Interactive QR/phone login retains Telethon's normal migration flow.
+        if self._preserve_saved_authorization:
+            raise UserMigrateError(request=None, capture=new_dc)
+        return await super()._switch_dc(new_dc)
 
     async def _call(self, sender, request, ordered=False, flood_sleep_threshold=None):
         from outreach_policy import OutreachDenied, dispatch_outreach
