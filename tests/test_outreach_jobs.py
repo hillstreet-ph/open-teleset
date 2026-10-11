@@ -351,8 +351,8 @@ def test_template_retry_uses_original_fingerprint_and_one_render(env, monkeypatc
 
 @pytest.mark.asyncio
 async def test_completed_message_stats_survive_restart_without_double_count(env):
-    from stats_tracker import StatsTracker
-    tracker = StatsTracker()
+    import stats_tracker as stats_module
+    tracker = stats_module.StatsTracker()
     tracker.stats = {}
     job = env.submit(['111'])
     await env.worker.tick()
