@@ -29,6 +29,7 @@ from template_manager import template_manager
 from scheduler import task_scheduler
 from batch_operations import batch_operations
 from telegram_ops import telegram_ops_router
+from outreach_jobs import router as outreach_jobs_router, worker as outreach_worker
 from open_teleset.security import SupabaseAuthMiddleware
 from open_teleset.observability import initialize_error_monitoring
 from open_teleset.read_only_mcp import create_read_only_mcp
@@ -59,8 +60,12 @@ async def lifespan(app: FastAPI):
 
     # Mounted ASGI applications do not start their own lifespan. Run the MCP
     # session manager here; stateless HTTP revalidates dashboard auth each request.
-    async with remote_mcp.session_manager.run():
-        yield
+    outreach_worker.start()
+    try:
+        async with remote_mcp.session_manager.run():
+            yield
+    finally:
+        await outreach_worker.stop()
 
     # 关闭时执行
     proxy_task.cancel()
@@ -98,6 +103,7 @@ app.add_middleware(
 # 挂载静态文件
 app.mount("/static", StaticFiles(directory="static"), name="static")
 app.include_router(telegram_ops_router)
+app.include_router(outreach_jobs_router)
 
 
 @app.get("/api/auth/me")
