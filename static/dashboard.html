@@ -1047,7 +1047,7 @@
                         <input class="form-control" v-model.trim="adder.approvalId" placeholder="Approved member-add reference" autocomplete="off">
                     </div>
                     <button class="btn btn-primary" @click="runAdder" :disabled="adder.loading || !adder.accountId || !adder.destTarget || !adder.approvalId || !adder.usernames.trim()">
-                        {{ adder.loading ? '⏳ Adding...' : '➕ Add Members' }}
+                        {{ adder.loading ? 'Submitting...' : 'Start Member Adder' }}
                     </button>
 
                     <!-- Results -->
@@ -1074,12 +1074,14 @@
                     </div>
                     <div class="form-group" v-if="bulksend.rotationMode === 'round_robin'">
                         <label>Rotation accounts</label>
-                        <select class="form-control" v-model="bulksend.accountIds" multiple size="5">
-                            <option v-for="acc in accounts" :key="acc.account_id" :value="acc.account_id">
-                                {{ acc.phone || acc.account_id }} {{ acc.username ? '(@' + acc.username + ')' : '' }}
-                            </option>
-                        </select>
-                        <small>Recipient consent must cover the selected sender. A Telegram restriction stops the batch; recipients are never retried through another account.</small>
+                        <div style="display:grid;gap:8px;max-height:220px;overflow:auto;">
+                            <label v-for="acc in accounts" :key="acc.account_id" style="display:flex;align-items:center;gap:10px;padding:10px;">
+                                <input type="checkbox" v-model="bulksend.accountIds" :value="acc.account_id">
+                                {{ acc.username || acc.phone || acc.account_id }} · {{ acc.connected ? 'Connected' : 'Check connection' }}
+                            </label>
+                        </div>
+                        <small>{{ bulksend.accountIds.length }} selected. One or more accounts supported.</small>
+                        <small>Recipient consent must cover the selected sender. Each recipient keeps their assigned sender. Timed waits resume after cooldown; other restrictions pause for review. No restricted recipient is retried through another account.</small>
                     </div>
                     <div class="form-group" v-else>
                         <label>Account</label>
@@ -1129,7 +1131,7 @@
 
                     </div>
                     <button class="btn btn-primary" @click="runBulkSend" :disabled="bulksend.loading || (bulksend.rotationMode === 'single' ? !bulksend.accountId : !bulksend.accountIds.length) || (!bulksend.message && !Object.keys(bulksend.messages).length) || !bulksend.targets">
-                        {{ bulksend.loading ? '⏳ Sending...' : '📨 Send Messages' }}
+                        {{ bulksend.loading ? 'Submitting...' : 'Start BulkSend' }}
                     </button>
 
                     <!-- Results -->
@@ -1141,6 +1143,29 @@
                             {{ result.target }} · {{ result.account_id }} · {{ result.success ? 'Sent' : (result.skipped || result.error || 'Failed') }}
                         </li>
                     </ul>
+                </div>
+            </div>
+
+            <div v-if="tab === 'adder' || tab === 'bulksend'" class="card" style="margin-top:16px;">
+                <div class="card-header"><h3>Progress tracker</h3><button class="btn btn-outline" @click="loadOutreachJobs" :disabled="outreachJobsLoading">Refresh</button></div>
+                <p>Worker: {{ outreachWorker || 'Checking' }}. Jobs continue while this browser is closed. Pause or Stop prevents the next operation; an in-flight operation may finish.</p>
+                <p v-if="outreachJobError" role="alert">{{ outreachJobError }}</p>
+                <p v-if="!outreachJobs.length">No jobs yet.</p>
+                <div v-for="job in outreachJobs.filter(j => j.kind === (tab === 'adder' ? 'member_add' : 'personal_send'))" :key="job.id" style="padding:16px 0;border-top:1px solid #555;overflow-wrap:anywhere;">
+                    <strong>{{ job.state }} · {{ job.id.slice(0,8) }}</strong>
+                    <p>{{ job.reason || 'Processing consenting recipients' }}</p>
+                    <progress :value="job.completed + job.skipped + job.failed + job.uncertain" :max="job.total || 1" style="width:100%;"></progress>
+                    <p aria-live="polite">Total {{ job.total }} · {{ job.kind === 'member_add' ? 'Added' : 'Sent' }} {{ job.completed }} · Pending {{ job.pending }} · In flight {{ job.in_flight }} · Skipped {{ job.skipped }} · Failed {{ job.failed }} · Uncertain {{ job.uncertain }}</p>
+                    <p v-if="job.retry_after > 0">Next eligible attempt in {{ Math.ceil(job.retry_after) }} seconds (refreshes every 2 seconds).</p>
+                    <div style="display:flex;flex-wrap:wrap;gap:8px;margin:10px 0;">
+                        <button v-if="['queued','running','waiting'].includes(job.state)" class="btn btn-outline" @click="controlOutreachJob(job, 'pause')" :disabled="!!outreachJobBusy">Pause</button>
+                        <button v-if="job.state === 'paused'" class="btn btn-primary" @click="controlOutreachJob(job, 'resume')" :disabled="!!outreachJobBusy">Resume</button>
+                        <button v-if="['queued','running','waiting','paused'].includes(job.state)" class="btn btn-danger" @click="controlOutreachJob(job, 'stop')" :disabled="!!outreachJobBusy">Stop</button>
+                    </div>
+                    <p v-if="job.state === 'needs_review'">Delivery is uncertain. Check Telegram before creating another job; automatic retry is disabled.</p>
+                    <details><summary>Recipient history (latest 100)</summary>
+                        <ul><li v-for="(result,index) in job.results" :key="index">{{ result.target }} · {{ result.account_id }} · {{ result.state }} {{ result.reason }}</li></ul>
+                    </details>
                 </div>
             </div>
 
@@ -1972,8 +1997,11 @@
                         loading: false,
                         results: [],
                     },
+                    outreachJobs: [], outreachJobsLoading: false, outreachJobError: '', outreachWorker: '',
+                    outreachJobBusy: '', jobsPoll: null,
                     // Adder
                     adder: {
+                        requestId: '',
                         accountId: '',
                         destTarget: '',
                         filterBots: true,
@@ -1987,6 +2015,7 @@
                     },
                     // BulkSend
                     bulksend: {
+                        requestId: '',
                         accountId: '',
                         accountIds: [],
                         rotationMode: 'single',
@@ -2150,6 +2179,8 @@
                 },
                 // ---- Adder ----
                 async runAdder() {
+                    if (!this.accessReady || this.adder.loading) return;
+                    const revision = this.authRevision;
                     this.adder.loading = true;
                     this.adder.resultMsg = '';
                     try {
@@ -2169,20 +2200,31 @@
                             activity_filter: this.adder.activityFilter,
                             usernames,
                         };
-                        const res = await _api.post('/api/members/add', payload);
-                        const d = res.data;
-                        const outcome = d.success === true && !d.failed ? 'Completed' : 'Incomplete or denied';
-                        this.adder.resultMsg = `${outcome}: added ${d.added || 0}, failed ${d.failed || 0}, skipped ${d.skipped || 0}, pending ${d.pending || 0}, total ${d.total || 0}.`;
-                        if (d.stopped_reason) this.adder.resultMsg += ' Stopped: ' + d.stopped_reason;
-                        if (d.error) this.adder.resultMsg += ' ' + d.error;
+                        this.adder.requestId ||= crypto.randomUUID();
+                        payload.request_id = this.adder.requestId;
+                        const res = await _api.post('/api/outreach/jobs/members', payload);
+                        if (!this.accessReady || revision !== this.authRevision) return;
+                        this.adder.requestId = '';
+                        this.adder.resultMsg = 'Queued. Monitor progress below; you can close the browser.';
+                        this.outreachJobs.unshift(res.data);
+                        await this.loadOutreachJobs();
                     } catch (e) {
+                        if (!this.accessReady || revision !== this.authRevision) return;
+                        if (e.response?.status === 409) {
+                            this.adder.requestId = '';
+                            await this.loadOutreachJobs();
+                            this.adder.resultMsg = 'Your previous submission exists. Check its progress below. Press Start again only if this edited input is a separate job.';
+                            return;
+                        }
                         this.adder.resultMsg = '❌ ' + (e.response?.data?.detail || e.message);
                     } finally {
-                        this.adder.loading = false;
+                        if (revision === this.authRevision) this.adder.loading = false;
                     }
                 },
                 // ---- BulkSend ----
                 async runBulkSend() {
+                    if (!this.accessReady || this.bulksend.loading) return;
+                    const revision = this.authRevision;
                     this.bulksend.loading = true;
                     this.bulksend.resultMsg = '';
                     this.bulksend.results = [];
@@ -2199,7 +2241,9 @@
                             (this.bulksend.perAccountLimit > 0 && targets.length > accountIds.length * this.bulksend.perAccountLimit)) {
                             throw new Error('Select accounts and set the per-account cap to 0 (unlimited) or enough capacity for this run.');
                         }
-                        const res = await _api.post('/api/bulk/send-personal', {
+                        this.bulksend.requestId ||= crypto.randomUUID();
+                        const res = await _api.post('/api/outreach/jobs/personal', {
+                            request_id: this.bulksend.requestId,
                             account_id: rotating ? '' : this.bulksend.accountId,
                             account_ids: rotating ? accountIds : [],
                             rotation_mode: this.bulksend.rotationMode,
@@ -2212,18 +2256,54 @@
                             targets: targets,
                             delay: this.bulksend.delay,
                         });
-                        const d = res.data;
-                        const outcome = d.success === true && !d.failed ? 'Completed' : 'Incomplete or denied';
-                        this.bulksend.results = d.results || [];
-                        this.bulksend.resultMsg = `${outcome}: sent ${d.sent || 0}, failed ${d.failed || 0}, skipped ${d.skipped || 0}, pending ${d.pending || 0}, total ${d.total || 0}.`;
-                        if (d.stopped_reason) this.bulksend.resultMsg += ' Stopped: ' + d.stopped_reason;
-                        if (d.error) this.bulksend.resultMsg += ' ' + d.error;
+                        if (!this.accessReady || revision !== this.authRevision) return;
+                        this.bulksend.requestId = '';
+                        this.bulksend.resultMsg = 'Queued. Monitor progress below; you can close the browser.';
+                        this.outreachJobs.unshift(res.data);
+                        await this.loadOutreachJobs();
                     } catch (e) {
+                        if (!this.accessReady || revision !== this.authRevision) return;
+                        if (e.response?.status === 409) {
+                            this.bulksend.requestId = '';
+                            await this.loadOutreachJobs();
+                            this.bulksend.resultMsg = 'Your previous submission exists. Check its progress below. Press Start again only if this edited input is a separate job.';
+                            return;
+                        }
                         this.bulksend.resultMsg = '❌ ' + (e.response?.data?.detail || e.message);
                         if (/policy_unavailable|consent_missing_or_invalid/.test(this.bulksend.resultMsg)) this.bulksend.resultMsg += ' Confirm recipient consent before sending.';
                     } finally {
-                        this.bulksend.loading = false;
+                        if (revision === this.authRevision) this.bulksend.loading = false;
                     }
+                },
+                async loadOutreachJobs() {
+                    if (!this.accessReady || this.outreachJobsLoading) return;
+                    const revision = this.authRevision;
+                    this.outreachJobsLoading = true;
+                    try {
+                        const { data } = await _api.get('/api/outreach/jobs');
+                        if (!this.accessReady || revision !== this.authRevision) return;
+                        this.outreachJobs = data.jobs;
+                        this.outreachWorker = data.worker;
+                        this.outreachJobError = '';
+                    } catch (error) {
+                        if (this.accessReady && revision === this.authRevision)
+                            this.outreachJobError = 'Progress unavailable. The job may still be running. Retry refresh before submitting again.';
+                    } finally { this.outreachJobsLoading = false; }
+                },
+                async controlOutreachJob(job, action) {
+                    if (this.outreachJobBusy) return;
+                    this.outreachJobBusy = job.id;
+                    const revision = this.authRevision;
+                    try {
+                        const { data } = await _api.post('/api/outreach/jobs/' + job.id + '/' + action);
+                        if (!this.accessReady || revision !== this.authRevision) return;
+                        const index = this.outreachJobs.findIndex(j => j.id === data.id);
+                        if (index >= 0) this.outreachJobs.splice(index, 1, data);
+                        this.outreachJobError = '';
+                    } catch (error) {
+                        if (this.accessReady && revision === this.authRevision)
+                            this.outreachJobError = error.response?.data?.detail || 'Control request failed. Refresh to verify the job state.';
+                    } finally { this.outreachJobBusy = ''; }
                 },
                 // === Auth Methods ===
                 async initAuth() {
@@ -2295,6 +2375,7 @@
                         this.accessReady = true
                         this.loadProfile()
                         this.loadDashboardData()
+                        this.loadOutreachJobs()
                         this.connectStatusSocket(revision)
                     } catch (error) {
                         if (revision !== this.authRevision) return
@@ -2310,6 +2391,11 @@
                     else { delete _api.defaults.headers.common.Authorization }
                 },
                 clearPrivateData() {
+                    this.outreachJobs = []; this.outreachJobError = ''; this.outreachWorker = '';
+                    this.adder.requestId = ''; this.bulksend.requestId = '';
+                    this.adder.loading = false; this.bulksend.loading = false;
+                    this.adder.resultMsg = ''; this.bulksend.resultMsg = ''; this.bulksend.results = [];
+
                     this.accounts = []; this.proxies = []; this.logs = []
                     this.globalProxy = null; this.health = {}; this.stats = {}
                     this.templates = []; this.schedules = []; this.topAccounts = []
@@ -3270,6 +3356,7 @@
             },
             mounted() {
                 this.initAuth()
+                this.jobsPoll = setInterval(() => this.loadOutreachJobs(), 2000)
                 this.dashboardPoll = setInterval(() => {
                     if (this.accessReady) { this.loadAccounts(); this.loadHealth() }
                 }, 30000)
@@ -3278,6 +3365,7 @@
                 this.authRevision++
                 this.disconnectStatusSocket()
                 clearInterval(this.dashboardPoll)
+                clearInterval(this.jobsPoll)
                 this.authSubscription?.unsubscribe()
                 if (this.apiResponseInterceptor !== null) _api.interceptors.response.eject(this.apiResponseInterceptor)
             }

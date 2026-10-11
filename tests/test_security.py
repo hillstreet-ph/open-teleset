@@ -330,10 +330,12 @@ const api = {
     async get(url) {
         calls.push(await requestHandler({url, headers: {}}));
         if (denyAccess) throw { response: { status: 403 } };
+        if (url === '/api/outreach/jobs') return {data: {jobs: [], worker: 'ready'}};
         return { data: { id: 'test-user', role: 'admin' } };
     },
     async post(url, data) {
         calls.push({...await requestHandler({url, headers: {}}), data});
+        if (url.startsWith('/api/outreach/jobs/')) return {data: {id: 'job', state: 'queued'}};
         return {data: operationResult};
     },
 };
@@ -373,7 +375,7 @@ const context = {
     supabase: {createClient() {return provider;}},
     axios: {create(config) { assert.equal(config.baseURL, 'https://api.example.com'); return api; }},
     Vue: {createApp(value) { options = value; return {mount() {}}; }},
-    URL, WebSocket: Socket, console,
+    URL, WebSocket: Socket, console, crypto: require('node:crypto').webcrypto,
     setTimeout(fn) { deferred.push(fn); return deferred.length; }, clearTimeout() {},
     setInterval() {return 1;}, clearInterval() {},
 };
@@ -407,22 +409,25 @@ app.loadDashboardData = () => { dashboardLoads++; };
     assert.equal(app.newSchedule.interval, 3000);
     Object.assign(app.adder, {accountId: 'account', destTarget: 'group', usernames: '111\n222', approvalId: 'member-approval'});
     await app.runAdder();
-    assert.equal(calls.at(-1).data.approval_id, 'member-approval');
-    assert.deepEqual(Array.from(calls.at(-1).data.usernames), ['111', '222']);
-    assert.equal(calls.at(-1).data.source_target, undefined);
-    assert.match(app.adder.resultMsg, /Incomplete or denied/);
+    const lastPost = () => calls.filter(c => c.data).at(-1);
+    assert.equal(lastPost().url, '/api/outreach/jobs/members');
+    assert.equal(lastPost().data.approval_id, 'member-approval');
+    assert.deepEqual(Array.from(lastPost().data.usernames), ['111', '222']);
+    assert.equal(lastPost().data.source_target, undefined);
+    assert.match(app.adder.resultMsg, /Queued/);
     Object.assign(app.bulksend, {accountId: 'account', targets: '111\n222', message: 'Hello', approvalId: 'send-approval'});
     await app.runBulkSend();
-    assert.equal(calls.at(-1).data.approval_id, undefined);
-    assert.match(app.bulksend.resultMsg, /Incomplete or denied/);
+    assert.equal(lastPost().data.approval_id, undefined);
+    assert.match(app.bulksend.resultMsg, /Queued/);
+    assert.equal(lastPost().url, '/api/outreach/jobs/personal');
     Object.assign(app.bulksend, {rotationMode: 'round_robin', accountIds: ['account', 'second'],
         perAccountLimit: 1, activityFilter: '15_days', targets: '111\n@111\n222'});
     await app.runBulkSend();
-    assert.equal(calls.at(-1).data.rotation_mode, 'round_robin');
-    assert.equal(calls.at(-1).data.account_id, '');
-    assert.deepEqual(Array.from(calls.at(-1).data.account_ids), ['account', 'second']);
-    assert.deepEqual(Array.from(calls.at(-1).data.targets), ['111', '222']);
-    assert.equal(calls.at(-1).data.activity_filter, '15_days');
+    assert.equal(lastPost().data.rotation_mode, 'round_robin');
+    assert.equal(lastPost().data.account_id, '');
+    assert.deepEqual(Array.from(lastPost().data.account_ids), ['account', 'second']);
+    assert.deepEqual(Array.from(lastPost().data.targets), ['111', '222']);
+    assert.equal(lastPost().data.activity_filter, '15_days');
     const beforeCapacityError = calls.length;
     app.bulksend.accountIds = [];
     await app.runBulkSend();
@@ -438,8 +443,8 @@ app.loadDashboardData = () => { dashboardLoads++; };
     app.loadSchedules = async () => {};
     Object.assign(app.newSchedule, {selectedAccount: 'account', selectedFriends: [111], approvalId: 'schedule-approval'});
     await app.addSchedule();
-    assert.equal(calls.at(-1).data.approval_id, 'schedule-approval');
-    assert.equal(calls.at(-1).data.interval, 3000);
+    assert.equal(lastPost().data.approval_id, 'schedule-approval');
+    assert.equal(lastPost().data.interval, 3000);
     const beforeRecovery = calls.length;
     authCallback('PASSWORD_RECOVERY', session);
     assert.equal(app.passwordRecovery, true);

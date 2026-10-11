@@ -19,6 +19,7 @@ import sqlite3
 import time
 import fcntl
 import tempfile
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -27,6 +28,9 @@ from typing import Iterable, Optional
 
 DEFAULT_POLICY_FILE = "./accounts/outreach_policy.json"
 ACTIONS = {"personal_send", "member_add", "batch_send", "scheduled_send"}
+# Optional job cancellation fence, propagated through ConsentTelegramClient's
+# nested dispatch so Stop/Pause also apply after its final pacing wait.
+dispatch_guard = ContextVar("outreach_dispatch_guard", default=None)
 
 
 def valid_bounds(count, maximum, delay, minimum):
@@ -319,7 +323,7 @@ def record_provider_restriction(account_id, exc):
         account_cooldown(account_id, 86400)
 
 
-async def dispatch_outreach(*, action, subject, account_id, approval_id, send, delay=None):
+async def dispatch_outreach(*, action, subject, account_id, approval_id, send, delay=None, defer_attempt=False):
     """Pace every attempt across processes, then revalidate immediately before sending.
 
     All workers for an account must share the mounted rate database. Failure to
@@ -334,6 +338,8 @@ async def dispatch_outreach(*, action, subject, account_id, approval_id, send, d
     key = hash_identifier(account_id)
     rate_path = _rate_path()
     while True:
+        if dispatch_guard.get():
+            await dispatch_guard.get()(False)
         decision = outreach_policy.authorize(action=action, subject=subject,
                                              account_id=account_id, approval_id=approval_id)
         if not decision.allowed:
@@ -363,6 +369,18 @@ async def dispatch_outreach(*, action, subject, account_id, approval_id, send, d
             _check_cooldown(db, key)
     except (OSError, sqlite3.Error):
         raise OutreachDenied("rate_store_unavailable") from None
+    if dispatch_guard.get():
+        await dispatch_guard.get()(not defer_attempt)
+        # The async owner check may have waited; consent must still be current.
+        decision = outreach_policy.authorize(action=action, subject=subject,
+                                             account_id=account_id, approval_id=approval_id)
+        if not decision.allowed:
+            raise OutreachDenied(decision.reason)
+        try:
+            with sqlite3.connect(rate_path, timeout=1) as db:
+                _check_cooldown(db, key)
+        except (OSError, sqlite3.Error):
+            raise OutreachDenied("rate_store_unavailable") from None
     try:
         from outreach_client import outreach_context
         with outreach_context(action=action, subject=subject, account_id=account_id,
