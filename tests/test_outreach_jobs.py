@@ -366,3 +366,29 @@ async def test_completed_message_stats_survive_restart_without_double_count(env)
     assert tracker.get_top_accounts('messages')[0]['value'] == 1
     assert tracker.get_activity_trend('a')[-1]['messages'] == 1
     assert tracker.stats == {}
+
+
+def test_unverified_sender_is_validation_error_not_idempotency_conflict(env):
+    jobs.account_manager.accounts['a']['user_id'] = None
+    with pytest.raises(HTTPException) as error:
+        env.submit()
+    assert error.value.status_code == 422
+    assert env.store.listing('owner') == []
+
+
+@pytest.mark.asyncio
+async def test_queue_week_matches_legacy_stats_at_year_boundary(env, monkeypatch):
+    from datetime import datetime
+
+    import stats_tracker as stats_module
+    class NewYear(datetime):
+        @classmethod
+        def now(cls):
+            return cls(2027, 1, 1, 12)
+    monkeypatch.setattr(jobs, 'datetime', NewYear)
+    monkeypatch.setattr(stats_module, 'datetime', NewYear)
+    tracker = stats_module.StatsTracker()
+    tracker.stats = {}
+    env.submit(['111'])
+    await env.worker.tick()
+    assert tracker.get_weekly_stats()['a']['messages'] == 1

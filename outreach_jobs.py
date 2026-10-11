@@ -12,7 +12,7 @@ import os
 import sqlite3
 import time
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
@@ -125,7 +125,7 @@ class JobStore:
             for account in accounts:
                 identity = account_manager.accounts.get(account, {}).get("user_id")
                 if not isinstance(identity, int) or isinstance(identity, bool) or identity <= 0:
-                    raise HTTPException(409, "Selected account has no verified Telegram identity")
+                    raise HTTPException(422, "Selected account has no verified Telegram identity")
                 identities[account] = identity
             if kind == "personal_send":
                 if request.template_id:
@@ -229,7 +229,7 @@ class JobStore:
                     now = datetime.now()
                     db.execute("INSERT OR IGNORE INTO message_events VALUES(?,?,?,?,?,?)",
                                (job, seq, self.pack(self.unpack(item[0])["account"]),
-                                now.strftime("%Y-%m-%d"), now.strftime("%Y-W%W"), now.isoformat()))
+                                now.strftime("%Y-%m-%d"), (now - timedelta(days=now.weekday())).strftime("%Y-W%W"), now.isoformat()))
             db.execute("UPDATE jobs SET retry_at=? WHERE id=?", (time.time() + delay, job))
             if job_state:
                 # Never undo a concurrent manual Stop/Pause.
