@@ -29,9 +29,11 @@ def env(tmp_path, monkeypatch):
     import telegram_ops
     monkeypatch.setattr(telegram_ops, 'outreach_policy', evaluator)
     monkeypatch.setattr(jobs, '_load_profile', AsyncMock(return_value={'role': 'admin'}))
+    monkeypatch.setattr(jobs.account_manager, 'accounts', {'a': {'user_id': 999}, 'b': {'user_id': 998}})
     storage = jobs.JobStore(tmp_path / 'jobs.sqlite')
+    monkeypatch.setattr(jobs, 'store', storage)
     worker = jobs.JobWorker(storage)
-    client = SimpleNamespace(get_entity=AsyncMock(side_effect=lambda x: types.User(id=int(x))), send_message=AsyncMock())
+    client = SimpleNamespace(get_me=AsyncMock(return_value=types.User(id=999)), get_entity=AsyncMock(side_effect=lambda x: types.User(id=int(x))), send_message=AsyncMock())
     monkeypatch.setattr(jobs.account_manager, 'get_client', AsyncMock(return_value=client))
     clock = [1000.0]
     monkeypatch.setattr(jobs.time, 'time', lambda: clock[0])
@@ -220,6 +222,7 @@ async def test_existing_member_is_skipped_without_invitation(env, monkeypatch):
         approval_id='add', request_id='member_job_key_1234')
     job = env.store.submit('member_add', 'owner', req, req.usernames, ['a'])
     client = AsyncMock()
+    client.get_me.return_value = types.User(id=999)
     client.get_entity.side_effect = lambda value: types.User(id=int(value))
     client.return_value = SimpleNamespace(participant=types.ChannelParticipant(user_id=111, date=None))
     monkeypatch.setattr(jobs.account_manager, 'get_client', AsyncMock(return_value=client))
@@ -305,3 +308,61 @@ async def test_shutdown_during_pacing_does_not_mark_delivery_uncertain(env, monk
     env.client.send_message.assert_not_called()
     result = env.store.snapshot(job, 'owner')
     assert result['uncertain'] == 0 and result['pending'] == 2
+
+
+@pytest.mark.asyncio
+async def test_invalid_recipient_does_not_block_later_recipients(env):
+    job = env.submit()
+    env.client.get_entity.side_effect = [ValueError('missing'), types.User(id=222)]
+    await env.worker.tick()
+    await env.worker.tick()
+    await env.worker.tick()
+    result = env.store.snapshot(job, 'owner')
+    assert result['state'] == 'completed' and result['failed'] == 1 and result['completed'] == 1
+    env.client.send_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('change_at_boundary', [False, True])
+async def test_replaced_sender_never_dispatches(env, change_at_boundary):
+    job = env.submit()
+    env.client.get_me.side_effect = ([types.User(id=999), types.User(id=888)]
+                                     if change_at_boundary else [types.User(id=888)])
+    await env.worker.tick()
+    result = env.store.snapshot(job, 'owner')
+    assert result['state'] == 'paused' and result['reason'] == 'sender_identity_changed'
+    assert result['pending'] == 2 and result['uncertain'] == 0
+    env.client.send_message.assert_not_called()
+
+
+def test_template_retry_uses_original_fingerprint_and_one_render(env, monkeypatch):
+    from unittest.mock import Mock
+
+    from template_manager import template_manager
+    render = Mock(side_effect=['first time', 'later time'])
+    monkeypatch.setattr(template_manager, 'render_template', render)
+    first = env.submit(template_id='clock')
+    assert env.submit(template_id='clock') == first
+    render.assert_called_once()
+    with env.store.db() as db:
+        payload = env.store.unpack(db.execute('SELECT payload FROM jobs').fetchone()[0])
+    assert payload['message'] == 'first time'
+
+
+@pytest.mark.asyncio
+async def test_completed_message_stats_survive_restart_without_double_count(env):
+    from stats_tracker import StatsTracker
+    tracker = StatsTracker()
+    tracker.stats = {}
+    job = env.submit(['111'])
+    await env.worker.tick()
+    env.store.outcome(job, 0, 'completed')
+    env.store.recover()
+    await env.worker.tick()
+    assert tracker.get_summary()['total_messages_sent'] == 1
+    assert tracker.get_account_stats('a')['total_messages_sent'] == 1
+    assert tracker.get_daily_stats()['a']['messages'] == 1
+    assert tracker.get_weekly_stats()['a']['messages'] == 1
+    assert tracker.get_top_accounts('messages')[0]['value'] == 1
+    assert tracker.get_activity_trend('a')[-1]['messages'] == 1
+    assert tracker.stats == {}

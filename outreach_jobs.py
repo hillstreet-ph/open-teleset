@@ -12,6 +12,7 @@ import os
 import sqlite3
 import time
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
@@ -46,6 +47,10 @@ log = logging.getLogger(__name__)
 
 
 class Interrupted(Exception):
+    pass
+
+
+class SenderChanged(Exception):
     pass
 
 
@@ -86,6 +91,10 @@ class JobStore:
                     job TEXT NOT NULL REFERENCES jobs(id), seq INTEGER NOT NULL,
                     payload TEXT NOT NULL, peer TEXT, state TEXT NOT NULL DEFAULT 'pending',
                     reason TEXT NOT NULL DEFAULT '', PRIMARY KEY(job, seq));
+                CREATE TABLE IF NOT EXISTS message_events (
+                    job TEXT NOT NULL, seq INTEGER NOT NULL, account TEXT NOT NULL,
+                    date TEXT NOT NULL, week TEXT NOT NULL, created TEXT NOT NULL,
+                    PRIMARY KEY(job, seq));
             """)
             with db:
                 yield db
@@ -112,6 +121,22 @@ class JobStore:
                 if old["fingerprint"] != fingerprint:
                     raise HTTPException(409, "Submission key already belongs to different input")
                 return old["id"]
+            identities = {}
+            for account in accounts:
+                identity = account_manager.accounts.get(account, {}).get("user_id")
+                if not isinstance(identity, int) or isinstance(identity, bool) or identity <= 0:
+                    raise HTTPException(409, "Selected account has no verified Telegram identity")
+                identities[account] = identity
+            if kind == "personal_send":
+                if request.template_id:
+                    from template_manager import template_manager
+                    now = datetime.now()
+                    payload["message"] = template_manager.render_template(
+                        request.template_id, time=now.strftime("%H:%M"), date=now.strftime("%Y-%m-%d")) or request.message
+                message = payload["message"]
+                if len(message) > 4096 or (not message.strip() and any(t not in request.messages for t in targets)):
+                    raise HTTPException(400, "A valid message is required")
+            payload["sender_identities"] = identities
             # Submission records declarations only once. Resume never renews consent.
             if kind == "personal_send" and request.consent_confirmed:
                 for i, account in enumerate(accounts):
@@ -197,6 +222,14 @@ class JobStore:
     def outcome(self, job, seq, state, reason="", delay=0, job_state=None):
         with self.db() as db:
             db.execute("UPDATE items SET state=?,reason=? WHERE job=? AND seq=?", (state, reason, job, seq))
+            if state == "completed":
+                kind = db.execute("SELECT kind FROM jobs WHERE id=?", (job,)).fetchone()[0]
+                if kind == "personal_send":
+                    item = db.execute("SELECT payload FROM items WHERE job=? AND seq=?", (job, seq)).fetchone()
+                    now = datetime.now()
+                    db.execute("INSERT OR IGNORE INTO message_events VALUES(?,?,?,?,?,?)",
+                               (job, seq, self.pack(self.unpack(item[0])["account"]),
+                                now.strftime("%Y-%m-%d"), now.strftime("%Y-W%W"), now.isoformat()))
             db.execute("UPDATE jobs SET retry_at=? WHERE id=?", (time.time() + delay, job))
             if job_state:
                 # Never undo a concurrent manual Stop/Pause.
@@ -298,8 +331,19 @@ class JobWorker:
             if not client:
                 self.store.waiting(job_id, "account_unavailable", max(30, account_cooldown_remaining(account)))
                 return
+            async def check_sender():
+                expected = config.get("sender_identities", {}).get(account)
+                me = await client.get_me()
+                if not expected or not me or me.id != expected:
+                    raise SenderChanged()
+
+            await check_sender()
             value = recipient.get("peer_id", target)
-            entity = await client.get_entity(int(value) if str(value).isdigit() else value)
+            try:
+                entity = await client.get_entity(int(value) if str(value).isdigit() else value)
+            except ValueError:
+                self.store.outcome(job_id, seq, "failed", "recipient_unresolvable")
+                return
             peer = utils.get_peer_id(entity)
             peer_hash = hash_identifier(peer)
             with self.store.db() as db:
@@ -339,6 +383,7 @@ class JobWorker:
                 nonlocal attempted
                 if before_send:
                     await _load_profile(config["operator"])
+                    await check_sender()
                 self.store.guard(job_id, seq, mark=before_send)
                 attempted = attempted or before_send
 
@@ -356,6 +401,8 @@ class JobWorker:
                                     approval_id=config["approval_id"], delay=config["delay"], send=deliver,
                                     defer_attempt=isinstance(client, ConsentTelegramClient))
             self.store.outcome(job_id, seq, "completed", delay=config["delay"])
+        except SenderChanged:
+            self.store.outcome(job_id, seq, "pending", "sender_identity_changed", job_state="paused")
         except Interrupted:
             self.store.outcome(job_id, seq, "pending", "operator_interrupted")
         except errors.UserAlreadyParticipantError:
@@ -408,16 +455,6 @@ async def submit_personal(body: BulkJobRequest, request: Request):
     accounts = body.selected_accounts()
     if body.per_account_limit and len(targets) > len(accounts) * body.per_account_limit:
         raise HTTPException(400, "Per-account run limit exceeded")
-    if body.template_id:
-        # Freeze template content at submission, never silently send empty text.
-        from datetime import datetime
-
-        from template_manager import template_manager
-        now = datetime.now()
-        body.message = template_manager.render_template(body.template_id, time=now.strftime("%H:%M"), date=now.strftime("%Y-%m-%d")) or body.message
-        body.template_id = None
-    if len(body.message) > 4096 or (not body.message.strip() and any(t not in body.messages for t in targets)):
-        raise HTTPException(400, "A valid message is required")
     return await submit("personal_send", operator, body, targets, accounts)
 
 

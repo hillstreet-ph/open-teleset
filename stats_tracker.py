@@ -3,6 +3,7 @@
 统计追踪模块
 追踪账号使用量、消息发送量、活跃度分析
 """
+import copy
 import json
 import os
 from datetime import datetime, timedelta
@@ -98,6 +99,22 @@ class StatsTracker:
 
         self._save_stats()
 
+    def _read_stats(self):
+        """Merge legacy counters with durable queue completion events exactly once."""
+        from outreach_jobs import store
+        result = copy.deepcopy(self.stats)
+        with store.db() as db:
+            events = db.execute("SELECT account,date,week,created FROM message_events").fetchall()
+        for event in events:
+            account = store.unpack(event["account"])
+            stats = result.setdefault(account, {"total_uses": 0, "total_messages_sent": 0,
+                                      "daily": {}, "weekly": {}, "first_use": event["created"], "last_use": None})
+            stats["total_messages_sent"] += 1
+            for period, key in (("daily", event["date"]), ("weekly", event["week"])):
+                bucket = stats[period].setdefault(key, {"uses": 0, "messages": 0})
+                bucket["messages"] += 1
+        return result
+
     def get_account_stats(self, account_id: str) -> Dict:
         """
         获取账号统计
@@ -108,10 +125,11 @@ class StatsTracker:
         Returns:
             统计数据
         """
-        if account_id not in self.stats:
+        stats_view = self._read_stats()
+        if account_id not in stats_view:
             return {}
 
-        return self.stats[account_id]
+        return stats_view[account_id]
 
     def get_daily_stats(self, date: str = None) -> Dict:
         """
@@ -123,11 +141,12 @@ class StatsTracker:
         Returns:
             {account_id: {uses, messages}}
         """
+        stats_view = self._read_stats()
         if date is None:
             date = self._get_today()
 
         result = {}
-        for account_id, stats in self.stats.items():
+        for account_id, stats in stats_view.items():
             if date in stats.get("daily", {}):
                 result[account_id] = stats["daily"][date]
 
@@ -143,11 +162,12 @@ class StatsTracker:
         Returns:
             {account_id: {uses, messages}}
         """
+        stats_view = self._read_stats()
         if week is None:
             week = self._get_week()
 
         result = {}
-        for account_id, stats in self.stats.items():
+        for account_id, stats in stats_view.items():
             if week in stats.get("weekly", {}):
                 result[account_id] = stats["weekly"][week]
 
@@ -165,9 +185,10 @@ class StatsTracker:
         Returns:
             [{account_id, value}, ...]
         """
+        stats_view = self._read_stats()
         results = []
 
-        for account_id, stats in self.stats.items():
+        for account_id, stats in stats_view.items():
             if period == "all":
                 value = stats.get("total_messages_sent" if by == "messages" else "total_uses", 0)
             elif period == "today":
@@ -199,13 +220,14 @@ class StatsTracker:
         Returns:
             [{date, uses, messages}, ...]
         """
-        if account_id not in self.stats:
+        stats_view = self._read_stats()
+        if account_id not in stats_view:
             return []
 
         result = []
         for i in range(days):
             date = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
-            daily_data = self.stats[account_id].get("daily", {}).get(date, {"uses": 0, "messages": 0})
+            daily_data = stats_view[account_id].get("daily", {}).get(date, {"uses": 0, "messages": 0})
             result.append({
                 "date": date,
                 "uses": daily_data.get("uses", 0),
@@ -216,19 +238,20 @@ class StatsTracker:
 
     def get_summary(self) -> Dict:
         """获取总体统计摘要"""
-        total_uses = sum(s.get("total_uses", 0) for s in self.stats.values())
-        total_messages = sum(s.get("total_messages_sent", 0) for s in self.stats.values())
+        stats_view = self._read_stats()
+        total_uses = sum(s.get("total_uses", 0) for s in stats_view.values())
+        total_messages = sum(s.get("total_messages_sent", 0) for s in stats_view.values())
 
         today = self._get_today()
         today_uses = 0
         today_messages = 0
-        for stats in self.stats.values():
+        for stats in stats_view.values():
             today_data = stats.get("daily", {}).get(today, {})
             today_uses += today_data.get("uses", 0)
             today_messages += today_data.get("messages", 0)
 
         return {
-            "total_accounts": len(self.stats),
+            "total_accounts": len(stats_view),
             "total_uses": total_uses,
             "total_messages_sent": total_messages,
             "today_uses": today_uses,

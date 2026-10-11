@@ -335,6 +335,15 @@ async def dispatch_outreach(*, action, subject, account_id, approval_id, send, d
                    and (action == "personal_send" or delay <= 3600))
     if not valid_delay:
         raise OutreachDenied("invalid_rate_bounds")
+    if defer_attempt:
+        # The real client gates and paces its native RPC after resolution/uploads.
+        # Reserving here too would charge two slots for one delivery.
+        from outreach_client import outreach_context
+        if dispatch_guard.get():
+            await dispatch_guard.get()(False)
+        with outreach_context(action=action, subject=subject, account_id=account_id,
+                              approval_id=approval_id, delay=delay):
+            return await send()
     key = hash_identifier(account_id)
     rate_path = _rate_path()
     while True:

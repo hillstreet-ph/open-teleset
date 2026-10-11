@@ -23,7 +23,8 @@ when no eligible work remains. It does not acquire additional recipients.
   server error after dispatch, or restart during dispatch, produces
   `needs_review`. That job cannot automatically resume or repeat delivery.
 - Single-account and existing round-robin assignment are supported. Recipients
-  remain pinned to their assigned sender. An offline account waits; another
+  remain pinned to their assigned sender and verified Telegram user ID. Replacing
+  an account under the same application ID pauses the job. An offline account waits; another
   account is never substituted to evade a restriction.
 
 The creator must retain current administrator access. Ownership is enforced on
@@ -31,6 +32,10 @@ every job read and control. Consent, suppression and member-add approval checks
 remain enforced at the final Telegram RPC boundary, including after any wait.
 BulkSend retains its existing operator consent declaration. Resume never renews
 consent. The legacy synchronous API routes remain compatible.
+
+Successful queue messages contribute exactly once to the Stats tab through a
+transactional completion ledger. Invalid recipients fail individually so later
+recipients can continue. Template retries reuse the originally frozen content.
 
 ## Runtime and recovery
 
