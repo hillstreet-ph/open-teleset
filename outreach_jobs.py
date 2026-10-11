@@ -240,6 +240,7 @@ class JobWorker:
             try:
                 await self.task
             except asyncio.CancelledError:
+                # Expected after cancelling our dispatcher during graceful shutdown.
                 pass
             self.task = None
         if self.lock:
@@ -331,6 +332,7 @@ class JobWorker:
                         self.store.outcome(job_id, seq, "skipped", reason)
                         return
                 except errors.UserNotParticipantError:
+                    # Telegram confirms absence; proceed to the guarded invitation.
                     pass
 
             async def fence(before_send):

@@ -255,8 +255,12 @@ async def test_shutdown_during_send_preserves_uncertain_record(env):
     task = asyncio.create_task(env.worker.tick())
     await entered.wait()
     task.cancel()
-    with pytest.raises(asyncio.CancelledError):
+    cancelled = False
+    try:
         await task
+    except asyncio.CancelledError:
+        cancelled = True
+    assert cancelled
     assert env.store.snapshot(job, 'owner')['state'] == 'needs_review'
 
 
