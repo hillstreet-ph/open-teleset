@@ -7,6 +7,7 @@ import asyncio
 from contextlib import suppress
 import json
 import os
+import re
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 from outreach_client import ConsentTelegramClient as TelegramClient
@@ -39,6 +40,7 @@ class AccountManager:
         self.clients: Dict[str, TelegramClient] = {}
         self._client_tasks: Dict[str, asyncio.Task] = {}
         self.connection_errors: Dict[str, str] = {}
+        self._session_import_lock = asyncio.Lock()
         self.qr_sessions: Dict[str, Dict] = {}  # QR登录会话
         self.phone_sessions: Dict[str, Dict] = {}  # 手机号登录会话
         self._load_config()
@@ -134,63 +136,90 @@ class AccountManager:
         return False
 
     async def add_account_with_session(
-        self,
-        account_id: str,
-        session_string: str,
-        phone: str = None,
-        username: str = None,
-        user_id: int = None
+        self, account_id: str, session_string: str, phone: str = None,
+        username: str = None, user_id: int = None,
     ) -> bool:
-        """
-        使用 Session 字符串添加账号
+        """Legacy string-import interface; identity comes from Telegram."""
+        result = await self.import_session(account_id, session_string)
+        return result["success"]
 
-        Args:
-            account_id: 账号ID
-            session_string: Session 字符串
-            phone: 手机号
-            username: 用户名
-            user_id: 用户号
-
-        Returns:
-            是否成功
-        """
+    async def import_hex_session(self, account_id, hex_key, dc_id, proxy=None):
+        from hex_session import hex_to_string_session
         try:
-            # 验证 session
-            client = TelegramClient(
-                StringSession(session_string),
-                API_ID,
-                API_HASH,
-                outreach_account_id=account_id
-            )
-            await client.connect()
+            session = hex_to_string_session(hex_key, dc_id)
+        except ValueError as exc:
+            return {"success": False, "error": str(exc)}
+        return await self.import_session(account_id, session, proxy=proxy)
 
-            if not await client.is_user_authorized():
-                await client.disconnect()
-                return False
+    async def import_session(self, account_id, session_string, proxy=None):
+        """Verify an existing authorization, then atomically save encrypted state.
 
-            # 获取账号信息
-            me = await client.get_me()
-            await client.disconnect()
+        Serialize imports so double submissions cannot overwrite each other.
+        Never save raw keys, provider exception text, or caller-supplied identity.
+        """
+        if not isinstance(account_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", account_id):
+            return {"success": False, "error": "Account ID must be 1–100 letters, digits, underscores or hyphens."}
+        async with self._session_import_lock:
+            if account_id == "default" or account_id in self.accounts or account_id in self.qr_sessions or account_id in self.phone_sessions:
+                return {"success": False, "error": "Account ID is already in use. Choose a new ID."}
+            client = None
+            try:
+                if not isinstance(session_string, str) or not 1 <= len(session_string) <= 2048:
+                    raise ValueError
+                session = StringSession(session_string)
+                if not session.auth_key:
+                    raise ValueError
+            except Exception:
+                return {"success": False, "error": "Invalid Telegram string session."}
+            try:
+                client = TelegramClient(
+                    session, API_ID, API_HASH, proxy=proxy,
+                    outreach_account_id=account_id, preserve_saved_authorization=True,
+                )
 
-            self.accounts[account_id] = {
-                "account_id": account_id,
-                "session_string": session_string,
-                "phone": phone or me.phone,
-                "username": username or me.username or "N/A",
-                "user_id": user_id or me.id,
-                "first_name": me.first_name or "",
-                "last_name": me.last_name or "",
-                "is_premium": getattr(me, 'premium', False) or False,
-                "status": "offline",
-                "created_at": datetime.now(timezone.utc).isoformat(),
-                "last_online": datetime.now(timezone.utc).isoformat(),
-                "use_count": 0
-            }
-            self._save_config()
-            return True
-        except Exception as e:
-            print(f"Account setup failed: {type(e).__name__}")
-            return False
+                async def verify():
+                    await self._probe_saved_authorization(client)
+                    return await client.get_me()
+
+                me = await asyncio.wait_for(verify(), timeout=20)
+                if me is None:
+                    return {"success": False, "error": "Telegram session expired or revoked. Sign in again."}
+                if getattr(me, "bot", False):
+                    return {"success": False, "error": "Use a Telegram user account session, not a bot session."}
+                if any(a.get("user_id") == me.id for a in self.accounts.values()):
+                    return {"success": False, "error": "This Telegram account is already added."}
+                # Interactive logins may have completed while verification awaited.
+                if account_id in self.accounts or account_id in self.qr_sessions or account_id in self.phone_sessions:
+                    return {"success": False, "error": "Account ID is already in use. Choose a new ID."}
+                now = datetime.now(timezone.utc).isoformat()
+                self.accounts[account_id] = {
+                    "account_id": account_id, "session_string": client.session.save(),
+                    "phone": me.phone, "username": me.username or "N/A", "user_id": me.id,
+                    "first_name": me.first_name or "", "last_name": me.last_name or "",
+                    "is_premium": bool(getattr(me, "premium", False)), "status": "offline",
+                    "created_at": now, "last_online": now, "use_count": 0,
+                }
+                try:
+                    self._save_config()
+                except Exception:
+                    self.accounts.pop(account_id, None)
+                    return {"success": False, "error": "Unable to save account securely. No account was added."}
+                self.connection_errors.pop(account_id, None)
+                return {"success": True, "account_id": account_id}
+            except (UnauthorizedError, AuthKeyDuplicatedError):
+                return {"success": False, "error": "Telegram session expired or revoked. Sign in again."}
+            except (UserMigrateError, NetworkMigrateError, PhoneMigrateError):
+                return {"success": False, "error": "Session DC does not match. Check the original DC ID or sign in again."}
+            except (asyncio.TimeoutError, TimeoutError):
+                return {"success": False, "error": "Telegram connection timed out. Check the DC ID and proxy."}
+            except FloodWaitError as exc:
+                return {"success": False, "error": f"Telegram requires a wait of {exc.seconds} seconds. Try later."}
+            except Exception:
+                return {"success": False, "error": "Unable to verify Telegram session. Check the session and proxy."}
+            finally:
+                if client is not None:
+                    with suppress(Exception):
+                        await asyncio.wait_for(client.disconnect(), timeout=2)
 
     async def generate_qr_code(self, account_id: str, proxy: Dict = None) -> Dict:
         """
@@ -327,8 +356,11 @@ class AccountManager:
 
     async def _complete_login(self, account_id: str, client, session: Dict):
         """完成登录，保存账号信息"""
+        inserted = False
         try:
             me = await client.get_me()
+            if account_id in self.accounts or any(a.get("user_id") == me.id for a in self.accounts.values()):
+                raise ValueError("Account already exists; the saved account was not changed.")
             session_string = client.session.save()
 
             # 保存账号
@@ -346,11 +378,13 @@ class AccountManager:
                 "last_online": datetime.now(timezone.utc).isoformat(),
                 "use_count": 0
             }
+            inserted = True
             self._save_config()
             session["status"] = "success"
             return True
         except Exception:
-            self.accounts.pop(account_id, None)
+            if inserted:
+                self.accounts.pop(account_id, None)
             session["status"] = "failed"
             session["error"] = "Unable to save the Telegram session. Try signing in again."
             return False
@@ -831,8 +865,11 @@ class AccountManager:
 
     async def _complete_phone_login(self, account_id: str, client, session: Dict):
         """完成手机号登录，保存账号信息"""
+        inserted = False
         try:
             me = await client.get_me()
+            if account_id in self.accounts or any(a.get("user_id") == me.id for a in self.accounts.values()):
+                raise ValueError("Account already exists; the saved account was not changed.")
             session_string = client.session.save()
 
             self.accounts[account_id] = {
@@ -849,10 +886,12 @@ class AccountManager:
                 "last_online": datetime.now(timezone.utc).isoformat(),
                 "use_count": 0
             }
+            inserted = True
             self._save_config()
             session["status"] = "success"
         except Exception as e:
-            self.accounts.pop(account_id, None)
+            if inserted:
+                self.accounts.pop(account_id, None)
             session["status"] = "failed"
             session["error"] = str(e)
             raise
