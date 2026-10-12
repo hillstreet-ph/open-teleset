@@ -28,6 +28,7 @@ from open_teleset.security import _load_profile
 from outreach_policy import (
     OutreachDenied,
     account_cooldown_remaining,
+    account_pacing_remaining,
     dispatch_guard,
     dispatch_outreach,
     hash_identifier,
@@ -52,6 +53,10 @@ class Interrupted(Exception):
 
 
 class SenderChanged(Exception):
+    pass
+
+
+class RecipientChanged(Exception):
     pass
 
 
@@ -108,7 +113,20 @@ class JobStore:
                     job TEXT NOT NULL, seq INTEGER NOT NULL, account TEXT NOT NULL,
                     date TEXT NOT NULL, week TEXT NOT NULL, created TEXT NOT NULL,
                     PRIMARY KEY(job, seq));
+                CREATE TABLE IF NOT EXISTS message_totals (
+                    account_hash TEXT PRIMARY KEY, account TEXT NOT NULL,
+                    total INTEGER NOT NULL, first_created TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS message_daily (
+                    account_hash TEXT NOT NULL, date TEXT NOT NULL, count INTEGER NOT NULL,
+                    PRIMARY KEY(account_hash, date));
+                CREATE TABLE IF NOT EXISTS message_weekly (
+                    account_hash TEXT NOT NULL, week TEXT NOT NULL, count INTEGER NOT NULL,
+                    PRIMARY KEY(account_hash, week));
+                CREATE TABLE IF NOT EXISTS store_metadata (
+                    key TEXT PRIMARY KEY, value TEXT NOT NULL);
             """)
+            self._backfill_message_aggregates(db)
+            db.commit()
             with db:
                 yield db
         finally:
@@ -121,6 +139,36 @@ class JobStore:
     @staticmethod
     def unpack(value):
         return json.loads(SessionCipher().decrypt(value))
+
+    @staticmethod
+    def _increment_message_aggregates(db, account, account_cipher, date, week, created):
+        account_hash = hash_identifier(account)
+        db.execute("INSERT INTO message_totals VALUES(?,?,1,?) "
+                   "ON CONFLICT(account_hash) DO UPDATE SET total=total+1, "
+                   "first_created=MIN(first_created,excluded.first_created)",
+                   (account_hash, account_cipher, created))
+        db.execute("INSERT INTO message_daily VALUES(?,?,1) "
+                   "ON CONFLICT(account_hash,date) DO UPDATE SET count=count+1",
+                   (account_hash, date))
+        db.execute("INSERT INTO message_weekly VALUES(?,?,1) "
+                   "ON CONFLICT(account_hash,week) DO UPDATE SET count=count+1",
+                   (account_hash, week))
+
+    def _backfill_message_aggregates(self, db):
+        marker = db.execute("SELECT 1 FROM store_metadata WHERE key='message_aggregates_v1'").fetchone()
+        if marker:
+            return
+        db.execute("BEGIN IMMEDIATE")
+        marker = db.execute("SELECT 1 FROM store_metadata WHERE key='message_aggregates_v1'").fetchone()
+        if marker:
+            db.commit()
+            return
+        for event in db.execute("SELECT account,date,week,created FROM message_events"):
+            self._increment_message_aggregates(
+                db, self.unpack(event["account"]), event["account"],
+                event["date"], event["week"], event["created"])
+        db.execute("INSERT INTO store_metadata VALUES('message_aggregates_v1','complete')")
+        db.commit()
 
     def submit(self, kind, operator, request, targets, accounts):
         payload = request.model_dump(exclude={"request_id"})
@@ -208,8 +256,8 @@ class JobStore:
 
     def listing(self, operator):
         with self.db() as db:
-            ids = [r[0] for r in db.execute("SELECT id FROM jobs WHERE owner=? AND (state NOT IN ('completed','stopped') "
-                                           "OR id IN (SELECT id FROM jobs WHERE owner=? AND state IN ('completed','stopped') "
+            ids = [r[0] for r in db.execute("SELECT id FROM jobs WHERE owner=? AND (state NOT IN ('completed','stopped','needs_review') "
+                                           "OR id IN (SELECT id FROM jobs WHERE owner=? AND state IN ('completed','stopped','needs_review') "
                                            "ORDER BY created DESC LIMIT 30)) ORDER BY created DESC",
                                            (hash_identifier(operator), hash_identifier(operator)))]
         return [self.snapshot(j, operator) for j in ids]
@@ -253,9 +301,16 @@ class JobStore:
                 if kind == "personal_send":
                     item = db.execute("SELECT payload FROM items WHERE job=? AND seq=?", (job, seq)).fetchone()
                     now = datetime.now()
-                    db.execute("INSERT OR IGNORE INTO message_events VALUES(?,?,?,?,?,?)",
-                               (job, seq, self.pack(self.unpack(item[0])["account"]),
-                                now.strftime("%Y-%m-%d"), (now - timedelta(days=now.weekday())).strftime("%Y-W%W"), now.isoformat()))
+                    account = self.unpack(item[0])["account"]
+                    account_cipher = self.pack(account)
+                    date = now.strftime("%Y-%m-%d")
+                    week = (now - timedelta(days=now.weekday())).strftime("%Y-W%W")
+                    created = now.isoformat()
+                    inserted = db.execute("INSERT OR IGNORE INTO message_events VALUES(?,?,?,?,?,?)",
+                                          (job, seq, account_cipher, date, week, created)).rowcount
+                    if inserted:
+                        self._increment_message_aggregates(
+                            db, account, account_cipher, date, week, created)
             db.execute("UPDATE jobs SET retry_at=? WHERE id=?", (time.time() + delay, job))
             if job_state:
                 # Never undo a concurrent manual Stop/Pause.
@@ -353,6 +408,10 @@ class JobWorker:
             if remaining:
                 self.store.waiting(job_id, "telegram_cooldown", remaining)
                 return
+            remaining = account_pacing_remaining(account)
+            if remaining:
+                self.store.waiting(job_id, "account_pacing", remaining)
+                return
             client = await account_manager.get_client(account)
             if not client:
                 self.store.waiting(job_id, "account_unavailable", max(30, account_cooldown_remaining(account)))
@@ -364,11 +423,26 @@ class JobWorker:
                     raise SenderChanged()
 
             await check_sender()
-            value = recipient.get("peer_id", target)
-            try:
-                entity = await client.get_entity(int(value) if str(value).isdigit() else value)
-            except (ValueError, errors.UsernameInvalidError, errors.UsernameNotOccupiedError,
-                    errors.UserIdInvalidError, errors.InputUserDeactivatedError):
+            resolution_errors = (ValueError, errors.UsernameInvalidError, errors.UsernameNotOccupiedError,
+                                 errors.UserIdInvalidError, errors.InputUserDeactivatedError)
+            candidates = []
+            durable = recipient.get("input_peer")
+            if isinstance(durable, dict) and durable.get("kind") == "user":
+                try:
+                    candidates.append(types.InputPeerUser(
+                        user_id=int(durable["id"]), access_hash=int(durable["access_hash"])))
+                except (KeyError, TypeError, ValueError):
+                    # Fall back to the original target when cached peer fields are incomplete.
+                    pass
+            candidates.append(int(target) if str(target).isdigit() else target)
+            entity = None
+            for value in candidates:
+                try:
+                    entity = await client.get_entity(value)
+                    break
+                except resolution_errors:
+                    continue
+            if entity is None:
                 self.store.outcome(job_id, seq, "skipped" if job["kind"] == "member_add" else "failed",
                                    "recipient_not_found" if job["kind"] == "member_add" else "recipient_unresolvable")
                 return
@@ -377,6 +451,8 @@ class JobWorker:
                 self.store.outcome(job_id, seq, "skipped", reason)
                 return
             peer = utils.get_peer_id(entity)
+            if "peer_id" in recipient and recipient["peer_id"] != peer:
+                raise RecipientChanged()
             peer_hash = hash_identifier(peer)
             with self.store.db() as db:
                 duplicate = db.execute("SELECT 1 FROM items WHERE job=? AND peer=? AND seq!=? "
@@ -392,10 +468,14 @@ class JobWorker:
                                                        approval_id=config["approval_id"])
                 if not decision.allowed:
                     raise OutreachDenied(decision.reason)
-                outreach_policy.record_personal_consents([peer], account, config["operator"])
+                outreach_policy.bind_personal_peer(target, peer, account, config["operator"])
             if job["kind"] == "member_add" and config.get("member_form_grant") and "peer_id" not in recipient:
                 outreach_policy.bind_member_peer(target, peer, account, config["approval_id"])
             recipient["peer_id"] = peer
+            access_hash = getattr(entity, "access_hash", None)
+            if isinstance(entity, types.User) and isinstance(access_hash, int) and not isinstance(access_hash, bool):
+                recipient["input_peer"] = {"kind": "user", "id": entity.id,
+                                           "access_hash": access_hash}
             with self.store.db() as db:
                 db.execute("UPDATE items SET payload=?,peer=? WHERE job=? AND seq=?",
                            (self.store.pack(recipient), peer_hash, job_id, seq))
@@ -442,6 +522,8 @@ class JobWorker:
             self.store.outcome(job_id, seq, "completed", delay=config["delay"])
         except SenderChanged:
             self.store.outcome(job_id, seq, "pending", "sender_identity_changed", job_state="paused")
+        except RecipientChanged:
+            self.store.outcome(job_id, seq, "pending", "recipient_identity_changed", job_state="paused")
         except Interrupted:
             self.store.outcome(job_id, seq, "pending", "operator_interrupted")
         except errors.UserAlreadyParticipantError:
@@ -459,6 +541,8 @@ class JobWorker:
             elif str(exc) == "account_cooldown":
                 self.store.outcome(job_id, seq, "pending", "telegram_cooldown",
                                    max(1, account_cooldown_remaining(account)), "waiting")
+            elif str(exc) == "rate_store_unavailable":
+                self.store.outcome(job_id, seq, "pending", "rate_store_unavailable", job_state="paused")
             else:
                 self.store.outcome(job_id, seq, "failed", str(exc), job_state="paused")
         except (errors.UserPrivacyRestrictedError, errors.UserNotMutualContactError,

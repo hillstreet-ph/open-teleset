@@ -277,6 +277,9 @@ async def test_dispatch_fence_rechecks_after_pacing_wait(env, monkeypatch):
         env.store.control(job, 'owner', 'stop')
         env.clock[0] += 30
     monkeypatch.setattr(policy.asyncio, 'sleep', wait)
+    # Exercise the residual race inside dispatch_outreach; the normal worker
+    # path now yields before entering a known pacing wait.
+    monkeypatch.setattr(jobs, 'account_pacing_remaining', lambda _: 0)
     await env.worker.tick()
     env.client.send_message.assert_not_called()
     assert env.store.snapshot(job, 'owner')['state'] == 'stopped'
@@ -290,6 +293,7 @@ async def test_revocation_during_pacing_blocks_final_dispatch(env, monkeypatch):
         monkeypatch.setattr(jobs, '_load_profile', AsyncMock(side_effect=PermissionError()))
         env.clock[0] += 30
     monkeypatch.setattr(policy.asyncio, 'sleep', wait)
+    monkeypatch.setattr(jobs, 'account_pacing_remaining', lambda _: 0)
     await env.worker.tick()
     env.client.send_message.assert_not_called()
     result = env.store.snapshot(job, 'owner')
@@ -303,6 +307,7 @@ async def test_shutdown_during_pacing_does_not_mark_delivery_uncertain(env, monk
     async def wait(_):
         raise asyncio.CancelledError()
     monkeypatch.setattr(policy.asyncio, 'sleep', wait)
+    monkeypatch.setattr(jobs, 'account_pacing_remaining', lambda _: 0)
     with pytest.raises(asyncio.CancelledError):
         await env.worker.tick()
     env.client.send_message.assert_not_called()
@@ -366,6 +371,153 @@ async def test_completed_message_stats_survive_restart_without_double_count(env)
     assert tracker.get_top_accounts('messages')[0]['value'] == 1
     assert tracker.get_activity_trend('a')[-1]['messages'] == 1
     assert tracker.stats == {}
+
+
+@pytest.mark.asyncio
+async def test_personal_alias_binding_preserves_original_consent_window(env):
+    job = env.submit(['alice_test'], consent_confirmed=True)
+    source = next(row for row in env.evaluator._load()['consents']
+                  if row['subject_hash'] == policy.hash_identifier('alice_test'))
+    env.client.get_entity.side_effect = lambda value: types.User(id=111, access_hash=777)
+    await env.worker.tick()
+    data = env.evaluator._load()
+    bound = next(row for row in data['consents']
+                 if row['subject_hash'] == policy.hash_identifier(111)
+                 and row.get('recorded_via') == 'bulk_send_form')
+    assert bound['granted_at'] == source['granted_at']
+    assert bound['expires_at'] == source['expires_at']
+    assert env.store.snapshot(job, 'owner')['completed'] == 1
+
+
+@pytest.mark.asyncio
+async def test_retry_uses_persisted_input_peer_and_stable_identity(env, monkeypatch):
+    job = env.submit(['alice_test'], consent_confirmed=True)
+    env.client.get_entity.side_effect = lambda value: types.User(id=111, access_hash=777)
+    env.client.send_message.side_effect = errors.FloodWaitError(None, capture=60)
+    await env.worker.tick()
+    with env.store.db() as db:
+        payload = env.store.unpack(db.execute(
+            'SELECT payload FROM items WHERE job=? AND seq=0', (job,)).fetchone()[0])
+    assert payload['input_peer'] == {'kind': 'user', 'id': 111, 'access_hash': 777}
+
+    fresh = SimpleNamespace(get_me=AsyncMock(return_value=types.User(id=999)),
+                            get_entity=AsyncMock(return_value=types.User(id=111, access_hash=777)),
+                            send_message=AsyncMock())
+    monkeypatch.setattr(jobs.account_manager, 'get_client', AsyncMock(return_value=fresh))
+    env.clock[0] += 60
+    await env.worker.tick()
+    assert isinstance(fresh.get_entity.call_args.args[0], types.InputPeerUser)
+    assert env.store.snapshot(job, 'owner')['completed'] == 1
+
+
+@pytest.mark.asyncio
+async def test_retry_pauses_if_persisted_recipient_identity_changes(env, monkeypatch):
+    job = env.submit(['alice_test'], consent_confirmed=True)
+    with env.store.db() as db:
+        row = db.execute('SELECT payload FROM items WHERE job=? AND seq=0', (job,)).fetchone()
+        payload = env.store.unpack(row[0])
+        payload.update(peer_id=111, input_peer={'kind': 'user', 'id': 111, 'access_hash': 777})
+        db.execute('UPDATE items SET payload=? WHERE job=? AND seq=0', (env.store.pack(payload), job))
+    fresh = SimpleNamespace(get_me=AsyncMock(return_value=types.User(id=999)),
+                            get_entity=AsyncMock(return_value=types.User(id=222, access_hash=888)),
+                            send_message=AsyncMock())
+    monkeypatch.setattr(jobs.account_manager, 'get_client', AsyncMock(return_value=fresh))
+    await env.worker.tick()
+    result = env.store.snapshot(job, 'owner')
+    assert result['state'] == 'paused' and result['pending'] == 1
+    assert result['reason'] == 'recipient_identity_changed'
+    fresh.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_paced_account_does_not_block_other_account(env, monkeypatch):
+    await policy.dispatch_outreach(action='personal_send', subject=111, account_id='a',
+        approval_id=None, send=AsyncMock(), delay=30)
+    request_a = jobs.BulkJobRequest(account_id='a', message='one', targets=['111'],
+        request_id='paced_account_job_1234')
+    request_b = jobs.BulkJobRequest(account_id='b', message='two', targets=['222'],
+        consent_confirmed=True, request_id='ready_account_job_1234')
+    job_a = env.store.submit('personal_send', 'owner', request_a, request_a.targets, ['a'])
+    job_b = env.store.submit('personal_send', 'owner', request_b, request_b.targets, ['b'])
+    client_b = SimpleNamespace(get_me=AsyncMock(return_value=types.User(id=998)),
+                               get_entity=AsyncMock(return_value=types.User(id=222)),
+                               send_message=AsyncMock())
+    clients = {'a': env.client, 'b': client_b}
+    monkeypatch.setattr(jobs.account_manager, 'get_client',
+                        AsyncMock(side_effect=lambda account: clients[account]))
+    await env.worker.tick()
+    assert env.store.snapshot(job_a, 'owner')['state'] == 'waiting'
+    assert env.store.snapshot(job_a, 'owner')['reason'] == 'account_pacing'
+    assert env.store.snapshot(job_b, 'owner')['completed'] == 1
+    env.client.send_message.assert_not_awaited()
+    client_b.send_message.assert_awaited_once()
+
+
+def test_needs_review_history_is_bounded_like_other_terminal_jobs(env):
+    identifiers = []
+    for index in range(31):
+        request = jobs.BulkJobRequest(account_id='a', message='queued', targets=['111'],
+            request_id=f'review_history_{index:02d}_1234')
+        identifiers.append(env.store.submit(
+            'personal_send', 'owner', request, request.targets, ['a']))
+    with env.store.db() as db:
+        for index, identifier in enumerate(identifiers):
+            db.execute("UPDATE jobs SET state='needs_review',created=? WHERE id=?", (index, identifier))
+    listing = env.store.listing('owner')
+    assert len(listing) == 30
+    assert identifiers[0] not in {row['id'] for row in listing}
+
+
+@pytest.mark.asyncio
+async def test_stats_read_aggregates_without_rescanning_event_ledger(env, monkeypatch):
+    import stats_tracker as stats_module
+    tracker = stats_module.StatsTracker()
+    tracker.stats = {}
+    job = env.submit(['111'])
+    await env.worker.tick()
+    with env.store.db() as db:
+        db.execute('DELETE FROM message_events WHERE job=?', (job,))
+    reads = 0
+    original = tracker._read_stats
+    def count_reads():
+        nonlocal reads
+        reads += 1
+        return original()
+    monkeypatch.setattr(tracker, '_read_stats', count_reads)
+    assert tracker.get_summary()['total_messages_sent'] == 1
+    assert reads == 1
+
+
+def test_legacy_message_events_backfill_aggregates_exactly_once(tmp_path, monkeypatch):
+    import sqlite3
+
+    monkeypatch.setenv('SESSION_ENCRYPTION_KEY', SessionCipher.generate_key())
+    path = tmp_path / 'legacy_jobs.sqlite'
+    account = jobs.JobStore.pack('a')
+    with sqlite3.connect(path) as db:
+        db.execute('CREATE TABLE message_events ('
+                   'job TEXT NOT NULL, seq INTEGER NOT NULL, account TEXT NOT NULL, '
+                   'date TEXT NOT NULL, week TEXT NOT NULL, created TEXT NOT NULL, '
+                   'PRIMARY KEY(job, seq))')
+        db.execute('INSERT INTO message_events VALUES(?,?,?,?,?,?)',
+                   ('legacy', 0, account, '2026-10-12', '2026-W41', '2026-10-12T00:00:00'))
+    storage = jobs.JobStore(path)
+    for _ in range(2):
+        with storage.db() as db:
+            total = db.execute('SELECT total FROM message_totals').fetchone()[0]
+        assert total == 1
+
+
+@pytest.mark.asyncio
+async def test_rate_store_outage_keeps_recipient_pending(env, monkeypatch):
+    job = env.submit(['111'])
+    monkeypatch.setattr(jobs, 'account_cooldown_remaining',
+                        lambda _: (_ for _ in ()).throw(policy.OutreachDenied('rate_store_unavailable')))
+    await env.worker.tick()
+    result = env.store.snapshot(job, 'owner')
+    assert result['state'] == 'paused'
+    assert result['pending'] == 1 and result['failed'] == 0
+    assert result['reason'] == 'rate_store_unavailable'
 
 
 def test_unverified_sender_is_validation_error_not_idempotency_conflict(env):
