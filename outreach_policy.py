@@ -234,6 +234,18 @@ class OutreachPolicy:
 
         return None
 
+    def select_member_approval(self, account_id: object) -> str:
+        """Select an existing authorization; never create or renew one."""
+        data = self._load()
+        if data is None:
+            raise OutreachDenied("policy_unavailable")
+        current_time = datetime.now(timezone.utc)
+        account_ref = hash_identifier(account_id)
+        for approval_id in sorted(data["approvals"]):
+            if self._check_approval(data, approval_id, "member_add", account_ref, current_time, "") is None:
+                return approval_id
+        raise OutreachDenied("member_authorization_unavailable")
+
     def authorize_many(
         self,
         *,

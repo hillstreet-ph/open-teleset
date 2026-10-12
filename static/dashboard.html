@@ -1042,11 +1042,7 @@
                             <option v-for="option in activityOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
                         </select>
                     </div>
-                    <div class="form-group">
-                        <label>Approval reference</label>
-                        <input class="form-control" v-model.trim="adder.approvalId" placeholder="Approved member-add reference" autocomplete="off">
-                    </div>
-                    <button class="btn btn-primary" @click="runAdder" :disabled="adder.loading || !adder.accountId || !adder.destTarget || !adder.approvalId || !adder.usernames.trim()">
+                    <button class="btn btn-primary" @click="runAdder" :disabled="adder.loading || !adder.accountId || !adder.destTarget || !adder.usernames.trim()">
                         {{ adder.loading ? 'Submitting...' : 'Start Member Adder' }}
                     </button>
 
@@ -2008,7 +2004,6 @@
                         activityFilter: 'all',
                         usernames: '',
                         limit: 10,
-                        approvalId: '',
                         delay: 35,
                         loading: false,
                         resultMsg: '',
@@ -2185,17 +2180,16 @@
                     this.adder.resultMsg = '';
                     try {
                         const usernames = this.adder.usernames.trim().split('\n').map(u => u.trim()).filter(Boolean);
-                        if (!this.adder.approvalId || !usernames.length || usernames.length > 10 ||
+                        if (!usernames.length || usernames.length > 10 ||
                             !Number.isInteger(this.adder.limit) || this.adder.limit < 1 || this.adder.limit > 10 ||
                             !Number.isFinite(this.adder.delay) || this.adder.delay < 35 || this.adder.delay > 3600) {
-                            throw new Error('Provide an approval reference, 1–10 consenting recipients, and a delay of at least 35 seconds.');
+                            throw new Error('Provide 1–10 consenting recipients and a delay of at least 35 seconds.');
                         }
                         const payload = {
                             account_id: this.adder.accountId,
                             dest_target: this.adder.destTarget,
                             limit: this.adder.limit,
                             delay: this.adder.delay,
-                            approval_id: this.adder.approvalId.trim(),
                             filter_bots: this.adder.filterBots,
                             activity_filter: this.adder.activityFilter,
                             usernames,

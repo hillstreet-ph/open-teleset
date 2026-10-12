@@ -31,7 +31,13 @@ The creator must retain current administrator access. Ownership is enforced on
 every job read and control. Consent, suppression and member-add approval checks
 remain enforced at the final Telegram RPC boundary, including after any wait.
 BulkSend retains its existing operator consent declaration. Resume never renews
-consent. The legacy synchronous API routes remain compatible.
+consent. Member Adder no longer asks operators to type an approval reference.
+For a new job without an explicit reference, the server selects an existing,
+unexpired member-add authorization matching the account. That reference is
+frozen in the encrypted job and revalidated at dispatch. Missing authorization
+still blocks submission with an actionable message; no authorization or consent
+is created automatically. Legacy explicit references and synchronous API routes
+remain compatible.
 
 Successful queue messages contribute exactly once to the Stats tab through a
 transactional completion ledger. Invalid recipients fail individually so later

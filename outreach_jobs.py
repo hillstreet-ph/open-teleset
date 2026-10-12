@@ -136,13 +136,17 @@ class JobStore:
                 message = payload["message"]
                 if len(message) > 4096 or (not message.strip() and any(t not in request.messages for t in targets)):
                     raise HTTPException(400, "A valid message is required")
+            # Resolve only for new jobs and freeze the selected authorization.
+            # Idempotent retries above must not reselect or renew authorization.
+            if kind == "member_add" and request.approval_id is None:
+                payload["approval_id"] = outreach_policy.select_member_approval(accounts[0])
             payload["sender_identities"] = identities
             # Submission records declarations only once. Resume never renews consent.
             if kind == "personal_send" and request.consent_confirmed:
                 for i, account in enumerate(accounts):
                     outreach_policy.record_personal_consents(targets[i::len(accounts)], account, operator)
             for account in accounts:
-                _enforce_outreach(kind, targets, account, request.approval_id)
+                _enforce_outreach(kind, targets, account, payload["approval_id"])
             job = str(uuid4())
             payload["operator"] = operator
             payload.pop("targets", None)
@@ -474,7 +478,10 @@ async def submit(kind, operator, body, targets, accounts):
         job = store.submit(kind, operator, body, targets, accounts)
         return store.snapshot(job, operator)
     except OutreachDenied as exc:
-        raise HTTPException(403, str(exc)) from None
+        detail = ("No active member-add authorization is configured for this account. "
+                  "An administrator must configure it before members can be added."
+                  if str(exc) == "member_authorization_unavailable" else str(exc))
+        raise HTTPException(403, detail) from None
     except (OSError, sqlite3.Error, RuntimeError, ValueError):
         raise HTTPException(503, "Encrypted job storage unavailable") from None
 
