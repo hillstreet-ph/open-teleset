@@ -1018,8 +1018,9 @@
                         <label>Consenting recipients (usernames or IDs, one per line; maximum 10)</label>
                         <textarea class="form-control" v-model="adder.usernames" rows="5" aria-describedby="adder-recipient-summary" placeholder="user1&#10;user2&#10;user3"></textarea>
                         <small id="adder-recipient-summary" role="status" aria-live="polite">
-                            {{ adderRecipients.targets.length }} unique recipients / 10 maximum.
+                            {{ adderRecipients.targets.length }} valid unique recipients / 10 maximum.
                             {{ adderRecipients.duplicates }} duplicate lines will be skipped. Blank lines are ignored.
+                            <span v-if="adderRecipients.invalidLines.length">{{ adderRecipients.invalidLines.length }} invalid lines; first on line {{ adderRecipients.invalidLines[0] }}. Correct these before starting.</span>
                             <span v-if="adderRecipients.targets.length > 10">Remove {{ adderRecipients.targets.length - 10 }} unique recipients before starting.</span>
                         </small>
                     </div>
@@ -2186,7 +2187,7 @@
                     this.adder.usernames.split(/\r\n|\r|\n/).forEach((line, index) => {
                         if (!line.trim()) return;
                         const target = line.trim().toLowerCase().replace(/^@/, '');
-                        if (!/^(?:[a-z][a-z0-9_]{0,31}|[1-9][0-9]{0,19})$/.test(target)) invalidLines.push(index + 1);
+                        if (!OpenTelesetCSV.isRecipient(target)) { invalidLines.push(index + 1); return; }
                         if (seen.has(target)) { duplicates++; return; }
                         seen.add(target);
                         targets.push(target);
@@ -2200,12 +2201,12 @@
                     this.adder.resultMsg = '';
                     try {
                         const { targets: usernames, invalidLines } = this.parseAdderRecipients();
+                        if (invalidLines.length) {
+                            throw new Error(`Invalid recipient on line ${invalidLines[0]}. Use a Telegram username (4–32 letters, numbers or underscores, starting with a letter; optional @) or a positive numeric user ID, one per line. Website addresses are not usernames.`);
+                        }
                         if (!usernames.length) throw new Error('Enter at least one consenting recipient, one username or ID per line.');
                         if (usernames.length > 10) {
                             throw new Error(`You entered ${usernames.length} unique recipients; the maximum is 10. Remove ${usernames.length - 10} before starting. No recipients were queued.`);
-                        }
-                        if (invalidLines.length) {
-                            throw new Error(`Invalid recipient on line ${invalidLines[0]}. Use a Telegram username (optional @, letters, numbers or underscores) or a positive numeric user ID, one per line. Website addresses are not usernames.`);
                         }
                         if (!Number.isInteger(this.adder.limit) || this.adder.limit < 1 || this.adder.limit > 10) {
                             throw new Error('Max Members to Add must be a whole number from 1 to 10.');

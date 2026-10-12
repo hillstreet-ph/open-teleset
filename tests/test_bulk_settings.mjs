@@ -68,9 +68,11 @@ test('edited payload conflict refreshes original job without automatic resubmiss
 
 function adderHarness(post) {
   const source = html.slice(html.indexOf('parseAdderRecipients() {'), html.indexOf('// ---- BulkSend ----'));
+  const context = {_api:{post},crypto:{randomUUID}};
+  vm.runInNewContext(readFileSync('static/csv.js', 'utf8'), context);
   return {accessReady:true, authRevision:1, outreachJobs:[], loadOutreachJobs(){},
     adder:{accountId:'account', destTarget:'group', usernames:'111', limit:10, delay:35, filterBots:true, activityFilter:'all'},
-    ...vm.runInNewContext(`({${source}})`, {_api:{post},crypto:{randomUUID}})};
+    ...vm.runInNewContext(`({${source}})`, context)};
 }
 
 test('Member Adder submits without a manual approval reference', async () => {
@@ -108,6 +110,7 @@ test('Member Adder explains the actual invalid field and never submits invalid i
     [{usernames:Array.from({length:12}, (_,i)=>String(i+1)).join('\n')}, /12 unique recipients; the maximum is 10\. Remove 2/],
     [{usernames:'alice_test\n\n@vietnamnet.vn'}, /Invalid recipient on line 3/],
     [{usernames:'@'}, /Invalid recipient on line 1/],
+    [{usernames:'abc'}, /Invalid recipient on line 1/],
     [{usernames:'alice_test bob_test'}, /Invalid recipient on line 1/],
     [{limit:''}, /Max Members to Add must be a whole number from 1 to 10/],
     [{limit:1.5}, /Max Members to Add must be a whole number/],
@@ -123,6 +126,16 @@ test('Member Adder explains the actual invalid field and never submits invalid i
     assert.equal(state.adder.loading,false);
     assert.equal(state.outreachJobs.length,0);
   }
+});
+
+test('Member Adder reports invalid lines before the cap and excludes them from the valid count', async () => {
+  const state=adderHarness(async () => assert.fail('Invalid input must not call the API'));
+  state.adder.usernames=Array.from({length:10}, (_,i)=>String(i+1)).join('\n')+'\nhttps://example.com';
+  const summary=state.parseAdderRecipients();
+  assert.equal(summary.targets.length,10);
+  assert.deepEqual(Array.from(summary.invalidLines),[11]);
+  await state.runAdder();
+  assert.match(state.adder.resultMsg,/Invalid recipient on line 11/);
 });
 
 test('Member Adder allows a valid upper delay boundary', async () => {

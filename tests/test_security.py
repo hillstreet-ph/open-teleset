@@ -379,6 +379,7 @@ const context = {
     setTimeout(fn) { deferred.push(fn); return deferred.length; }, clearTimeout() {},
     setInterval() {return 1;}, clearInterval() {},
 };
+vm.runInNewContext(fs.readFileSync('static/csv.js', 'utf8'), context);
 for (const script of scripts) vm.runInNewContext(script[1], context);
 const app = options.data();
 for (const [name, fn] of Object.entries(options.methods)) app[name] = fn.bind(app);
