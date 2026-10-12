@@ -432,6 +432,7 @@ class JobWorker:
                     candidates.append(types.InputPeerUser(
                         user_id=int(durable["id"]), access_hash=int(durable["access_hash"])))
                 except (KeyError, TypeError, ValueError):
+                    # Fall back to the original target when cached peer fields are incomplete.
                     pass
             candidates.append(int(target) if str(target).isdigit() else target)
             entity = None
