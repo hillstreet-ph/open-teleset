@@ -66,18 +66,69 @@ test('edited payload conflict refreshes original job without automatic resubmiss
   assert.match(state.bulksend.resultMsg, /previous submission exists/);
 });
 
+function adderHarness(post) {
+  const source = html.slice(html.indexOf('parseAdderRecipients() {'), html.indexOf('// ---- BulkSend ----'));
+  return {accessReady:true, authRevision:1, outreachJobs:[], loadOutreachJobs(){},
+    adder:{accountId:'account', destTarget:'group', usernames:'111', limit:10, delay:35, filterBots:true, activityFilter:'all'},
+    ...vm.runInNewContext(`({${source}})`, {_api:{post},crypto:{randomUUID}})};
+}
+
 test('Member Adder submits without a manual approval reference', async () => {
   const form = html.slice(html.indexOf('<!-- ============ Adder Tab'), html.indexOf('<!-- ============ BulkSend'));
   assert.doesNotMatch(form, /adder\.approvalId|Approved member-add reference/);
-  const source = html.slice(html.indexOf('async runAdder() {'), html.indexOf('// ---- BulkSend ----'));
   let payload;
-  const state = {accessReady:true, authRevision:1, outreachJobs:[], loadOutreachJobs(){},
-    adder:{accountId:'account', destTarget:'group', usernames:'111', limit:10, delay:35, filterBots:true, activityFilter:'all'},
-    runAdder:vm.runInNewContext(`({${source}}).runAdder`, {_api:{post:async (path,body)=>{
+  const state = adderHarness(async (path,body)=>{
       assert.equal(path,'/api/outreach/jobs/members'); payload=body; return {data:{id:'job'}};
-    }},crypto:{randomUUID}})};
+    });
   await state.runAdder();
   assert.ok(payload.request_id);
   assert.equal(Object.hasOwn(payload,'approval_id'),false);
   assert.equal(state.outreachJobs.length,1);
+});
+
+test('Member Adder counts and sends unique recipients without modifying pasted text', async () => {
+  let payload;
+  const state = adderHarness(async (path, body) => {payload = body; return {data:{id:'job'}};});
+  const input = ' @Alice_Test \r\nalice_test\n\n@ALICE_TEST\r123\n' + Array.from({length:8}, (_,i)=>String(i+124)).join('\n');
+  state.adder.usernames = input;
+  const summary = state.parseAdderRecipients();
+  assert.equal(summary.targets.length, 10);
+  assert.equal(summary.duplicates, 2);
+  await state.runAdder();
+  assert.equal(payload.usernames.length, 10);
+  assert.equal(payload.usernames[0], 'alice_test');
+  assert.equal(payload.usernames[1], '123');
+  assert.equal(state.adder.usernames, input);
+  assert.match(state.adder.resultMsg, /Queued/);
+});
+
+test('Member Adder explains the actual invalid field and never submits invalid input', async () => {
+  const cases = [
+    [{usernames:' \n\t'}, /Enter at least one consenting recipient/],
+    [{usernames:Array.from({length:12}, (_,i)=>String(i+1)).join('\n')}, /12 unique recipients; the maximum is 10\. Remove 2/],
+    [{usernames:'alice_test\n\n@vietnamnet.vn'}, /Invalid recipient on line 3/],
+    [{usernames:'@'}, /Invalid recipient on line 1/],
+    [{usernames:'alice_test bob_test'}, /Invalid recipient on line 1/],
+    [{limit:''}, /Max Members to Add must be a whole number from 1 to 10/],
+    [{limit:1.5}, /Max Members to Add must be a whole number/],
+    [{limit:11}, /Max Members to Add must be a whole number/],
+    [{usernames:'111\n222',limit:1}, /2 unique recipients, but Max Members to Add is 1\. Increase it to 2 or remove 1/],
+    ...['',NaN,Infinity,34,3601].map(delay=>[{delay}, /Delay Between Adds must be a number from 35 to 3600 seconds/]),
+  ];
+  for (const [change, error] of cases) {
+    const state = adderHarness(async () => assert.fail('Invalid input must not call the API'));
+    Object.assign(state.adder,change);
+    await state.runAdder();
+    assert.match(state.adder.resultMsg,error);
+    assert.equal(state.adder.loading,false);
+    assert.equal(state.outreachJobs.length,0);
+  }
+});
+
+test('Member Adder allows a valid upper delay boundary', async () => {
+  let calls=0;
+  const state=adderHarness(async () => {calls++;return {data:{id:'job'}};});
+  state.adder.delay=3600;
+  await state.runAdder();
+  assert.equal(calls,1);
 });
