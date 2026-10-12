@@ -38,7 +38,7 @@ globalThis.OpenTelesetCSV = (() => {
         return rows;
     }
 
-    function recipients(text, limit = 0) {
+    function recipients(text, limit = 0, retainInvalid = false) {
         const rows = parse(text);
         if (!rows.length) throw new Error('CSV is empty.');
         const headers = rows.shift().map(value => value.trim().toLowerCase());
@@ -59,7 +59,7 @@ globalThis.OpenTelesetCSV = (() => {
             // Prefer a username, falling back to id for exported scraper rows.
             const raw = row[recipientIndex] || (headers.includes('id') ? row[headers.indexOf('id')] : '');
             const target = raw.trim().toLowerCase().replace(/^@/, '');
-            if (!isRecipient(target)) throw new Error('Invalid Telegram recipient in CSV.');
+            if (!isRecipient(target) && !retainInvalid) throw new Error('Invalid Telegram recipient in CSV.');
             const message = messageIndex >= 0 ? row[messageIndex] : '';
             if (message.length > 4096) throw new Error('Message exceeds 4096 characters.');
             if (seen.has(target)) {
@@ -67,7 +67,7 @@ globalThis.OpenTelesetCSV = (() => {
                 continue;
             }
             seen.add(target);
-            targets.push(target);
+            targets.push(retainInvalid && !isRecipient(target) ? raw.trim() : target);
             if (message.trim()) messages[target] = message;
         }
         if (!targets.length) throw new Error("Import at least one recipient.");

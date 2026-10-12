@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import sqlite3
 import time
 from contextlib import contextmanager
@@ -59,6 +60,7 @@ class BulkJobRequest(BulkSendRequest):
 
 
 class MemberJobRequest(AddMembersRequest):
+    consent_confirmed: bool = Field(default=False, strict=True)
     # Durable jobs process the complete explicit list. Legacy callers can still
     # opt into a run cap; the synchronous endpoint keeps its existing bounds.
     limit: int = Field(default=0, ge=0, strict=True)
@@ -149,15 +151,22 @@ class JobStore:
                     raise HTTPException(400, "A valid message is required")
             # Resolve only for new jobs and freeze the selected authorization.
             # Idempotent retries above must not reselect or renew authorization.
+            policy_targets = [t for t in targets if re.fullmatch(r"(?:[a-z][a-z0-9_]{3,31}|[1-9][0-9]{0,19})", t)] if kind == "member_add" else targets
+            if kind == "member_add" and request.approval_id is not None:
+                outreach_policy.validate_new_member_approval(request.approval_id)
             if kind == "member_add" and request.approval_id is None:
-                payload["approval_id"] = outreach_policy.select_member_approval(accounts[0])
+                if request.consent_confirmed:
+                    payload["approval_id"] = outreach_policy.record_member_job_consents(policy_targets, accounts[0], operator)
+                    payload["member_form_grant"] = True
+                else:
+                    payload["approval_id"] = outreach_policy.select_member_approval(accounts[0])
             payload["sender_identities"] = identities
             # Submission records declarations only once. Resume never renews consent.
             if kind == "personal_send" and request.consent_confirmed:
                 for i, account in enumerate(accounts):
                     outreach_policy.record_personal_consents(targets[i::len(accounts)], account, operator)
             for account in accounts:
-                _enforce_outreach(kind, targets, account, payload["approval_id"])
+                _enforce_outreach(kind, policy_targets, account, payload["approval_id"])
             job = str(uuid4())
             payload["operator"] = operator
             payload.pop("targets", None)
@@ -167,11 +176,13 @@ class JobStore:
                         self.pack(payload), "queued", time.time()))
             seen = set()
             for seq, target in enumerate(targets):
+                invalid = kind == "member_add" and not re.fullmatch(r"(?:[a-z][a-z0-9_]{3,31}|[1-9][0-9]{0,19})", target)
                 duplicate = target in seen
                 seen.add(target)
                 db.execute("INSERT INTO items(job,seq,payload,state,reason) VALUES(?,?,?,?,?)",
                            (job, seq, self.pack({"target": target, "account": accounts[seq % len(accounts)]}),
-                            "skipped" if duplicate else "pending", "duplicate_recipient" if duplicate else ""))
+                            "skipped" if invalid or duplicate else "pending",
+                            "invalid_username" if invalid else "duplicate_recipient" if duplicate else ""))
             return job
 
     def snapshot(self, job, operator):
@@ -356,8 +367,14 @@ class JobWorker:
             value = recipient.get("peer_id", target)
             try:
                 entity = await client.get_entity(int(value) if str(value).isdigit() else value)
-            except ValueError:
-                self.store.outcome(job_id, seq, "failed", "recipient_unresolvable")
+            except (ValueError, errors.UsernameInvalidError, errors.UsernameNotOccupiedError,
+                    errors.UserIdInvalidError, errors.InputUserDeactivatedError):
+                self.store.outcome(job_id, seq, "skipped" if job["kind"] == "member_add" else "failed",
+                                   "recipient_not_found" if job["kind"] == "member_add" else "recipient_unresolvable")
+                return
+            if job["kind"] == "member_add" and (not isinstance(entity, types.User) or entity.deleted):
+                reason = "recipient_deleted" if isinstance(entity, types.User) else "recipient_not_user"
+                self.store.outcome(job_id, seq, "skipped", reason)
                 return
             peer = utils.get_peer_id(entity)
             peer_hash = hash_identifier(peer)
@@ -376,6 +393,8 @@ class JobWorker:
                 if not decision.allowed:
                     raise OutreachDenied(decision.reason)
                 outreach_policy.record_personal_consents([peer], account, config["operator"])
+            if job["kind"] == "member_add" and config.get("member_form_grant") and "peer_id" not in recipient:
+                outreach_policy.bind_member_peer(target, peer, account, config["approval_id"])
             recipient["peer_id"] = peer
             with self.store.db() as db:
                 db.execute("UPDATE items SET payload=?,peer=? WHERE job=? AND seq=?",
@@ -399,6 +418,11 @@ class JobWorker:
                 if before_send:
                     await _load_profile(config["operator"])
                     await check_sender()
+                    if job["kind"] == "member_add" and config.get("member_form_grant"):
+                        decision = outreach_policy.authorize(action="member_add", subject=target,
+                            account_id=account, approval_id=config["approval_id"])
+                        if not decision.allowed:
+                            raise OutreachDenied(decision.reason)
                 self.store.guard(job_id, seq, mark=before_send)
                 attempted = attempted or before_send
 
@@ -430,11 +454,20 @@ class JobWorker:
             record_provider_restriction(account, exc)
             self.store.outcome(job_id, seq, "pending", type(exc).__name__, 86400, "paused")
         except OutreachDenied as exc:
-            if str(exc) == "account_cooldown":
+            if job["kind"] == "member_add" and str(exc) == "invitation_not_completed":
+                self.store.outcome(job_id, seq, "skipped", "invitation_not_completed", delay=config["delay"])
+            elif str(exc) == "account_cooldown":
                 self.store.outcome(job_id, seq, "pending", "telegram_cooldown",
                                    max(1, account_cooldown_remaining(account)), "waiting")
             else:
                 self.store.outcome(job_id, seq, "failed", str(exc), job_state="paused")
+        except (errors.UserPrivacyRestrictedError, errors.UserNotMutualContactError,
+                errors.UserChannelsTooMuchError, errors.InputUserDeactivatedError) as exc:
+            self.store.outcome(job_id, seq, "skipped" if job["kind"] == "member_add" else "failed",
+                               type(exc).__name__, delay=config["delay"])
+        except (errors.ChatAdminRequiredError, errors.ChannelPrivateError,
+                errors.ChannelInvalidError, errors.ChatWriteForbiddenError) as exc:
+            self.store.outcome(job_id, seq, "pending", type(exc).__name__, job_state="paused")
         except errors.RPCError as exc:
             # A server error may have happened after accepting a write.
             uncertain = attempted and getattr(exc, "code", 500) >= 500
@@ -478,9 +511,12 @@ async def submit_members(body: MemberJobRequest, request: Request):
     require_worker()
     if body.source_target:
         raise HTTPException(403, "Outreach denied: scraped_source_forbidden")
-    targets = [t.strip().lower().lstrip("@") for t in body.usernames or []]
-    if not targets or not all(targets) or (body.limit and len(set(targets)) > body.limit):
+    targets = [t.strip().lower().removeprefix("@") for t in body.usernames or []]
+    if not targets or (body.limit and len(set(targets)) > body.limit):
         raise HTTPException(400, "Provide explicit recipients within the member-add limit")
+    valid = [t for t in targets if re.fullmatch(r"(?:[a-z][a-z0-9_]{3,31}|[1-9][0-9]{0,19})", t)]
+    if not valid:
+        raise HTTPException(400, "No valid recipient remains after skipping invalid entries")
     return await submit("member_add", owner(request), body, targets, [body.account_id])
 
 
@@ -490,7 +526,7 @@ async def submit(kind, operator, body, targets, accounts):
         return store.snapshot(job, operator)
     except OutreachDenied as exc:
         detail = ("No active member-add authorization is configured for this account. "
-                  "An administrator must configure it before members can be added."
+                  "Confirm recipient consent in Member Adder to authorize this new job as an administrator."
                   if str(exc) == "member_authorization_unavailable" else str(exc))
         raise HTTPException(403, detail) from None
     except (OSError, sqlite3.Error, RuntimeError, ValueError):
