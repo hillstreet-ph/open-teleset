@@ -1,5 +1,9 @@
 /* CSV stays in the browser; imports never dispatch messages. */
 globalThis.OpenTelesetCSV = (() => {
+    function isRecipient(target) {
+        return /^(?:[a-z][a-z0-9_]{3,31}|[1-9][0-9]{0,19})$/.test(target);
+    }
+
     function parse(text) {
         if (text.length > 2 * 1024 * 1024) throw new Error('CSV must be at most 2 MB.');
         text = text.replace(/^\uFEFF/, '');
@@ -55,7 +59,7 @@ globalThis.OpenTelesetCSV = (() => {
             // Prefer a username, falling back to id for exported scraper rows.
             const raw = row[recipientIndex] || (headers.includes('id') ? row[headers.indexOf('id')] : '');
             const target = raw.trim().toLowerCase().replace(/^@/, '');
-            if (!/^(?:[a-z][a-z0-9_]{3,31}|[1-9][0-9]{0,19})$/.test(target)) throw new Error('Invalid Telegram recipient in CSV.');
+            if (!isRecipient(target)) throw new Error('Invalid Telegram recipient in CSV.');
             const message = messageIndex >= 0 ? row[messageIndex] : '';
             if (message.length > 4096) throw new Error('Message exceeds 4096 characters.');
             if (seen.has(target)) {
@@ -79,5 +83,5 @@ globalThis.OpenTelesetCSV = (() => {
             return '"' + text.replace(/"/g, '""') + '"';
         }).join(',')).join('\r\n') + '\r\n';
     }
-    return { parse, recipients, encode };
+    return { parse, recipients, encode, isRecipient };
 })();

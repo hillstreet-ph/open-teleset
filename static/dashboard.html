@@ -1016,7 +1016,13 @@
                     </div>
                     <div class="form-group">
                         <label>Consenting recipients (usernames or IDs, one per line; maximum 10)</label>
-                        <textarea class="form-control" v-model="adder.usernames" rows="5" placeholder="user1&#10;user2&#10;user3"></textarea>
+                        <textarea class="form-control" v-model="adder.usernames" rows="5" aria-describedby="adder-recipient-summary" placeholder="user1&#10;user2&#10;user3"></textarea>
+                        <small id="adder-recipient-summary" role="status" aria-live="polite">
+                            {{ adderRecipients.targets.length }} valid unique recipients / 10 maximum.
+                            {{ adderRecipients.duplicates }} duplicate lines will be skipped. Blank lines are ignored.
+                            <span v-if="adderRecipients.invalidLines.length">{{ adderRecipients.invalidLines.length }} invalid lines; first on line {{ adderRecipients.invalidLines[0] }}. Correct these before starting.</span>
+                            <span v-if="adderRecipients.targets.length > 10">Remove {{ adderRecipients.targets.length - 10 }} unique recipients before starting.</span>
+                        </small>
                     </div>
                     <div class="form-group">
                         <label>Import consenting recipients from CSV</label>
@@ -1027,6 +1033,7 @@
                         <div class="form-group" style="flex:1;">
                             <label>Max Members to Add</label>
                             <input class="form-control" type="number" v-model.number="adder.limit" min="1" max="10">
+                            <small>Must cover every unique recipient, up to 10. Extra recipients are not discarded.</small>
                         </div>
                         <div class="form-group" style="flex:1;">
                             <label>Delay Between Adds (sec)</label>
@@ -2045,6 +2052,7 @@
                 }
             },
             computed: {
+                adderRecipients() { return this.parseAdderRecipients(); },
                 onlineCount() { return this.accounts.filter(a => a.status === 'online').length },
                 offlineCount() { return this.accounts.filter(a => a.status !== 'online').length },
                 currentYear() { return new Date().getFullYear() },
@@ -2173,17 +2181,41 @@
                     alert('Copied ' + this.scraper.results.filter(m => m.username).length + ' usernames');
                 },
                 // ---- Adder ----
+                parseAdderRecipients() {
+                    const targets = [], seen = new Set(), invalidLines = [];
+                    let duplicates = 0;
+                    this.adder.usernames.split(/\r\n|\r|\n/).forEach((line, index) => {
+                        if (!line.trim()) return;
+                        const target = line.trim().toLowerCase().replace(/^@/, '');
+                        if (!OpenTelesetCSV.isRecipient(target)) { invalidLines.push(index + 1); return; }
+                        if (seen.has(target)) { duplicates++; return; }
+                        seen.add(target);
+                        targets.push(target);
+                    });
+                    return { targets, duplicates, invalidLines };
+                },
                 async runAdder() {
                     if (!this.accessReady || this.adder.loading) return;
                     const revision = this.authRevision;
                     this.adder.loading = true;
                     this.adder.resultMsg = '';
                     try {
-                        const usernames = this.adder.usernames.trim().split('\n').map(u => u.trim()).filter(Boolean);
-                        if (!usernames.length || usernames.length > 10 ||
-                            !Number.isInteger(this.adder.limit) || this.adder.limit < 1 || this.adder.limit > 10 ||
-                            !Number.isFinite(this.adder.delay) || this.adder.delay < 35 || this.adder.delay > 3600) {
-                            throw new Error('Provide 1–10 consenting recipients and a delay of at least 35 seconds.');
+                        const { targets: usernames, invalidLines } = this.parseAdderRecipients();
+                        if (invalidLines.length) {
+                            throw new Error(`Invalid recipient on line ${invalidLines[0]}. Use a Telegram username (4–32 letters, numbers or underscores, starting with a letter; optional @) or a positive numeric user ID, one per line. Website addresses are not usernames.`);
+                        }
+                        if (!usernames.length) throw new Error('Enter at least one consenting recipient, one username or ID per line.');
+                        if (usernames.length > 10) {
+                            throw new Error(`You entered ${usernames.length} unique recipients; the maximum is 10. Remove ${usernames.length - 10} before starting. No recipients were queued.`);
+                        }
+                        if (!Number.isInteger(this.adder.limit) || this.adder.limit < 1 || this.adder.limit > 10) {
+                            throw new Error('Max Members to Add must be a whole number from 1 to 10.');
+                        }
+                        if (usernames.length > this.adder.limit) {
+                            throw new Error(`You entered ${usernames.length} unique recipients, but Max Members to Add is ${this.adder.limit}. Increase it to ${usernames.length} or remove ${usernames.length - this.adder.limit} recipients.`);
+                        }
+                        if (!Number.isFinite(this.adder.delay) || this.adder.delay < 35 || this.adder.delay > 3600) {
+                            throw new Error('Delay Between Adds must be a number from 35 to 3600 seconds.');
                         }
                         const payload = {
                             account_id: this.adder.accountId,
