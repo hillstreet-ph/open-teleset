@@ -546,8 +546,9 @@ async def test_member_explicit_setup_is_scoped_idempotent_and_binds_without_rene
             usernames=['111'], approval_id=grant, limit=1, delay=35))
     assert denied.value.status_code == 403
     # Legacy consent for the same peer must not replace this job's revoked consent.
-    after['consents'] = [row for row in after['consents'] if row.get('approval_id') != grant]
-    after['consents'].extend(env.doc['consents'])
+    legacy_consent = dict(next(row for row in after['consents'] if row['subject_hash'] == policy.hash_identifier(111)))
+    legacy_consent.pop('approval_id')
+    after['consents'] = [legacy_consent]
     env.evaluator.path.write_text(json.dumps(after))
     assert not env.evaluator.authorize(action='member_add', subject=111, account_id='a', approval_id=grant).allowed
     after['approvals'].clear()
