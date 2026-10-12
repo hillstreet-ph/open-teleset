@@ -392,3 +392,79 @@ async def test_queue_week_matches_legacy_stats_at_year_boundary(env, monkeypatch
     env.submit(['111'])
     await env.worker.tick()
     assert tracker.get_weekly_stats()['a']['messages'] == 1
+
+
+def member_request(**kwargs):
+    return jobs.MemberJobRequest(account_id='a', dest_target='999', usernames=['111'],
+        request_id='automatic_member_1234', **kwargs)
+
+
+def test_member_submission_selects_existing_approval_and_freezes_on_retry(env):
+    request = member_request()
+    job = env.store.submit('member_add', 'owner', request, request.usernames, ['a'])
+    with env.store.db() as db:
+        payload = env.store.unpack(db.execute('SELECT payload FROM jobs WHERE id=?', (job,)).fetchone()[0])
+    assert payload['approval_id'] == 'add'
+    env.doc['approvals'] = {}
+    env.evaluator.path.write_text(json.dumps(env.doc))
+    assert env.store.submit('member_add', 'owner', request, request.usernames, ['a']) == job
+    assert request.approval_id is None
+
+
+@pytest.mark.parametrize('change', ['missing', 'expired', 'wrong_account', 'wrong_action'])
+def test_member_auto_selection_never_bypasses_authorization(env, change):
+    approval = env.doc['approvals']['add']
+    if change == 'missing':
+        env.doc['approvals'] = {}
+    elif change == 'expired':
+        approval['expires_at'] = '2020-01-01T00:00:00Z'
+    elif change == 'wrong_account':
+        approval['account_hashes'] = [policy.hash_identifier('b')]
+    else:
+        approval['action'] = 'personal_send'
+    env.evaluator.path.write_text(json.dumps(env.doc))
+    request = member_request()
+    with pytest.raises(policy.OutreachDenied, match='member_authorization_unavailable'):
+        env.store.submit('member_add', 'owner', request, request.usernames, ['a'])
+    assert env.store.listing('owner') == []
+
+
+def test_member_explicit_id_still_validated(env):
+    request = member_request(approval_id='1')
+    with pytest.raises(HTTPException, match='approval_unknown'):
+        env.store.submit('member_add', 'owner', request, request.usernames, ['a'])
+    assert env.store.listing('owner') == []
+
+
+@pytest.mark.asyncio
+async def test_missing_member_authorization_has_actionable_http_error(env):
+    env.doc['approvals'] = {}
+    env.evaluator.path.write_text(json.dumps(env.doc))
+    request = member_request()
+    with pytest.raises(HTTPException) as error:
+        await jobs.submit('member_add', 'owner', request, request.usernames, ['a'])
+    assert error.value.status_code == 403
+    assert 'No active member-add authorization' in error.value.detail
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('restriction', ['consent', 'approval'])
+async def test_member_selected_authorization_and_consent_rechecked_at_dispatch(env, monkeypatch, restriction):
+    request = member_request()
+    job = env.store.submit('member_add', 'owner', request, request.usernames, ['a'])
+    if restriction == 'consent':
+        env.doc['consents'] = []
+    else:
+        env.doc['approvals'] = {}
+    env.evaluator.path.write_text(json.dumps(env.doc))
+    client = AsyncMock()
+    client.get_me.return_value = types.User(id=999)
+    client.get_entity.side_effect = lambda value: types.User(id=int(value))
+    client.side_effect = errors.UserNotParticipantError(None)
+    monkeypatch.setattr(jobs.account_manager, 'get_client', AsyncMock(return_value=client))
+    await env.worker.tick()
+    assert client.await_count == 1
+    assert isinstance(client.call_args.args[0], jobs.functions.channels.GetParticipantRequest)
+    result = env.store.snapshot(job, 'owner')
+    assert result['completed'] == 0 and result['state'] == 'paused'
+    assert result['reason'] == ('consent_missing_or_invalid' if restriction == 'consent' else 'approval_unknown')

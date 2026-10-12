@@ -65,3 +65,19 @@ test('edited payload conflict refreshes original job without automatic resubmiss
   assert.equal(calls, 1); assert.equal(state.bulksend.requestId, '');
   assert.match(state.bulksend.resultMsg, /previous submission exists/);
 });
+
+test('Member Adder submits without a manual approval reference', async () => {
+  const form = html.slice(html.indexOf('<!-- ============ Adder Tab'), html.indexOf('<!-- ============ BulkSend'));
+  assert.doesNotMatch(form, /adder\.approvalId|Approved member-add reference/);
+  const source = html.slice(html.indexOf('async runAdder() {'), html.indexOf('// ---- BulkSend ----'));
+  let payload;
+  const state = {accessReady:true, authRevision:1, outreachJobs:[], loadOutreachJobs(){},
+    adder:{accountId:'account', destTarget:'group', usernames:'111', limit:10, delay:35, filterBots:true, activityFilter:'all'},
+    runAdder:vm.runInNewContext(`({${source}}).runAdder`, {_api:{post:async (path,body)=>{
+      assert.equal(path,'/api/outreach/jobs/members'); payload=body; return {data:{id:'job'}};
+    }},crypto:{randomUUID}})};
+  await state.runAdder();
+  assert.ok(payload.request_id);
+  assert.equal(Object.hasOwn(payload,'approval_id'),false);
+  assert.equal(state.outreachJobs.length,1);
+});
