@@ -19,7 +19,7 @@ from uuid import uuid4
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import Field
+from pydantic import Field, field_validator
 from telethon import errors, functions, types, utils
 
 from open_teleset.crypto.cipher import SessionCipher
@@ -59,6 +59,17 @@ class BulkJobRequest(BulkSendRequest):
 
 
 class MemberJobRequest(AddMembersRequest):
+    # Durable jobs process the complete explicit list. Legacy callers can still
+    # opt into a run cap; the synchronous endpoint keeps its existing bounds.
+    limit: int = Field(default=0, ge=0, strict=True)
+
+    @field_validator("usernames")
+    @classmethod
+    def bounded_recipient_payload(cls, value):
+        if value and sum(len(target) + 1 for target in value) > 2 * 1024 * 1024:
+            raise ValueError("Recipient list must be at most 2 MB")
+        return value
+
     request_id: str = Field(min_length=16, max_length=128, pattern=r"^[a-zA-Z0-9_-]+$")
 
 
@@ -468,7 +479,7 @@ async def submit_members(body: MemberJobRequest, request: Request):
     if body.source_target:
         raise HTTPException(403, "Outreach denied: scraped_source_forbidden")
     targets = [t.strip().lower().lstrip("@") for t in body.usernames or []]
-    if not targets or not all(targets) or len(targets) > body.limit:
+    if not targets or not all(targets) or (body.limit and len(set(targets)) > body.limit):
         raise HTTPException(400, "Provide explicit recipients within the member-add limit")
     return await submit("member_add", owner(request), body, targets, [body.account_id])
 

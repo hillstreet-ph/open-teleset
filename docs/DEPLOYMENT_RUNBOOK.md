@@ -205,3 +205,21 @@ PYTHONPATH=src:. python -m uvicorn dashboard:app --host 127.0.0.1 --port 8080
 curl -s localhost:8080/health   # 200
 curl -s localhost:8080/readyz   # 503 until a database is configured
 ```
+
+## Dashboard recipient script and queued member lists
+
+The dashboard pins `static/csv.js` with its SHA-256 prefix in the script query
+string. Update that prefix whenever the CSV module changes; the Node regression
+check enforces it. Pages `_headers` revalidates mutable dashboard/CSV assets.
+This prevents a browser retaining the previous four-hour cached module after
+loading a newly deployed dashboard.
+
+Member Adder queues the full explicit recipient list without a ten-recipient
+job cap. CSV/pasted payloads remain bounded to 2 MB. Existing API clients can
+still supply a positive optional job limit; zero/default processes all entries.
+The synchronous legacy endpoint retains its bounded request contract. Queued
+operations remain sequential, with at least 35 seconds between additions,
+current consent and authorization, suppression checks, provider cooldowns,
+duplicate/existing-member skipping, and Pause/Resume/Stop. A large queued list
+does not guarantee Telegram will permit every invitation; expired/revoked
+consent or authorization pauses processing and must be resolved separately.

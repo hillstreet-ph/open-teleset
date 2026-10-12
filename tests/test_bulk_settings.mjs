@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { randomUUID } from 'node:crypto';
@@ -107,15 +108,10 @@ test('Member Adder counts and sends unique recipients without modifying pasted t
 test('Member Adder explains the actual invalid field and never submits invalid input', async () => {
   const cases = [
     [{usernames:' \n\t'}, /Enter at least one consenting recipient/],
-    [{usernames:Array.from({length:12}, (_,i)=>String(i+1)).join('\n')}, /12 unique recipients; the maximum is 10\. Remove 2/],
     [{usernames:'alice_test\n\n@vietnamnet.vn'}, /Invalid recipient on line 3/],
     [{usernames:'@'}, /Invalid recipient on line 1/],
     [{usernames:'abc'}, /Invalid recipient on line 1/],
     [{usernames:'alice_test bob_test'}, /Invalid recipient on line 1/],
-    [{limit:''}, /Max Members to Add must be a whole number from 1 to 10/],
-    [{limit:1.5}, /Max Members to Add must be a whole number/],
-    [{limit:11}, /Max Members to Add must be a whole number/],
-    [{usernames:'111\n222',limit:1}, /2 unique recipients, but Max Members to Add is 1\. Increase it to 2 or remove 1/],
     ...['',NaN,Infinity,34,3601].map(delay=>[{delay}, /Delay Between Adds must be a number from 35 to 3600 seconds/]),
   ];
   for (const [change, error] of cases) {
@@ -144,4 +140,27 @@ test('Member Adder allows a valid upper delay boundary', async () => {
   state.adder.delay=3600;
   await state.runAdder();
   assert.equal(calls,1);
+});
+
+
+test('dashboard requests the content-versioned CSV script, bypassing a cached old API', () => {
+  const hash = createHash('sha256').update(readFileSync('static/csv.js')).digest('hex').slice(0,16);
+  assert.ok(html.includes(`/static/csv.js?v=${hash}`));
+});
+
+test('Member Adder queues all 250 unique recipients without a manual cap', async () => {
+  let payload;
+  const state = adderHarness(async (path, body) => {payload=body;return {data:{id:'job'}};});
+  state.adder.usernames=Array.from({length:250}, (_,i)=>String(i+1)).join('\n');
+  await state.runAdder();
+  assert.equal(payload.usernames.length,250);
+  assert.equal(Object.hasOwn(payload,'limit'),false);
+  assert.match(state.adder.resultMsg,/Queued/);
+});
+
+test('oversized pasted recipient list is rejected before network', async () => {
+  const state = adderHarness(async () => assert.fail('must not submit'));
+  state.adder.usernames='1'.repeat(2*1024*1024+1);
+  await state.runAdder();
+  assert.match(state.adder.resultMsg,/at most 2 MB/);
 });

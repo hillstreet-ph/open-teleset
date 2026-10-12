@@ -468,3 +468,40 @@ async def test_member_selected_authorization_and_consent_rechecked_at_dispatch(e
     result = env.store.snapshot(job, 'owner')
     assert result['completed'] == 0 and result['state'] == 'paused'
     assert result['reason'] == ('consent_missing_or_invalid' if restriction == 'consent' else 'approval_unknown')
+
+
+@pytest.mark.asyncio
+async def test_member_queue_accepts_complete_list_above_ten(env, monkeypatch):
+    monkeypatch.setattr(jobs, 'require_worker', lambda: None)
+    targets = [str(i) for i in range(100, 350)]
+    env.doc['consents'] = [dict(env.doc['consents'][0], subject_hash=policy.hash_identifier(t)) for t in targets]
+    env.evaluator.path.write_text(json.dumps(env.doc))
+    request = jobs.MemberJobRequest(account_id='a', dest_target='group', usernames=targets,
+                                    request_id='large_member_job_1234')
+    http = SimpleNamespace(state=SimpleNamespace(user=SimpleNamespace(id='owner')))
+    result = await jobs.submit_members(request, http)
+    assert result['total'] == 250 and result['pending'] == 250
+    assert (await jobs.submit_members(request, http))['id'] == result['id']
+    env.client.send_message.assert_not_awaited()
+    env.doc['suppressions'] = [{'subject_hash': policy.hash_identifier(targets[-1]), 'active': True}]
+    env.evaluator.path.write_text(json.dumps(env.doc))
+    request.request_id = 'suppressed_large_job_1234'
+    with pytest.raises(HTTPException) as error:
+        await jobs.submit_members(request, http)
+    assert error.value.status_code == 403
+
+
+def test_member_job_payload_and_optional_cap_validation():
+    from pydantic import ValidationError
+
+    from telegram_ops import AddMembersRequest
+    kwargs = {'account_id': 'a', 'dest_target': 'group', 'usernames': ['111'], 'request_id': 'bounded_member_1234'}
+    assert jobs.MemberJobRequest(**kwargs).limit == 0
+    assert jobs.MemberJobRequest(**kwargs, limit=250).limit == 250
+    for value in [-1, True, 1.5]:
+        with pytest.raises(ValidationError):
+            jobs.MemberJobRequest(**kwargs, limit=value)
+    with pytest.raises(ValidationError, match='at most 2 MB'):
+        jobs.MemberJobRequest(**dict(kwargs, usernames=['1' * (2 * 1024 * 1024)]))
+    with pytest.raises(ValidationError):
+        AddMembersRequest(account_id='a', dest_target='group', usernames=['111'], limit=11)
