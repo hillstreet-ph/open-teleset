@@ -1,0 +1,11 @@
+# Revalidate mutable dashboard assets after each deployment.
+/dashboard
+  Cache-Control: no-cache
+/dashboard.html
+  Cache-Control: no-cache
+/static/dashboard.html
+  Cache-Control: no-cache
+/csv.js
+  Cache-Control: no-cache
+/static/csv.js
+  Cache-Control: no-cache

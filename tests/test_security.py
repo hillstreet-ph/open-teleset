@@ -406,7 +406,7 @@ app.loadDashboardData = () => { dashboardLoads++; };
     assert.equal(sockets.at(-1).protocols[1], 'bearer.refreshed.test.token');
     await assert.rejects(responseError({response: {status: 403, data: {detail: 'Outreach denied: suppressed'}}}));
     assert.equal(app.accessReady, true);
-    assert.equal(app.adder.limit, 10);
+    assert.equal(Object.hasOwn(app.adder, 'limit'), false);
     assert.equal(app.newSchedule.interval, 3000);
     Object.assign(app.adder, {accountId: 'account', destTarget: 'group', usernames: '111\n222'});
     await app.runAdder();

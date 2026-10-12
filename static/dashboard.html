@@ -1015,26 +1015,21 @@
                         <input class="form-control" v-model="adder.destTarget" placeholder="e.g. @mydestchannel">
                     </div>
                     <div class="form-group">
-                        <label>Consenting recipients (usernames or IDs, one per line; maximum 10)</label>
+                        <label>Consenting recipients (usernames or IDs, one per line)</label>
                         <textarea class="form-control" v-model="adder.usernames" rows="5" aria-describedby="adder-recipient-summary" placeholder="user1&#10;user2&#10;user3"></textarea>
                         <small id="adder-recipient-summary" role="status" aria-live="polite">
-                            {{ adderRecipients.targets.length }} valid unique recipients / 10 maximum.
+                            {{ adderRecipients.targets.length }} valid unique recipients. All will be queued.
                             {{ adderRecipients.duplicates }} duplicate lines will be skipped. Blank lines are ignored.
+                            <span v-if="adderRecipients.tooLarge">Recipient list must be at most 2 MB.</span>
                             <span v-if="adderRecipients.invalidLines.length">{{ adderRecipients.invalidLines.length }} invalid lines; first on line {{ adderRecipients.invalidLines[0] }}. Correct these before starting.</span>
-                            <span v-if="adderRecipients.targets.length > 10">Remove {{ adderRecipients.targets.length - 10 }} unique recipients before starting.</span>
                         </small>
                     </div>
                     <div class="form-group">
                         <label>Import consenting recipients from CSV</label>
                         <input type="file" accept=".csv,text/csv" @change="importRecipientCSV($event, 'adder')" :disabled="adder.loading">
-                        <small>Use a recipient, username or id header. Up to 10 recipients.</small>
+                        <small>Use a recipient, username or id header. Maximum file size: 2 MB.</small>
                     </div>
                     <div style="display: flex; gap: 15px;">
-                        <div class="form-group" style="flex:1;">
-                            <label>Max Members to Add</label>
-                            <input class="form-control" type="number" v-model.number="adder.limit" min="1" max="10">
-                            <small>Must cover every unique recipient, up to 10. Extra recipients are not discarded.</small>
-                        </div>
                         <div class="form-group" style="flex:1;">
                             <label>Delay Between Adds (sec)</label>
                             <input class="form-control" type="number" v-model.number="adder.delay" min="35" max="3600" step="5">
@@ -1665,7 +1660,7 @@
         </template>
     </div>
 
-    <script src="/static/csv.js"></script>
+    <script src="/static/csv.js?v=5d9248b6c97f46b4"></script>
     <script>
         // Supabase client
         const _supabase = supabase.createClient(
@@ -2010,7 +2005,6 @@
                         filterBots: true,
                         activityFilter: 'all',
                         usernames: '',
-                        limit: 10,
                         delay: 35,
                         loading: false,
                         resultMsg: '',
@@ -2136,7 +2130,7 @@
                     if (!file) return;
                     try {
                         if (file.size > 2 * 1024 * 1024) throw new Error('CSV must be at most 2 MB.');
-                        const parsed = OpenTelesetCSV.recipients(await file.text(), destination === 'adder' ? 10 : 0);
+                        const parsed = OpenTelesetCSV.recipients(await file.text());
                         if (destination === 'adder') {
                             if (!parsed.targets.length) throw new Error('Recipient rows are required.');
                             this.adder.usernames = parsed.targets.join('\n');
@@ -2184,6 +2178,7 @@
                 parseAdderRecipients() {
                     const targets = [], seen = new Set(), invalidLines = [];
                     let duplicates = 0;
+                    if (this.adder.usernames.length > 2 * 1024 * 1024) return { targets, duplicates, invalidLines, tooLarge: true };
                     this.adder.usernames.split(/\r\n|\r|\n/).forEach((line, index) => {
                         if (!line.trim()) return;
                         const target = line.trim().toLowerCase().replace(/^@/, '');
@@ -2200,27 +2195,18 @@
                     this.adder.loading = true;
                     this.adder.resultMsg = '';
                     try {
-                        const { targets: usernames, invalidLines } = this.parseAdderRecipients();
+                        const { targets: usernames, invalidLines, tooLarge } = this.parseAdderRecipients();
+                        if (tooLarge) throw new Error('Recipient list must be at most 2 MB.');
                         if (invalidLines.length) {
                             throw new Error(`Invalid recipient on line ${invalidLines[0]}. Use a Telegram username (4–32 letters, numbers or underscores, starting with a letter; optional @) or a positive numeric user ID, one per line. Website addresses are not usernames.`);
                         }
                         if (!usernames.length) throw new Error('Enter at least one consenting recipient, one username or ID per line.');
-                        if (usernames.length > 10) {
-                            throw new Error(`You entered ${usernames.length} unique recipients; the maximum is 10. Remove ${usernames.length - 10} before starting. No recipients were queued.`);
-                        }
-                        if (!Number.isInteger(this.adder.limit) || this.adder.limit < 1 || this.adder.limit > 10) {
-                            throw new Error('Max Members to Add must be a whole number from 1 to 10.');
-                        }
-                        if (usernames.length > this.adder.limit) {
-                            throw new Error(`You entered ${usernames.length} unique recipients, but Max Members to Add is ${this.adder.limit}. Increase it to ${usernames.length} or remove ${usernames.length - this.adder.limit} recipients.`);
-                        }
                         if (!Number.isFinite(this.adder.delay) || this.adder.delay < 35 || this.adder.delay > 3600) {
                             throw new Error('Delay Between Adds must be a number from 35 to 3600 seconds.');
                         }
                         const payload = {
                             account_id: this.adder.accountId,
                             dest_target: this.adder.destTarget,
-                            limit: this.adder.limit,
                             delay: this.adder.delay,
                             filter_bots: this.adder.filterBots,
                             activity_filter: this.adder.activityFilter,
