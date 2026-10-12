@@ -100,19 +100,27 @@ class StatsTracker:
         self._save_stats()
 
     def _read_stats(self):
-        """Merge legacy counters with durable queue completion events exactly once."""
+        """Merge legacy counters with bounded durable queue aggregates."""
         from outreach_jobs import store
         result = copy.deepcopy(self.stats)
         with store.db() as db:
-            events = db.execute("SELECT account,date,week,created FROM message_events").fetchall()
-        for event in events:
-            account = store.unpack(event["account"])
+            totals = db.execute(
+                "SELECT account_hash,account,total,first_created FROM message_totals").fetchall()
+            daily = db.execute("SELECT account_hash,date,count FROM message_daily").fetchall()
+            weekly = db.execute("SELECT account_hash,week,count FROM message_weekly").fetchall()
+        accounts = {}
+        for total in totals:
+            account = store.unpack(total["account"])
+            accounts[total["account_hash"]] = account
             stats = result.setdefault(account, {"total_uses": 0, "total_messages_sent": 0,
-                                      "daily": {}, "weekly": {}, "first_use": event["created"], "last_use": None})
-            stats["total_messages_sent"] += 1
-            for period, key in (("daily", event["date"]), ("weekly", event["week"])):
-                bucket = stats[period].setdefault(key, {"uses": 0, "messages": 0})
-                bucket["messages"] += 1
+                                      "daily": {}, "weekly": {},
+                                      "first_use": total["first_created"], "last_use": None})
+            stats["total_messages_sent"] += total["total"]
+        for period, key, rows in (("daily", "date", daily), ("weekly", "week", weekly)):
+            for row in rows:
+                account = accounts[row["account_hash"]]
+                bucket = result[account][period].setdefault(row[key], {"uses": 0, "messages": 0})
+                bucket["messages"] += row["count"]
         return result
 
     def get_account_stats(self, account_id: str) -> Dict:
@@ -185,7 +193,9 @@ class StatsTracker:
         Returns:
             [{account_id, value}, ...]
         """
-        stats_view = self._read_stats()
+        return self._top_accounts(self._read_stats(), by, limit, period)
+
+    def _top_accounts(self, stats_view, by, limit, period):
         results = []
 
         for account_id, stats in stats_view.items():
@@ -256,7 +266,7 @@ class StatsTracker:
             "total_messages_sent": total_messages,
             "today_uses": today_uses,
             "today_messages": today_messages,
-            "most_active": self.get_top_accounts(by="uses", limit=5, period="today"),
+            "most_active": self._top_accounts(stats_view, by="uses", limit=5, period="today"),
             "last_updated": datetime.now().isoformat()
         }
 

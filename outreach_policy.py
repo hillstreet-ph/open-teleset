@@ -173,6 +173,38 @@ class OutreachPolicy:
                     "operator_hash": hash_identifier(operator_id)})
         return approval_id
 
+    def bind_personal_peer(self, subject, peer, account_id, operator_id):
+        """Bind a resolved alias without renewing the submitting consent window."""
+        if not operator_id:
+            raise OutreachDenied("authenticated_operator_required")
+        with self._member_document() as data:
+            decision = self.authorize(action="personal_send", subject=subject,
+                                      account_id=account_id, approval_id=None, _data=data)
+            if not decision.allowed:
+                raise OutreachDenied(decision.reason)
+            peer_hash = hash_identifier(peer)
+            if any(r["active"] and r["subject_hash"] == peer_hash for r in data["suppressions"]):
+                raise OutreachDenied("suppressed")
+            account_hash = hash_identifier(account_id)
+            operator_hash = hash_identifier(operator_id)
+            source = next((r for r in data["consents"] if
+                           r["subject_hash"] == hash_identifier(subject)
+                           and "personal_send" in r["actions"]
+                           and self._account_matches(r, account_hash)
+                           and r.get("recorded_via") == "bulk_send_form"
+                           and r.get("operator_hash") == operator_hash
+                           and self._record_is_current(r, datetime.now(timezone.utc))), None)
+            if source is None:
+                raise OutreachDenied("consent_missing_or_invalid")
+            if not any(r["subject_hash"] == peer_hash
+                       and r.get("recorded_via") == "bulk_send_form"
+                       and r.get("operator_hash") == operator_hash
+                       and self._account_matches(r, account_hash)
+                       and r.get("granted_at") == source.get("granted_at")
+                       and r.get("expires_at") == source.get("expires_at")
+                       for r in data["consents"]):
+                data["consents"].append(dict(source, subject_hash=peer_hash))
+
     def bind_member_peer(self, subject, peer, account_id, approval_id):
         """Bind the resolved user once without extending consent or authorization."""
         with self._member_document() as data:
@@ -419,6 +451,22 @@ def account_cooldown_remaining(account_id):
             if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='cooldowns'").fetchone():
                 return 0
             row = db.execute("SELECT until FROM cooldowns WHERE account=?", (hash_identifier(account_id),)).fetchone()
+        return max(0, row[0] - time.time()) if row else 0
+    except (OSError, sqlite3.Error):
+        raise OutreachDenied("rate_store_unavailable") from None
+
+
+def account_pacing_remaining(account_id):
+    """Read a reserved dispatch slot so queue workers can yield without sleeping."""
+    path = _rate_path()
+    if not path.exists():
+        return 0
+    try:
+        with sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=1) as db:
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='attempts'").fetchone():
+                return 0
+            row = db.execute("SELECT until FROM attempts WHERE account=?",
+                             (hash_identifier(account_id),)).fetchone()
         return max(0, row[0] - time.time()) if row else 0
     except (OSError, sqlite3.Error):
         raise OutreachDenied("rate_store_unavailable") from None
