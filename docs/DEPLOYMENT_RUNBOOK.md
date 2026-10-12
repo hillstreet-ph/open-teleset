@@ -223,3 +223,23 @@ current consent and authorization, suppression checks, provider cooldowns,
 duplicate/existing-member skipping, and Pause/Resume/Stop. A large queued list
 does not guarantee Telegram will permit every invitation; expired/revoked
 consent or authorization pauses processing and must be resolved separately.
+
+## Member Adder recipient outcomes and operator setup
+
+Member Adder retains malformed pasted/CSV usernames in skipped job history while
+processing valid entries. Missing/deleted/non-user targets, excluded activity,
+existing members and known recipient privacy restrictions are skipped. Missing
+destination access/admin rights pause the job; FloodWait waits; account limits,
+revoked authorization and uncertain delivery remain stopped/paused for review.
+
+The authenticated administrator explicitly confirms recipient consent and the
+selected destination/account in the Member Adder checkbox. On a new submission,
+this creates a random member-job authorization scoped to the selected account and
+recipient hashes, with separate member-only consent records expiring after 30
+days. The checkbox defaults off. Idempotent retries and Resume never renew it.
+Form-generated authorizations cannot be reused by a second job or destination.
+Existing explicit approval references remain validated. Resolution binds the
+confirmed username to a user ID without extending expiry; source consent and
+resolved-user consent/opt-outs are rechecked at dispatch. Telegram admin rights
+are separate and still enforced by Telegram. No invite is attempted for entries
+marked invalid. No live invitations are dispatched by automated tests.

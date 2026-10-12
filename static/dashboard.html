@@ -1018,10 +1018,10 @@
                         <label>Consenting recipients (usernames or IDs, one per line)</label>
                         <textarea class="form-control" v-model="adder.usernames" rows="5" aria-describedby="adder-recipient-summary" placeholder="user1&#10;user2&#10;user3"></textarea>
                         <small id="adder-recipient-summary" role="status" aria-live="polite">
-                            {{ adderRecipients.targets.length }} valid unique recipients. All will be queued.
+                            {{ adderRecipients.targets.length }} valid unique recipients. Valid entries will be processed in order.
                             {{ adderRecipients.duplicates }} duplicate lines will be skipped. Blank lines are ignored.
                             <span v-if="adderRecipients.tooLarge">Recipient list must be at most 2 MB.</span>
-                            <span v-if="adderRecipients.invalidLines.length">{{ adderRecipients.invalidLines.length }} invalid lines; first on line {{ adderRecipients.invalidLines[0] }}. Correct these before starting.</span>
+                            <span v-if="adderRecipients.invalidLines.length">{{ adderRecipients.invalidLines.length }} invalid entries will be skipped automatically; first on line {{ adderRecipients.invalidLines[0] }}.</span>
                         </small>
                     </div>
                     <div class="form-group">
@@ -1043,6 +1043,10 @@
                         <select class="form-control" v-model="adder.activityFilter">
                             <option v-for="option in activityOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
                         </select>
+                    </div>
+                    <div class="form-group">
+                        <label><input type="checkbox" v-model="adder.consentConfirmed"> I confirm these recipients agreed to join this destination, and I authorize this job using the selected account.</label>
+                        <small>Only confirmed recipients are processed. Telegram permissions and cooldowns still apply. Missing users are skipped; account or destination problems pause the job.</small>
                     </div>
                     <button class="btn btn-primary" @click="runAdder" :disabled="adder.loading || !adder.accountId || !adder.destTarget || !adder.usernames.trim()">
                         {{ adder.loading ? 'Submitting...' : 'Start Member Adder' }}
@@ -1151,7 +1155,7 @@
                 <p v-if="!outreachJobs.length">No jobs yet.</p>
                 <div v-for="job in outreachJobs.filter(j => j.kind === (tab === 'adder' ? 'member_add' : 'personal_send'))" :key="job.id" style="padding:16px 0;border-top:1px solid #555;overflow-wrap:anywhere;">
                     <strong>{{ job.state }} · {{ job.id.slice(0,8) }}</strong>
-                    <p>{{ job.reason || 'Processing consenting recipients' }}</p>
+                    <p>{{ job.reason ? outreachReason(job.reason) : (job.state === 'completed' ? 'Finished processing this list' : 'Processing consenting recipients') }}</p>
                     <progress :value="job.completed + job.skipped + job.failed + job.uncertain" :max="job.total || 1" style="width:100%;"></progress>
                     <p aria-live="polite">Total {{ job.total }} · {{ job.kind === 'member_add' ? 'Added' : 'Sent' }} {{ job.completed }} · Pending {{ job.pending }} · In flight {{ job.in_flight }} · Skipped {{ job.skipped }} · Failed {{ job.failed }} · Uncertain {{ job.uncertain }}</p>
                     <p v-if="job.retry_after > 0">Next eligible attempt in {{ Math.ceil(job.retry_after) }} seconds (refreshes every 2 seconds).</p>
@@ -1162,7 +1166,7 @@
                     </div>
                     <p v-if="job.state === 'needs_review'">Delivery is uncertain. Check Telegram before creating another job; automatic retry is disabled.</p>
                     <details><summary>Recipient history (latest 100)</summary>
-                        <ul><li v-for="(result,index) in job.results" :key="index">{{ result.target }} · {{ result.account_id }} · {{ result.state }} {{ result.reason }}</li></ul>
+                        <ul><li v-for="(result,index) in job.results" :key="index">{{ result.target }} · {{ result.account_id }} · {{ result.state }} · {{ outreachReason(result.reason) }}</li></ul>
                     </details>
                 </div>
             </div>
@@ -1660,7 +1664,7 @@
         </template>
     </div>
 
-    <script src="/static/csv.js?v=5d9248b6c97f46b4"></script>
+    <script src="/static/csv.js?v=0ce96ee8749902b2"></script>
     <script>
         // Supabase client
         const _supabase = supabase.createClient(
@@ -1999,6 +2003,7 @@
                     outreachJobBusy: '', jobsPoll: null,
                     // Adder
                     adder: {
+                        consentConfirmed: false,
                         requestId: '',
                         accountId: '',
                         destTarget: '',
@@ -2130,7 +2135,7 @@
                     if (!file) return;
                     try {
                         if (file.size > 2 * 1024 * 1024) throw new Error('CSV must be at most 2 MB.');
-                        const parsed = OpenTelesetCSV.recipients(await file.text());
+                        const parsed = OpenTelesetCSV.recipients(await file.text(), 0, destination === 'adder');
                         if (destination === 'adder') {
                             if (!parsed.targets.length) throw new Error('Recipient rows are required.');
                             this.adder.usernames = parsed.targets.join('\n');
@@ -2175,6 +2180,30 @@
                     alert('Copied ' + this.scraper.results.filter(m => m.username).length + ' usernames');
                 },
                 // ---- Adder ----
+                outreachReason(reason) {
+                    const labels = {
+                        invalid_username: 'Invalid username — skipped',
+                        recipient_not_found: 'Username not found — skipped',
+                        recipient_deleted: 'Deleted account — skipped',
+                        recipient_not_user: 'This target is a group or channel — skipped',
+                        activity_not_matched: 'Outside the selected activity filter — skipped',
+                        already_member: 'Already a member — skipped',
+                        duplicate_recipient: 'Duplicate recipient — skipped',
+                        bot_excluded: 'Bot excluded — skipped',
+                        UserPrivacyRestrictedError: 'Recipient privacy settings prevent invitations — skipped',
+                        UserNotMutualContactError: 'Telegram requires a mutual contact — skipped',
+                        UserChannelsTooMuchError: 'Recipient has reached their group limit — skipped',
+                        InputUserDeactivatedError: 'Deleted account — skipped',
+                        invitation_not_completed: 'Telegram did not complete this invitation — skipped',
+                        ChatAdminRequiredError: 'Selected account needs permission to invite members — paused',
+                        ChannelPrivateError: 'Selected account cannot access the destination — paused',
+                        ChannelInvalidError: 'Destination could not be found — paused',
+                        ChatWriteForbiddenError: 'Destination permissions prevent this action — paused',
+                        telegram_cooldown: 'Waiting for Telegram cooldown',
+                        account_unavailable: 'Waiting for the selected account to reconnect',
+                    };
+                    return labels[reason] || (reason || '').replaceAll('_', ' ');
+                },
                 parseAdderRecipients() {
                     const targets = [], seen = new Set(), invalidLines = [];
                     let duplicates = 0;
@@ -2197,10 +2226,8 @@
                     try {
                         const { targets: usernames, invalidLines, tooLarge } = this.parseAdderRecipients();
                         if (tooLarge) throw new Error('Recipient list must be at most 2 MB.');
-                        if (invalidLines.length) {
-                            throw new Error(`Invalid recipient on line ${invalidLines[0]}. Use a Telegram username (4–32 letters, numbers or underscores, starting with a letter; optional @) or a positive numeric user ID, one per line. Website addresses are not usernames.`);
-                        }
-                        if (!usernames.length) throw new Error('Enter at least one consenting recipient, one username or ID per line.');
+                        if (!usernames.length) throw new Error('Enter at least one valid consenting recipient. Invalid entries are skipped automatically.');
+                        if (!this.adder.consentConfirmed) throw new Error('Confirm that these recipients agreed to join before starting.');
                         if (!Number.isFinite(this.adder.delay) || this.adder.delay < 35 || this.adder.delay > 3600) {
                             throw new Error('Delay Between Adds must be a number from 35 to 3600 seconds.');
                         }
@@ -2210,14 +2237,16 @@
                             delay: this.adder.delay,
                             filter_bots: this.adder.filterBots,
                             activity_filter: this.adder.activityFilter,
-                            usernames,
+                            // Keep invalid rows in the job history as skipped, never dispatch them.
+                            usernames: Array.from(new Set(this.adder.usernames.split(/\r\n|\r|\n/).filter(line => line.trim()).map(line => { const raw = line.trim().toLowerCase(); const target = raw.replace(/^@/, ''); return OpenTelesetCSV.isRecipient(target) ? target : raw; }))),
+                            consent_confirmed: this.adder.consentConfirmed,
                         };
                         this.adder.requestId ||= crypto.randomUUID();
                         payload.request_id = this.adder.requestId;
                         const res = await _api.post('/api/outreach/jobs/members', payload);
                         if (!this.accessReady || revision !== this.authRevision) return;
                         this.adder.requestId = '';
-                        this.adder.resultMsg = 'Queued. Monitor progress below; you can close the browser.';
+                        this.adder.resultMsg = `Queued. ${invalidLines.length} invalid entries will be skipped. Missing, deleted and activity-filtered users are skipped automatically. Monitor progress below.`;
                         this.outreachJobs.unshift(res.data);
                         await this.loadOutreachJobs();
                     } catch (e) {

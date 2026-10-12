@@ -29,3 +29,15 @@ test('CSV export neutralizes spreadsheet formulas and escapes quotes', () => {
     const result = csv.parse(csv.encode([['=SUM(A1)', '+cmd', '-42', '@evil', '\t=cmd', 'He said "Hi"', 'a,b\nc']]));
     assert.deepEqual(Array.from(result[0]), ["'=SUM(A1)", "'+cmd", "'-42", "'@evil", "'\t=cmd", 'He said "Hi"', 'a,b\nc']);
 });
+
+test('member CSV can retain malformed usernames for skipped history without relaxing sender imports', () => {
+    const input='recipient\nalice_test\nhttps://invalid.example\n@\n222';
+    assert.throws(()=>csv.recipients(input));
+    assert.deepEqual(Array.from(csv.recipients(input,0,true).targets), ['alice_test','https://invalid.example','@','222']);
+    assert.throws(()=>csv.recipients('recipient,message\nalpha,"open',0,true));
+});
+
+
+test('member CSV retains repeated-at invalid usernames without making them valid', () => {
+  assert.deepEqual(Array.from(csv.recipients('recipient\n@@alice_test',0,true).targets),['@@alice_test']);
+});

@@ -505,3 +505,143 @@ def test_member_job_payload_and_optional_cap_validation():
         jobs.MemberJobRequest(**dict(kwargs, usernames=['1' * (2 * 1024 * 1024)]))
     with pytest.raises(ValidationError):
         AddMembersRequest(account_id='a', dest_target='group', usernames=['111'], limit=11)
+
+
+@pytest.mark.asyncio
+async def test_member_explicit_setup_is_scoped_idempotent_and_binds_without_renewal(env, monkeypatch):
+    monkeypatch.setattr(jobs, 'require_worker', lambda: None)
+    env.doc['approvals'] = {}
+    env.doc['consents'] = []
+    env.evaluator.path.write_text(json.dumps(env.doc))
+    request = jobs.MemberJobRequest(account_id='a', dest_target='group',
+        usernames=['alice_test', 'https://invalid.example', '@', '@@alice_test'], consent_confirmed=True,
+        request_id='admin_member_setup_1234')
+    http = SimpleNamespace(state=SimpleNamespace(user=SimpleNamespace(id='owner')))
+    result = await jobs.submit_members(request, http)
+    assert result['total'] == 4 and result['skipped'] == 3 and result['pending'] == 1
+    data = env.evaluator._load()
+    grant = next(iter(data['approvals']))
+    before = env.evaluator.path.read_text()
+    assert (await jobs.submit_members(request, http))['id'] == result['id']
+    assert env.evaluator.path.read_text() == before
+    assert env.evaluator.authorize(action='member_add', subject='alice_test', account_id='a', approval_id=grant).allowed
+    assert not env.evaluator.authorize(action='member_add', subject='unlisted', account_id='a', approval_id=grant).allowed
+    assert not env.evaluator.authorize(action='personal_send', subject='alice_test', account_id='a', approval_id=grant).allowed
+    assert not env.evaluator.authorize(action='member_add', subject='alice_test', account_id='b', approval_id=grant).allowed
+    for explicit in [False, True]:
+        other = request.model_copy(update={'request_id': 'another_job_123456', 'dest_target': 'other_group',
+            'consent_confirmed': False, 'approval_id': grant if explicit else None})
+        with pytest.raises(HTTPException) as denied:
+            await jobs.submit_members(other, http)
+        assert denied.value.status_code == 403
+    assert env.evaluator.path.read_text() == before
+    env.evaluator.bind_member_peer('alice_test', 111, 'a', grant)
+    after = env.evaluator._load()
+    assert after['approvals'][grant]['expires_at'] == data['approvals'][grant]['expires_at']
+    assert after['consents'][-1]['expires_at'] == data['consents'][0]['expires_at']
+    assert env.evaluator.authorize(action='member_add', subject=111, account_id='a', approval_id=grant).allowed
+    import telegram_ops
+    with pytest.raises(HTTPException) as denied:
+        await telegram_ops.add_members(telegram_ops.AddMembersRequest(account_id='a', dest_target='other_group',
+            usernames=['111'], approval_id=grant, limit=1, delay=35))
+    assert denied.value.status_code == 403
+    # Legacy consent for the same peer must not replace this job's revoked consent.
+    after['consents'] = [row for row in after['consents'] if row.get('approval_id') != grant]
+    after['consents'].extend(env.doc['consents'])
+    env.evaluator.path.write_text(json.dumps(after))
+    assert not env.evaluator.authorize(action='member_add', subject=111, account_id='a', approval_id=grant).allowed
+    after['approvals'].clear()
+    env.evaluator.path.write_text(json.dumps(after))
+    assert not env.evaluator.authorize(action='member_add', subject=111, account_id='a', approval_id=grant).allowed
+    assert (await jobs.submit_members(request, http))['id'] == result['id']
+    assert not env.evaluator._load()['approvals']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('bad', ['missing', 'deleted', 'channel', 'privacy', 'inactive', 'missing_invitee'])
+async def test_member_recipient_failures_skip_and_continue(env, monkeypatch, bad):
+    request = jobs.MemberJobRequest(account_id='a', dest_target='group', usernames=['111', '222'],
+                                    request_id='continuous_members_1234')
+    job = env.store.submit('member_add', 'owner', request, request.usernames, ['a'])
+    destination = types.Channel(id=444, title='Synthetic', photo=types.ChatPhotoEmpty(), date=None)
+    def resolve(value):
+        if value == 'group':
+            return destination
+        if value == 111:
+            if bad == 'missing':
+                raise errors.UsernameNotOccupiedError(None)
+            if bad == 'deleted':
+                return types.User(id=111, deleted=True)
+            if bad == 'channel':
+                return destination
+        return types.User(id=value)
+    invites = []
+    async def rpc(call):
+        if isinstance(call, jobs.functions.channels.GetParticipantRequest):
+            raise errors.UserNotParticipantError(None)
+        invites.append(call.users[0].id)
+        if call.users[0].id == 111 and bad == 'privacy':
+            raise errors.UserPrivacyRestrictedError(None)
+        return SimpleNamespace(missing_invitees=[111] if call.users[0].id == 111 and bad == 'missing_invitee' else [])
+    client = AsyncMock(side_effect=rpc)
+    client.get_me.return_value = types.User(id=999)
+    client.get_entity.side_effect = resolve
+    monkeypatch.setattr(jobs.account_manager, 'get_client', AsyncMock(return_value=client))
+    if bad == 'inactive':
+        monkeypatch.setattr(jobs, 'matches_activity', lambda entity, selected: entity.id != 111)
+    await env.worker.tick()
+    env.clock[0] += 36
+    await env.worker.tick()
+    env.clock[0] += 36
+    await env.worker.tick()
+    result = env.store.snapshot(job, 'owner')
+    assert result['state'] == 'completed' and result['skipped'] == 1 and result['completed'] == 1
+    assert invites[-1] == 222
+    if bad in ['missing', 'deleted', 'channel', 'inactive']:
+        assert invites == [222]
+
+
+@pytest.mark.asyncio
+async def test_member_destination_permission_failure_pauses_without_skipping_list(env, monkeypatch):
+    req = member_request()
+    job = env.store.submit('member_add', 'owner', req, req.usernames, ['a'])
+    client = AsyncMock(side_effect=errors.ChatAdminRequiredError(None))
+    client.get_me.return_value = types.User(id=999)
+    client.get_entity.side_effect = lambda value: types.User(id=111)
+    monkeypatch.setattr(jobs.account_manager, 'get_client', AsyncMock(return_value=client))
+    await env.worker.tick()
+    result = env.store.snapshot(job, 'owner')
+    assert result['state'] == 'paused' and result['pending'] == 1 and result['completed'] == 0
+
+
+def test_member_setup_preserves_suppression_and_rejects_corrupt_policy(env):
+    env.doc['suppressions'] = [{'subject_hash': policy.hash_identifier('111'), 'active': True}]
+    env.evaluator.path.write_text(json.dumps(env.doc))
+    before = env.evaluator.path.read_text()
+    with pytest.raises(policy.OutreachDenied, match='suppressed'):
+        env.evaluator.record_member_job_consents(['111'], 'a', 'owner')
+    assert env.evaluator.path.read_text() == before
+    env.evaluator.path.write_text('{')
+    with pytest.raises(policy.OutreachDenied, match='policy_unavailable'):
+        env.evaluator.record_member_job_consents(['111'], 'a', 'owner')
+
+
+@pytest.mark.asyncio
+async def test_member_source_revocation_after_peer_binding_prevents_invite(env, monkeypatch):
+    request = jobs.MemberJobRequest(account_id='a', dest_target='group', usernames=['alice_test'],
+        consent_confirmed=True, request_id='source_revoke_member_123')
+    job = env.store.submit('member_add', 'owner', request, request.usernames, ['a'])
+    destination = types.Channel(id=444, title='Synthetic', photo=types.ChatPhotoEmpty(), date=None)
+    async def rpc(call):
+        if isinstance(call, jobs.functions.channels.GetParticipantRequest):
+            data = env.evaluator._load()
+            data['consents'] = [row for row in data['consents'] if row['subject_hash'] != policy.hash_identifier('alice_test')]
+            env.evaluator.path.write_text(json.dumps(data))
+            raise errors.UserNotParticipantError(None)
+        pytest.fail('Revoked source consent must prevent invitation')
+    client = AsyncMock(side_effect=rpc)
+    client.get_me.return_value = types.User(id=999)
+    client.get_entity.side_effect = lambda value: destination if value == 'group' else types.User(id=111)
+    monkeypatch.setattr(jobs.account_manager, 'get_client', AsyncMock(return_value=client))
+    await env.worker.tick()
+    assert env.store.snapshot(job, 'owner')['state'] == 'paused'

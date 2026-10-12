@@ -72,7 +72,7 @@ function adderHarness(post) {
   const context = {_api:{post},crypto:{randomUUID}};
   vm.runInNewContext(readFileSync('static/csv.js', 'utf8'), context);
   return {accessReady:true, authRevision:1, outreachJobs:[], loadOutreachJobs(){},
-    adder:{accountId:'account', destTarget:'group', usernames:'111', limit:10, delay:35, filterBots:true, activityFilter:'all'},
+    adder:{consentConfirmed:true, accountId:'account', destTarget:'group', usernames:'111', limit:10, delay:35, filterBots:true, activityFilter:'all'},
     ...vm.runInNewContext(`({${source}})`, context)};
 }
 
@@ -107,11 +107,10 @@ test('Member Adder counts and sends unique recipients without modifying pasted t
 
 test('Member Adder explains the actual invalid field and never submits invalid input', async () => {
   const cases = [
-    [{usernames:' \n\t'}, /Enter at least one consenting recipient/],
-    [{usernames:'alice_test\n\n@vietnamnet.vn'}, /Invalid recipient on line 3/],
-    [{usernames:'@'}, /Invalid recipient on line 1/],
-    [{usernames:'abc'}, /Invalid recipient on line 1/],
-    [{usernames:'alice_test bob_test'}, /Invalid recipient on line 1/],
+    [{usernames:' \n\t'}, /Enter at least one valid consenting recipient/],
+    [{usernames:'@'}, /Enter at least one valid consenting recipient/],
+    [{usernames:'abc'}, /Enter at least one valid consenting recipient/],
+    [{usernames:'alice_test bob_test'}, /Enter at least one valid consenting recipient/],
     ...['',NaN,Infinity,34,3601].map(delay=>[{delay}, /Delay Between Adds must be a number from 35 to 3600 seconds/]),
   ];
   for (const [change, error] of cases) {
@@ -124,14 +123,17 @@ test('Member Adder explains the actual invalid field and never submits invalid i
   }
 });
 
-test('Member Adder reports invalid lines before the cap and excludes them from the valid count', async () => {
-  const state=adderHarness(async () => assert.fail('Invalid input must not call the API'));
+test('Member Adder retains invalid rows for skipped history while queuing valid recipients', async () => {
+  let payload;
+  const state=adderHarness(async (path,body) => {payload=body;return {data:{id:'job'}};});
   state.adder.usernames=Array.from({length:10}, (_,i)=>String(i+1)).join('\n')+'\nhttps://example.com';
   const summary=state.parseAdderRecipients();
   assert.equal(summary.targets.length,10);
   assert.deepEqual(Array.from(summary.invalidLines),[11]);
   await state.runAdder();
-  assert.match(state.adder.resultMsg,/Invalid recipient on line 11/);
+  assert.match(state.adder.resultMsg,/1 invalid entries will be skipped/);
+  assert.equal(payload.usernames.length,11);
+  assert.equal(payload.consent_confirmed,true);
 });
 
 test('Member Adder allows a valid upper delay boundary', async () => {
@@ -163,4 +165,21 @@ test('oversized pasted recipient list is rejected before network', async () => {
   state.adder.usernames='1'.repeat(2*1024*1024+1);
   await state.runAdder();
   assert.match(state.adder.resultMsg,/at most 2 MB/);
+});
+
+
+test('Member Adder requires explicit consent and never infers it from a pasted list', async () => {
+  const state=adderHarness(async()=>assert.fail('must not send'));
+  state.adder.consentConfirmed=false;
+  await state.runAdder();
+  assert.match(state.adder.resultMsg,/Confirm that these recipients agreed to join/);
+});
+
+
+test('Member Adder preserves malformed repeated-at usernames for backend skip', async () => {
+  let payload;
+  const state = adderHarness(async (path, body) => {payload = body; return {data:{id:'job'}};});
+  state.adder.usernames='@alice_test\n@@alice_test';
+  await state.runAdder();
+  assert.deepEqual(Array.from(payload.usernames), ['alice_test','@@alice_test']);
 });
