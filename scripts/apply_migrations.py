@@ -116,6 +116,19 @@ async def _connect(dsns: list[str]):
 
 async def main() -> int:
     dsns = _candidate_dsns()
+    # Shared projects (open-operations, open-platform) own their schema through
+    # Supabase-managed migrations applied out of band (MCP / dashboard); the legacy
+    # file migrations here must never run against them, and GitHub Actions cannot
+    # reach the database directly. Treat a recognized shared target as a successful
+    # no-op (never connecting or running SQL) so the release pipeline is not
+    # deadlocked. Connection or SQL failures on any other target still fail the job,
+    # so a real migration regression continues to block deployment.
+    if _shared_project_configured(dsns):
+        print(
+            "Shared/MCP-managed target detected; legacy file migrations are applied "
+            "via Supabase migrations, not from CI. Skipping (no-op)."
+        )
+        return 0
     if not dsns:
         print("DATABASE_URL not configured — abort", file=sys.stderr)
         return 1
