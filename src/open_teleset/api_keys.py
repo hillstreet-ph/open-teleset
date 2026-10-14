@@ -38,8 +38,25 @@ def _service_headers(write: bool = False) -> dict[str, str]:
     return headers
 
 
+def _pepper() -> bytes:
+    """Server-side pepper for the key MAC.
+
+    Using the service-role secret as an HMAC key means a database-only compromise
+    cannot verify or forge keys without also holding this server secret. It is
+    available server-side only and is never sent to clients.
+    """
+    return _settings()["SUPABASE_SERVICE_ROLE_KEY"].encode("utf-8")
+
+
 def _hash(token: str) -> str:
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+    """Keyed HMAC-SHA256 of an API token.
+
+    API keys are 256-bit random tokens, so a keyed message authentication code is
+    the correct, brute-force-infeasible primitive for verifying them; a slow
+    password-hashing KDF is unnecessary for high-entropy secrets and would only
+    tax the per-request authentication path.
+    """
+    return hmac.new(_pepper(), token.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 def _generate() -> tuple[str, str, str]:
