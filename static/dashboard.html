@@ -1154,11 +1154,14 @@
                 <p v-if="outreachJobError" role="alert">{{ outreachJobError }}</p>
                 <p v-if="!outreachJobs.length">No jobs yet.</p>
                 <div v-for="job in outreachJobs.filter(j => j.kind === (tab === 'adder' ? 'member_add' : 'personal_send'))" :key="job.id" style="padding:16px 0;border-top:1px solid #555;overflow-wrap:anywhere;">
-                    <strong>{{ job.state }} · {{ job.id.slice(0,8) }}</strong>
-                    <p>{{ job.reason ? outreachReason(job.reason) : (job.state === 'completed' ? 'Finished processing this list' : 'Processing consenting recipients') }}</p>
+                    <strong>{{ job.state === 'queued' && job.retry_after > 0 ? 'waiting' : job.state }} · {{ job.id.slice(0,8) }}</strong>
+                    <p>{{ job.reason === 'operator_resume' && job.retry_after > 0 ? 'Resumed; waiting for the next eligible attempt' : job.reason ? outreachReason(job.reason) : (job.state === 'completed' ? 'Finished processing this list' : 'Processing consenting recipients') }}</p>
                     <progress :value="job.completed + job.skipped + job.failed + job.uncertain" :max="job.total || 1" style="width:100%;"></progress>
                     <p aria-live="polite">Total {{ job.total }} · {{ job.kind === 'member_add' ? 'Added' : 'Sent' }} {{ job.completed }} · Pending {{ job.pending }} · In flight {{ job.in_flight }} · Skipped {{ job.skipped }} · Failed {{ job.failed }} · Uncertain {{ job.uncertain }}</p>
-                    <p v-if="job.retry_after > 0">Next eligible attempt in {{ Math.ceil(job.retry_after) }} seconds (refreshes every 2 seconds).</p>
+                    <p v-if="job.next_account_id && ['queued','running','waiting','paused'].includes(job.state)">Assigned account: {{ job.next_account_id }}</p>
+                    <p v-if="job.retry_after > 0 && ['queued','running','waiting'].includes(job.state)">Next eligible attempt in {{ outreachDuration(job.retry_after) }}<span v-if="job.retry_at"> · {{ outreachRetryTime(job.retry_at) }} (your local time)</span>. Updates every 2 seconds.</p>
+                    <p v-if="job.reason === 'telegram_cooldown' && ['queued','running','waiting'].includes(job.state)">Telegram has temporarily limited this account. The job waits automatically and retries after the cooldown; no click is needed. Pause, Resume, or a new job cannot shorten Telegram's wait.</p>
+                    <p v-if="job.state === 'paused'">Paused. Resume is required to continue; any remaining Telegram cooldown still applies.</p>
                     <div style="display:flex;flex-wrap:wrap;gap:8px;margin:10px 0;">
                         <button v-if="['queued','running','waiting'].includes(job.state)" class="btn btn-outline" @click="controlOutreachJob(job, 'pause')" :disabled="!!outreachJobBusy">Pause</button>
                         <button v-if="job.state === 'paused'" class="btn btn-primary" @click="controlOutreachJob(job, 'resume')" :disabled="!!outreachJobBusy">Resume</button>
@@ -2180,6 +2183,14 @@
                     alert('Copied ' + this.scraper.results.filter(m => m.username).length + ' usernames');
                 },
                 // ---- Adder ----
+                outreachDuration(seconds) {
+                    const total = Math.max(0, Math.ceil(Number(seconds) || 0));
+                    const hours = Math.floor(total / 3600), minutes = Math.floor((total % 3600) / 60);
+                    return [hours ? `${hours}h` : '', minutes ? `${minutes}m` : '', `${total % 60}s`].filter(Boolean).join(' ');
+                },
+                outreachRetryTime(timestamp) {
+                    return new Date(timestamp * 1000).toLocaleString();
+                },
                 outreachReason(reason) {
                     const labels = {
                         invalid_username: 'Invalid username — skipped',
@@ -2200,6 +2211,11 @@
                         ChannelInvalidError: 'Destination could not be found — paused',
                         ChatWriteForbiddenError: 'Destination permissions prevent this action — paused',
                         telegram_cooldown: 'Waiting for Telegram cooldown',
+                        scheduled_wait: 'Waiting for the next scheduled attempt',
+                        account_pacing: 'Waiting between operations on this account',
+                        telegram_timeout: 'Telegram did not respond in time. Retrying automatically',
+                        delivery_timeout: 'Telegram did not confirm delivery. Check Telegram before retrying',
+                        operator_resume: 'Resumed; waiting for the worker',
                         account_unavailable: 'Waiting for the selected account to reconnect',
                     };
                     return labels[reason] || (reason || '').replaceAll('_', ' ');

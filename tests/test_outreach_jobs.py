@@ -114,6 +114,75 @@ async def test_flood_wait_pins_recipient_and_pauses_entire_job(env):
 
 
 @pytest.mark.asyncio
+async def test_resume_explains_remaining_cooldown_without_shortening_it(env):
+    job = env.submit()
+    env.client.send_message.side_effect = errors.FloodWaitError(None, capture=17754)
+    await env.worker.tick()
+    env.store.control(job, 'owner', 'pause')
+    env.clock[0] += 10
+    resumed = env.store.control(job, 'owner', 'resume')
+    assert resumed['state'] == 'waiting'
+    assert resumed['reason'] == 'telegram_cooldown'
+    assert resumed['retry_after'] == 17744
+    assert resumed['retry_at'] == 18754
+    assert resumed['next_account_id'] == 'a'
+    await env.worker.tick()
+    assert env.client.send_message.await_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('operation', ['get_client', 'get_me', 'get_entity'])
+async def test_stalled_read_yields_and_retries_same_recipient(env, monkeypatch, operation):
+    job = env.submit()
+    async def never_responds(*args):
+        await asyncio.Event().wait()
+    monkeypatch.setattr(jobs, 'TELEGRAM_READ_TIMEOUT', 0.01)
+    obj = jobs.account_manager if operation == 'get_client' else env.client
+    original = getattr(obj, operation)
+    monkeypatch.setattr(obj, operation, AsyncMock(side_effect=never_responds))
+    await asyncio.wait_for(env.worker.tick(), 1)
+    result = env.store.snapshot(job, 'owner')
+    assert (result['state'], result['reason'], result['pending']) == ('waiting', 'telegram_timeout', 2)
+    assert result['retry_after'] == 30
+    env.client.send_message.assert_not_called()
+    monkeypatch.setattr(obj, operation, original)
+    env.clock[0] += 30
+    await env.worker.tick()
+    assert env.store.snapshot(job, 'owner')['completed'] == 1
+
+
+@pytest.mark.asyncio
+async def test_stalled_send_yields_to_other_jobs_but_never_replays(env, monkeypatch):
+    job = env.submit()
+    async def never_responds(*args):
+        await asyncio.Event().wait()
+    monkeypatch.setattr(jobs, 'TELEGRAM_SEND_TIMEOUT', 0.01)
+    env.client.send_message.side_effect = never_responds
+    await asyncio.wait_for(env.worker.tick(), 1)
+    result = env.store.snapshot(job, 'owner')
+    assert (result['state'], result['reason'], result['uncertain']) == ('needs_review', 'delivery_timeout', 1)
+    env.store.recover()
+    await env.worker.tick()
+    assert env.client.send_message.await_count == 1
+    with pytest.raises(HTTPException):
+        env.store.control(job, 'owner', 'resume')
+    req = jobs.BulkJobRequest(account_id='a', targets=['222'], message='other', request_id='other_submission_123')
+    other = env.store.submit('personal_send', 'owner', req, req.targets, ['a'])
+    env.client.send_message.side_effect = None
+    await env.worker.tick()
+    assert env.store.snapshot(other, 'owner')['completed'] == 1
+
+
+def test_resume_preserves_scheduled_delay_and_stop_has_no_auto_resume(env):
+    job = env.submit()
+    env.store.waiting(job, 'account_pacing', 120)
+    env.store.control(job, 'owner', 'pause')
+    result = env.store.control(job, 'owner', 'resume')
+    assert (result['state'], result['reason'], result['retry_after']) == ('waiting', 'scheduled_wait', 120)
+    assert env.store.control(job, 'owner', 'stop')['state'] == 'stopped'
+
+
+@pytest.mark.asyncio
 async def test_restriction_never_retries_with_another_account(env):
     req = jobs.BulkJobRequest(account_ids=['a', 'b'], rotation_mode='round_robin', message='private',
         targets=['111', '222'], consent_confirmed=True, request_id='two_accounts_12345')
