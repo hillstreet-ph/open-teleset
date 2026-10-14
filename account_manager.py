@@ -7,6 +7,7 @@ import asyncio
 from contextlib import suppress
 import json
 import os
+import re
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 from outreach_client import ConsentTelegramClient as TelegramClient
@@ -29,6 +30,9 @@ API_ID = int(os.getenv("TELEGRAM_API_ID", "0"))
 API_HASH = os.getenv("TELEGRAM_API_HASH", "")
 ACCOUNTS_DIR = "./accounts"
 CONFIG_FILE = os.path.join(ACCOUNTS_DIR, "config.json")
+LOGIN_CONNECT_TIMEOUT = 12
+LOGIN_RPC_TIMEOUT = 15
+LOGIN_DISCONNECT_TIMEOUT = 2
 
 
 class AccountManager:
@@ -39,6 +43,7 @@ class AccountManager:
         self.clients: Dict[str, TelegramClient] = {}
         self._client_tasks: Dict[str, asyncio.Task] = {}
         self.connection_errors: Dict[str, str] = {}
+        self._session_import_lock = asyncio.Lock()
         self.qr_sessions: Dict[str, Dict] = {}  # QR登录会话
         self.phone_sessions: Dict[str, Dict] = {}  # 手机号登录会话
         self._load_config()
@@ -110,6 +115,7 @@ class AccountManager:
                 "is_premium": account.get("is_premium", False),
                 "status": "online" if is_online else "offline",
                 "connection_error": self.connection_errors.get(account_id),
+                "proxy_settings": account.get("proxy_settings"),
                 "last_online": account.get("last_online", "N/A"),
                 "use_count": account.get("use_count", 0)
             })
@@ -134,65 +140,93 @@ class AccountManager:
         return False
 
     async def add_account_with_session(
-        self,
-        account_id: str,
-        session_string: str,
-        phone: str = None,
-        username: str = None,
-        user_id: int = None
+        self, account_id: str, session_string: str, phone: str = None,
+        username: str = None, user_id: int = None,
     ) -> bool:
-        """
-        使用 Session 字符串添加账号
+        """Legacy string-import interface; identity comes from Telegram."""
+        result = await self.import_session(account_id, session_string)
+        return result["success"]
 
-        Args:
-            account_id: 账号ID
-            session_string: Session 字符串
-            phone: 手机号
-            username: 用户名
-            user_id: 用户号
-
-        Returns:
-            是否成功
-        """
+    async def import_hex_session(self, account_id, hex_key, dc_id, proxy=None, proxy_settings=None):
+        from hex_session import hex_to_string_session
         try:
-            # 验证 session
-            client = TelegramClient(
-                StringSession(session_string),
-                API_ID,
-                API_HASH,
-                outreach_account_id=account_id
-            )
-            await client.connect()
+            session = hex_to_string_session(hex_key, dc_id)
+        except ValueError as exc:
+            return {"success": False, "error": str(exc)}
+        return await self.import_session(account_id, session, proxy=proxy, proxy_settings=proxy_settings)
 
-            if not await client.is_user_authorized():
-                await client.disconnect()
-                return False
+    async def import_session(self, account_id, session_string, proxy=None, proxy_settings=None):
+        """Verify an existing authorization, then atomically save encrypted state.
 
-            # 获取账号信息
-            me = await client.get_me()
-            await client.disconnect()
+        Serialize imports so double submissions cannot overwrite each other.
+        Never save raw keys, provider exception text, or caller-supplied identity.
+        """
+        if not isinstance(account_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", account_id):
+            return {"success": False, "error": "Account ID must be 1–100 letters, digits, underscores or hyphens."}
+        async with self._session_import_lock:
+            if account_id == "default" or account_id in self.accounts or account_id in self.qr_sessions or account_id in self.phone_sessions:
+                return {"success": False, "error": "Account ID is already in use. Choose a new ID."}
+            client = None
+            try:
+                if not isinstance(session_string, str) or not 1 <= len(session_string) <= 2048:
+                    raise ValueError
+                session = StringSession(session_string)
+                if not session.auth_key:
+                    raise ValueError
+            except Exception:
+                return {"success": False, "error": "Invalid Telegram string session."}
+            try:
+                client = TelegramClient(
+                    session, API_ID, API_HASH, proxy=proxy,
+                    outreach_account_id=account_id, preserve_saved_authorization=True,
+                )
 
-            self.accounts[account_id] = {
-                "account_id": account_id,
-                "session_string": session_string,
-                "phone": phone or me.phone,
-                "username": username or me.username or "N/A",
-                "user_id": user_id or me.id,
-                "first_name": me.first_name or "",
-                "last_name": me.last_name or "",
-                "is_premium": getattr(me, 'premium', False) or False,
-                "status": "offline",
-                "created_at": datetime.now(timezone.utc).isoformat(),
-                "last_online": datetime.now(timezone.utc).isoformat(),
-                "use_count": 0
-            }
-            self._save_config()
-            return True
-        except Exception as e:
-            print(f"Account setup failed: {type(e).__name__}")
-            return False
+                async def verify():
+                    await self._probe_saved_authorization(client)
+                    return await client.get_me()
 
-    async def generate_qr_code(self, account_id: str, proxy: Dict = None) -> Dict:
+                me = await asyncio.wait_for(verify(), timeout=20)
+                if me is None:
+                    return {"success": False, "error": "Telegram session expired or revoked. Sign in again."}
+                if getattr(me, "bot", False):
+                    return {"success": False, "error": "Use a Telegram user account session, not a bot session."}
+                if any(a.get("user_id") == me.id for a in self.accounts.values()):
+                    return {"success": False, "error": "This Telegram account is already added."}
+                # Interactive logins may have completed while verification awaited.
+                if account_id in self.accounts or account_id in self.qr_sessions or account_id in self.phone_sessions:
+                    return {"success": False, "error": "Account ID is already in use. Choose a new ID."}
+                now = datetime.now(timezone.utc).isoformat()
+                self.accounts[account_id] = {
+                    "account_id": account_id, "session_string": client.session.save(),
+                    "phone": me.phone, "username": me.username or "N/A", "user_id": me.id,
+                    "first_name": me.first_name or "", "last_name": me.last_name or "",
+                    "is_premium": bool(getattr(me, "premium", False)), "status": "offline",
+                    "created_at": now, "last_online": now, "use_count": 0,
+                    "proxy_settings": proxy_settings or {"mode": "default"},
+                }
+                try:
+                    self._save_config()
+                except Exception:
+                    self.accounts.pop(account_id, None)
+                    return {"success": False, "error": "Unable to save account securely. No account was added."}
+                self.connection_errors.pop(account_id, None)
+                return {"success": True, "account_id": account_id}
+            except (UnauthorizedError, AuthKeyDuplicatedError):
+                return {"success": False, "error": "Telegram session expired or revoked. Sign in again."}
+            except (UserMigrateError, NetworkMigrateError, PhoneMigrateError):
+                return {"success": False, "error": "Session DC does not match. Check the original DC ID or sign in again."}
+            except (asyncio.TimeoutError, TimeoutError):
+                return {"success": False, "error": "Telegram connection timed out. Check the DC ID and proxy."}
+            except FloodWaitError as exc:
+                return {"success": False, "error": f"Telegram requires a wait of {exc.seconds} seconds. Try later."}
+            except Exception:
+                return {"success": False, "error": "Unable to verify Telegram session. Check the session and proxy."}
+            finally:
+                if client is not None:
+                    with suppress(Exception):
+                        await asyncio.wait_for(client.disconnect(), timeout=2)
+
+    async def generate_qr_code(self, account_id: str, proxy: Dict = None, proxy_settings=None) -> Dict:
         """
         生成二维码用于登录
 
@@ -211,6 +245,12 @@ class AccountManager:
         if account_id in self.accounts:
             return {"success": False, "error": "账号ID已存在"}
 
+        if account_id in self.qr_sessions:
+            return {"success": False, "error": "Cancel the existing QR login before starting again"}
+        pending = {"status": "connecting", "created_at": datetime.now()}
+        self.qr_sessions[account_id] = pending
+        temp_client = None
+        retained = False
         try:
             # 创建临时客户端
             client_kwargs = {
@@ -230,27 +270,19 @@ class AccountManager:
                 client_kwargs["proxy"] = proxy
             
             temp_client = TelegramClient(**client_kwargs)
-            
+            pending["client"] = temp_client
+
             # 连接时增加重试和超时控制（优化速度：减少超时时间）
-            connect_attempts = 3
-            for attempt in range(connect_attempts):
-                try:
-                    await asyncio.wait_for(temp_client.connect(), timeout=15)  # 从30秒减少到15秒
-                    break
-                except asyncio.TimeoutError:
-                    if attempt == connect_attempts - 1:
-                        return {"success": False, "error": "连接超时，请检查网络或设置代理"}
-                except Exception as e:
-                    if attempt == connect_attempts - 1:
-                        return {"success": False, "error": f"连接失败: {str(e)}"}
-                    await asyncio.sleep(0.5)  # 从1秒减少到0.5秒
+            await asyncio.wait_for(temp_client.connect(), timeout=LOGIN_CONNECT_TIMEOUT)
+
+            if self.qr_sessions.get(account_id) is not pending:
+                return {"success": False, "error": "Login was cancelled. Start again."}
 
             # 生成二维码登录（优化速度：减少超时时间）
             try:
-                qr_login = await asyncio.wait_for(temp_client.qr_login(), timeout=15)  # 从30秒减少到15秒
+                qr_login = await asyncio.wait_for(temp_client.qr_login(), timeout=LOGIN_RPC_TIMEOUT)
             except asyncio.TimeoutError:
-                await temp_client.disconnect()
-                return {"success": False, "error": "生成二维码超时，请检查网络或设置代理"}
+                return {"success": False, "error": "QR request timed out. Check the selected connection and retry."}
 
             # 生成二维码图片
             qr = qrcode.QRCode(version=1, box_size=10, border=4)
@@ -262,17 +294,21 @@ class AccountManager:
             img.save(buffer, format='PNG')
             img_base64 = base64.b64encode(buffer.getvalue()).decode()
 
+            if self.qr_sessions.get(account_id) is not pending:
+                return {"success": False, "error": "Login was cancelled. Start again."}
             # 保存QR会话
             self.qr_sessions[account_id] = {
                 "client": temp_client,
                 "qr_login": qr_login,
                 "status": "waiting",
                 "created_at": datetime.now(),
-                "proxy": proxy
+                "proxy": proxy,
+                "proxy_settings": proxy_settings or {"mode": "default"},
             }
+            retained = True
 
             # 后台等待登录
-            asyncio.create_task(self._wait_for_qr_login(account_id))
+            asyncio.create_task(self._wait_for_qr_login(account_id, self.qr_sessions[account_id]))
 
             return {
                 "success": True,
@@ -282,10 +318,18 @@ class AccountManager:
                 "status": "waiting",
                 "expires_in": 120
             }
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+        except TimeoutError:
+            return {"success": False, "error": "Connection timed out. Test the selected proxy or choose Direct connection."}
+        except Exception:
+            return {"success": False, "error": "Telegram connection failed. Test the selected proxy or choose Direct connection."}
+        finally:
+            if not retained and self.qr_sessions.get(account_id) is pending:
+                self.qr_sessions.pop(account_id, None)
+            if temp_client is not None and not retained:
+                with suppress(Exception):
+                    await asyncio.wait_for(temp_client.disconnect(), timeout=2)
 
-    async def _wait_for_qr_login(self, account_id: str):
+    async def _wait_for_qr_login(self, account_id: str, session=None):
         """
         后台等待二维码登录
 
@@ -295,7 +339,9 @@ class AccountManager:
         if account_id not in self.qr_sessions:
             return
 
-        session = self.qr_sessions[account_id]
+        session = session or self.qr_sessions[account_id]
+        if self.qr_sessions.get(account_id) is not session:
+            return
         client = session["client"]
         qr_login = session["qr_login"]
 
@@ -304,7 +350,7 @@ class AccountManager:
             await asyncio.wait_for(qr_login.wait(), timeout=120)
 
             # 检查是否需要两步验证密码
-            if await client.is_user_authorized():
+            if await asyncio.wait_for(client.is_user_authorized(), LOGIN_RPC_TIMEOUT):
                 # 无需2FA，直接成功
                 await self._complete_login(account_id, client, session)
             else:
@@ -315,7 +361,8 @@ class AccountManager:
                 
         except asyncio.TimeoutError:
             session["status"] = "timeout"
-            await client.disconnect()
+            with suppress(Exception):
+                await asyncio.wait_for(client.disconnect(), LOGIN_DISCONNECT_TIMEOUT)
         except SessionPasswordNeededError:
             session["status"] = "need_password"
             session["password_hint"] = ""
@@ -323,12 +370,17 @@ class AccountManager:
             session["status"] = "failed"
             session.setdefault("error", "Telegram sign-in failed. Try signing in again.")
             with suppress(Exception):
-                await client.disconnect()
+                await asyncio.wait_for(client.disconnect(), LOGIN_DISCONNECT_TIMEOUT)
 
     async def _complete_login(self, account_id: str, client, session: Dict):
         """完成登录，保存账号信息"""
+        inserted = False
         try:
-            me = await client.get_me()
+            me = await asyncio.wait_for(client.get_me(), timeout=LOGIN_RPC_TIMEOUT)
+            if session.get("cancelled") or self.qr_sessions.get(account_id) is not session:
+                raise ValueError("Login was cancelled")
+            if account_id in self.accounts or any(a.get("user_id") == me.id for a in self.accounts.values()):
+                raise ValueError("Account already exists; the saved account was not changed.")
             session_string = client.session.save()
 
             # 保存账号
@@ -346,17 +398,20 @@ class AccountManager:
                 "last_online": datetime.now(timezone.utc).isoformat(),
                 "use_count": 0
             }
+            self.accounts[account_id]["proxy_settings"] = session.get("proxy_settings", {"mode": "default"})
+            inserted = True
             self._save_config()
             session["status"] = "success"
             return True
         except Exception:
-            self.accounts.pop(account_id, None)
+            if inserted:
+                self.accounts.pop(account_id, None)
             session["status"] = "failed"
             session["error"] = "Unable to save the Telegram session. Try signing in again."
             return False
         finally:
             with suppress(Exception):
-                await client.disconnect()
+                await asyncio.wait_for(client.disconnect(), LOGIN_DISCONNECT_TIMEOUT)
 
     async def submit_2fa_password(self, account_id: str, password: str) -> Dict:
         """
@@ -381,9 +436,9 @@ class AccountManager:
         try:
             # 使用密码登录
             from telethon.errors import PasswordHashInvalidError
-            await client.sign_in(password=password)
+            await asyncio.wait_for(client.sign_in(password=password), LOGIN_RPC_TIMEOUT)
 
-            if await client.is_user_authorized():
+            if await asyncio.wait_for(client.is_user_authorized(), LOGIN_RPC_TIMEOUT):
                 saved = await self._complete_login(account_id, client, session)
                 return {"success": saved, **({} if saved else {"error": session["error"]})}
             else:
@@ -391,10 +446,11 @@ class AccountManager:
 
         except PasswordHashInvalidError:
             return {"success": False, "error": "密码错误"}
-        except Exception as e:
+        except Exception:
             session["status"] = "failed"
-            await client.disconnect()
-            return {"success": False, "error": str(e)}
+            with suppress(Exception):
+                await asyncio.wait_for(client.disconnect(), LOGIN_DISCONNECT_TIMEOUT)
+            return {"success": False, "error": "Unable to finish sign-in. Check the connection and try again."}
 
     def check_qr_status(self, account_id: str) -> Dict:
         """
@@ -434,7 +490,7 @@ class AccountManager:
 
         return result
 
-    async def refresh_qr_code(self, account_id: str, proxy: Dict = None) -> Dict:
+    async def refresh_qr_code(self, account_id: str, proxy: Dict = None, proxy_settings=None) -> Dict:
         """
         刷新二维码
 
@@ -445,16 +501,9 @@ class AccountManager:
         Returns:
             新的二维码信息
         """
-        # 清除旧的QR会话
-        if account_id in self.qr_sessions:
-            old_session = self.qr_sessions[account_id]
-            try:
-                await old_session["client"].disconnect()
-            except Exception:
-                pass
-            del self.qr_sessions[account_id]
+        await self.cancel_qr_login(account_id)
 
-        return await self.generate_qr_code(account_id, proxy)
+        return await self.generate_qr_code(account_id, proxy, proxy_settings=proxy_settings)
 
     async def remove_account(self, account_id: str) -> bool:
         """
@@ -528,6 +577,38 @@ class AccountManager:
                                    if self._client_tasks.get(account_id) is completed else None)
         return await asyncio.shield(task)
 
+    def saved_proxy(self, account_id):
+        from proxy_manager import proxy_manager
+        settings = self.accounts[account_id].get("proxy_settings")
+        if settings is None:
+            return proxy_manager.get_proxy_for_account(account_id)
+        return proxy_manager.resolve_login_proxy(settings.get("mode", "default"), settings.get("proxy_id"))
+
+    async def set_account_connection(self, account_id, settings):
+        if account_id not in self.accounts:
+            raise ValueError("Account does not exist")
+        account = self.accounts[account_id]
+        previous = account.get("proxy_settings")
+        account["proxy_settings"] = settings
+        try:
+            self._save_config()
+        except Exception:
+            if previous is None:
+                account.pop("proxy_settings", None)
+            else:
+                account["proxy_settings"] = previous
+            raise
+        task = self._client_tasks.pop(account_id, None)
+        if task and not task.done():
+            task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await task
+        client = self.clients.pop(account_id, None)
+        if client:
+            with suppress(Exception):
+                await asyncio.wait_for(client.disconnect(), LOGIN_DISCONNECT_TIMEOUT)
+        self.connection_errors.pop(account_id, None)
+
     async def _probe_saved_authorization(self, client):
         await client.connect()
         # The saved-client migration guard also protects authorization RPCs
@@ -555,8 +636,11 @@ class AccountManager:
 
         # 如果没有指定代理，自动从 proxy_manager 获取
         if proxy is None:
-            from proxy_manager import proxy_manager
-            proxy = proxy_manager.get_proxy_for_account(account_id)
+            try:
+                proxy = self.saved_proxy(account_id)
+            except ValueError:
+                self.connection_errors[account_id] = "Saved proxy is unavailable. Restore it or update the account connection."
+                return None
 
         # 创建新连接
         account = self.accounts[account_id]
@@ -639,7 +723,8 @@ class AccountManager:
         self,
         account_id: str,
         phone: str,
-        proxy: Dict = None
+        proxy: Dict = None,
+        proxy_settings=None,
     ) -> Dict:
         """
         发送验证码到手机号（支持所有国际号码）
@@ -661,6 +746,8 @@ class AccountManager:
         if account_id in self.phone_sessions:
             return {"success": False, "error": "Cancel the existing phone login before starting again"}
 
+        pending = {"status": "connecting", "phone": phone, "created_at": datetime.now(), "has_2fa": False}
+        self.phone_sessions[account_id] = pending
         temp_client = None
         retained = False
         try:
@@ -685,17 +772,21 @@ class AccountManager:
                 client_kwargs["proxy"] = proxy
 
             temp_client = TelegramClient(**client_kwargs)
+            pending["client"] = temp_client
 
             # 快速连接（缩短超时）
-            await asyncio.wait_for(temp_client.connect(), timeout=15)
+            await asyncio.wait_for(temp_client.connect(), timeout=LOGIN_CONNECT_TIMEOUT)
+
+            if self.phone_sessions.get(account_id) is not pending:
+                return {"success": False, "error": "Login was cancelled. Start again."}
 
             # Telethon switches DC before raising with our zero-retry client.
             # Retry only this authorization redirect, never flood/server errors
             # or outbound messages. The second redirect is surfaced to the user.
             try:
-                result = await temp_client.send_code_request(phone)
+                result = await asyncio.wait_for(temp_client.send_code_request(phone), timeout=LOGIN_RPC_TIMEOUT)
             except (PhoneMigrateError, NetworkMigrateError):
-                result = await temp_client.send_code_request(phone)
+                result = await asyncio.wait_for(temp_client.send_code_request(phone), timeout=LOGIN_RPC_TIMEOUT)
 
             # 获取 phone_code_hash
             phone_code_hash = result.phone_code_hash
@@ -703,6 +794,9 @@ class AccountManager:
             # Two-step verification is known only after submitting the code.
             has_2fa = False
             password_hint = None
+
+            if self.phone_sessions.get(account_id) is not pending:
+                return {"success": False, "error": "Login was cancelled. Start again."}
 
             # 保存会话
             self.phone_sessions[account_id] = {
@@ -713,7 +807,8 @@ class AccountManager:
                 "has_2fa": has_2fa,
                 "password_hint": password_hint,
                 "created_at": datetime.now(),
-                "proxy": proxy
+                "proxy": proxy,
+                "proxy_settings": proxy_settings or {"mode": "default"},
             }
             retained = True
 
@@ -737,11 +832,13 @@ class AccountManager:
                 return {"success": False, "error": "Too many requests; try again later"}
             if "invalid" in error_msg.lower() and "phone" in error_msg.lower():
                 return {"success": False, "error": "Invalid phone number format"}
-            return {"success": False, "error": error_msg}
+            return {"success": False, "error": "Telegram connection failed. Test the selected proxy or choose Direct connection."}
         finally:
+            if not retained and self.phone_sessions.get(account_id) is pending:
+                self.phone_sessions.pop(account_id, None)
             if temp_client is not None and not retained:
                 with suppress(Exception):
-                    await temp_client.disconnect()
+                    await asyncio.wait_for(temp_client.disconnect(), timeout=2)
 
     async def verify_phone_code(
         self,
@@ -775,7 +872,7 @@ class AccountManager:
         phone_code_hash = session["phone_code_hash"]
 
         try:
-            await client.sign_in(phone=phone, code=code, phone_code_hash=phone_code_hash)
+            await asyncio.wait_for(client.sign_in(phone=phone, code=code, phone_code_hash=phone_code_hash), LOGIN_RPC_TIMEOUT)
 
             # 登录成功，保存账号
             await self._complete_phone_login(account_id, client, session)
@@ -789,8 +886,8 @@ class AccountManager:
             return {"success": False, "needs_2fa": False, "error": "Invalid verification code"}
         except PhoneCodeExpiredError:
             return {"success": False, "needs_2fa": False, "error": "Verification code has expired"}
-        except Exception as e:
-            return {"success": False, "needs_2fa": False, "error": str(e)}
+        except Exception:
+            return {"success": False, "needs_2fa": False, "error": "Unable to finish sign-in. Check the connection and try again."}
 
     async def submit_2fa_for_phone(
         self,
@@ -818,7 +915,7 @@ class AccountManager:
 
         try:
             # Telethon derives the SRP proof; a plain CheckPasswordRequest is invalid.
-            await client.sign_in(password=password)
+            await asyncio.wait_for(client.sign_in(password=password), LOGIN_RPC_TIMEOUT)
 
             # 登录成功
             await self._complete_phone_login(account_id, client, session)
@@ -826,13 +923,18 @@ class AccountManager:
 
         except PasswordHashInvalidError:
             return {"success": False, "error": "Incorrect two-step verification password"}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+        except Exception:
+            return {"success": False, "error": "Unable to finish sign-in. Check the connection and try again."}
 
     async def _complete_phone_login(self, account_id: str, client, session: Dict):
         """完成手机号登录，保存账号信息"""
+        inserted = False
         try:
-            me = await client.get_me()
+            me = await asyncio.wait_for(client.get_me(), LOGIN_RPC_TIMEOUT)
+            if session.get("cancelled") or self.phone_sessions.get(account_id) is not session:
+                raise ValueError("Login was cancelled")
+            if account_id in self.accounts or any(a.get("user_id") == me.id for a in self.accounts.values()):
+                raise ValueError("Account already exists; the saved account was not changed.")
             session_string = client.session.save()
 
             self.accounts[account_id] = {
@@ -849,18 +951,22 @@ class AccountManager:
                 "last_online": datetime.now(timezone.utc).isoformat(),
                 "use_count": 0
             }
+            inserted = True
+            self.accounts[account_id]["proxy_settings"] = session.get("proxy_settings", {"mode": "default"})
             self._save_config()
             session["status"] = "success"
-        except Exception as e:
-            self.accounts.pop(account_id, None)
+        except Exception:
+            if inserted:
+                self.accounts.pop(account_id, None)
             session["status"] = "failed"
-            session["error"] = str(e)
+            session["error"] = "Unable to save the Telegram session. Try signing in again."
             raise
         finally:
             # Cleanup must not hide persistence errors or undo a saved login.
-            self.phone_sessions.pop(account_id, None)
+            if self.phone_sessions.get(account_id) is session:
+                self.phone_sessions.pop(account_id, None)
             with suppress(Exception):
-                await client.disconnect()
+                await asyncio.wait_for(client.disconnect(), LOGIN_DISCONNECT_TIMEOUT)
 
     def get_phone_login_status(self, account_id: str) -> Dict:
         """获取手机号登录状态"""
@@ -879,16 +985,24 @@ class AccountManager:
         }
 
     async def cancel_phone_login(self, account_id: str) -> bool:
-        """取消手机号登录"""
-        if account_id in self.phone_sessions:
-            session = self.phone_sessions[account_id]
-            try:
-                await session["client"].disconnect()
-            except Exception:
-                pass
-            del self.phone_sessions[account_id]
-            return True
-        return False
+        session = self.phone_sessions.pop(account_id, None)
+        if not session:
+            return False
+        session["cancelled"] = True
+        if session.get("client"):
+            with suppress(Exception):
+                await asyncio.wait_for(session["client"].disconnect(), 2)
+        return True
+
+    async def cancel_qr_login(self, account_id: str) -> bool:
+        session = self.qr_sessions.pop(account_id, None)
+        if not session:
+            return False
+        session["cancelled"] = True
+        if session.get("client"):
+            with suppress(Exception):
+                await asyncio.wait_for(session["client"].disconnect(), LOGIN_DISCONNECT_TIMEOUT)
+        return True
 
     # ==================== 批量导入 ====================
 
@@ -911,13 +1025,14 @@ class AccountManager:
         if not session_string:
             raise ValueError("账号没有有效的Session")
 
-        client = TelegramClient(StringSession(session_string), API_ID, API_HASH, outreach_account_id=account_id)
+        client = TelegramClient(StringSession(session_string), API_ID, API_HASH,
+                                outreach_account_id=account_id, proxy=self.saved_proxy(account_id))
         friends = []
 
         try:
-            await client.connect()
+            await asyncio.wait_for(client.connect(), LOGIN_CONNECT_TIMEOUT)
 
-            if not await client.is_user_authorized():
+            if not await asyncio.wait_for(client.is_user_authorized(), LOGIN_RPC_TIMEOUT):
                 raise ValueError("Session已失效")
 
             # 获取所有对话
@@ -941,7 +1056,7 @@ class AccountManager:
                     })
 
         finally:
-            await client.disconnect()
+            await asyncio.wait_for(client.disconnect(), LOGIN_DISCONNECT_TIMEOUT)
 
         return friends
 
@@ -965,14 +1080,15 @@ class AccountManager:
         if not session_string:
             raise ValueError("账号没有有效的Session")
 
-        client = TelegramClient(StringSession(session_string), API_ID, API_HASH, outreach_account_id=account_id)
+        client = TelegramClient(StringSession(session_string), API_ID, API_HASH,
+                                outreach_account_id=account_id, proxy=self.saved_proxy(account_id))
         valid = []
         invalid = []
 
         try:
-            await client.connect()
+            await asyncio.wait_for(client.connect(), LOGIN_CONNECT_TIMEOUT)
 
-            if not await client.is_user_authorized():
+            if not await asyncio.wait_for(client.is_user_authorized(), LOGIN_RPC_TIMEOUT):
                 raise ValueError("Session已失效")
 
             for username in usernames:
@@ -992,7 +1108,7 @@ class AccountManager:
                 await asyncio.sleep(0.3)
 
         finally:
-            await client.disconnect()
+            await asyncio.wait_for(client.disconnect(), LOGIN_DISCONNECT_TIMEOUT)
 
         return {
             "valid": valid,

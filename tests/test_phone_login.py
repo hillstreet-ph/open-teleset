@@ -185,7 +185,8 @@ async def test_disconnect_failure_preserves_the_persistence_result(manager, pers
     assert bool(manager.accounts) is not persistence_failure
     assert not manager.phone_sessions
     if persistence_failure:
-        assert result["error"] == "fixture storage failure"
+        assert "Unable to finish" in result["error"]
+        assert "fixture storage failure" not in result["error"]
 
 
 @pytest.mark.asyncio

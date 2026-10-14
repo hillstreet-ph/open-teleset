@@ -240,25 +240,35 @@ async def list_accounts():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def login_connection(request, account_id):
+    mode = request.get("proxy_mode", "selected" if request.get("proxy_id") else "default")
+    proxy_id = request.get("proxy_id")
+    try:
+        proxy = proxy_manager.resolve_login_proxy(mode, proxy_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    return proxy, {"mode": mode, **({"proxy_id": proxy_id} if mode == "selected" else {})}
+
+
 @app.post("/api/accounts/generate-qr")
 async def generate_qr_code(request: dict):
     """生成二维码"""
     account_id = request.get("account_id")
-    proxy_id = request.get("proxy_id")  # 可选：登录时指定的代理
 
     if not account_id:
         raise HTTPException(status_code=400, detail="缺少 account_id")
 
     stats_tracker.record_use(account_id)
 
-    # 优先使用登录时指定的代理，否则使用账号关联的代理
-    if proxy_id:
-        proxy = proxy_manager.get_proxy(proxy_id)
-    else:
-        proxy = proxy_manager.get_proxy_for_account(account_id)
-
-    result = await account_manager.generate_qr_code(account_id, proxy)
+    proxy, settings = login_connection(request, account_id)
+    result = await account_manager.generate_qr_code(account_id, proxy, proxy_settings=settings)
     return result
+
+
+@app.delete("/api/accounts/{account_id}/qr-login")
+async def cancel_qr_login(account_id: str):
+    await account_manager.cancel_qr_login(account_id)
+    return {"success": True}
 
 
 @app.get("/api/accounts/{account_id}/qr-status")
@@ -271,8 +281,10 @@ async def get_qr_status(account_id: str):
 @app.post("/api/accounts/{account_id}/refresh-qr")
 async def refresh_qr_code(account_id: str):
     """刷新二维码"""
-    proxy = proxy_manager.get_proxy_for_account(account_id)
-    result = await account_manager.refresh_qr_code(account_id, proxy)
+    session = account_manager.qr_sessions.get(account_id, {})
+    settings = session.get("proxy_settings", {"mode": "default"})
+    proxy, settings = login_connection({"proxy_mode": settings["mode"], "proxy_id": settings.get("proxy_id")}, account_id)
+    result = await account_manager.refresh_qr_code(account_id, proxy, proxy_settings=settings)
     return result
 
 
@@ -307,22 +319,26 @@ async def add_account_with_session(request: dict):
     """使用Session添加账号"""
     account_id = request.get("account_id")
     session_string = request.get("session_string")
-    phone = request.get("phone")
-    username = request.get("username")
-
     if not account_id or not session_string:
-        raise HTTPException(status_code=400, detail="缺少必要参数")
+        raise HTTPException(400, "Account ID and session string are required")
+    proxy, settings = login_connection(request, account_id)
+    result = await account_manager.import_session(account_id, session_string, proxy=proxy, proxy_settings=settings)
+    if not result["success"]:
+        raise HTTPException(400, result["error"])
+    return result
 
-    success = await account_manager.add_account_with_session(
-        account_id, session_string, phone, username
-    )
 
-    if success:
-        stats_tracker.record_use(account_id)
-        log_manager.add_log("账号管理", account_id, "添加账号", "success")
-        return {"success": True, "message": "账号添加成功"}
-    else:
-        raise HTTPException(status_code=400, detail="添加失败")
+@app.post("/api/accounts/add-hex-session")
+async def add_hex_session(request: dict):
+    account_id = request.get("account_id")
+    if not account_id:
+        raise HTTPException(400, "Account ID is required")
+    proxy, settings = login_connection(request, account_id)
+    result = await account_manager.import_hex_session(
+        account_id, request.get("hex_key"), request.get("dc_id"), proxy=proxy, proxy_settings=settings)
+    if not result["success"]:
+        raise HTTPException(400, result["error"])
+    return result
 
 
 @app.get("/api/accounts/{account_id}/export-session")
@@ -386,18 +402,12 @@ async def send_phone_code(request: dict):
     """发送验证码到手机号"""
     account_id = request.get("account_id")
     phone = request.get("phone")
-    proxy_id = request.get("proxy_id")  # 可选：登录时指定的代理
 
     if not account_id or not phone:
         raise HTTPException(status_code=400, detail="缺少必要参数")
 
-    # 优先使用登录时指定的代理，否则使用账号关联的代理
-    if proxy_id:
-        proxy = proxy_manager.get_proxy(proxy_id)
-    else:
-        proxy = proxy_manager.get_proxy_for_account(account_id)
-
-    result = await account_manager.send_phone_code(account_id, phone, proxy)
+    proxy, settings = login_connection(request, account_id)
+    result = await account_manager.send_phone_code(account_id, phone, proxy, proxy_settings=settings)
 
     if result.get("success"):
         log_manager.add_log("账号管理", account_id, f"发送验证码到 {phone}", "info")
@@ -482,18 +492,7 @@ async def add_proxy(request: AddProxyRequest):
         log_manager.add_log("代理管理", request.proxy_id, f"添加代理 {request.protocol}://{request.host}:{request.port}", "success")
         return {"success": True, "message": "代理添加成功"}
     else:
-        raise HTTPException(status_code=400, detail="代理协议不支持")
-
-
-@app.delete("/api/proxies/{proxy_id}")
-async def delete_proxy(proxy_id: str):
-    """删除代理"""
-    success = proxy_manager.delete_proxy(proxy_id)
-    if success:
-        log_manager.add_log("代理管理", proxy_id, "删除代理", "warning")
-        return {"success": True, "message": "代理已删除"}
-    else:
-        raise HTTPException(status_code=404, detail="代理不存在")
+        raise HTTPException(status_code=400, detail="Use SOCKS5, SOCKS4 or HTTP CONNECT with a valid host and port (1–65535)")
 
 
 @app.post("/api/proxies/set-global")
@@ -511,7 +510,7 @@ async def set_global_proxy(request: SetGlobalProxyRequest):
         log_manager.add_log("代理管理", "global", f"设置全局代理 {request.protocol}://{request.host}:{request.port}", "success")
         return {"success": True, "message": "全局代理设置成功"}
     else:
-        raise HTTPException(status_code=400, detail="代理协议不支持")
+        raise HTTPException(status_code=400, detail="Use SOCKS5, SOCKS4 or HTTP CONNECT with a valid host and port (1–65535)")
 
 
 @app.delete("/api/proxies/global")
@@ -522,6 +521,17 @@ async def remove_global_proxy():
     return {"success": True, "message": "全局代理已移除"}
 
 
+@app.delete("/api/proxies/{proxy_id}")
+async def delete_proxy(proxy_id: str):
+    """删除代理"""
+    success = proxy_manager.delete_proxy(proxy_id)
+    if success:
+        log_manager.add_log("代理管理", proxy_id, "删除代理", "warning")
+        return {"success": True, "message": "代理已删除"}
+    else:
+        raise HTTPException(status_code=404, detail="代理不存在")
+
+
 @app.post("/api/proxies/free-global")
 async def configure_free_global_proxy():
     result = await proxy_manager.ensure_free_global_proxy(enable=True)
@@ -530,13 +540,23 @@ async def configure_free_global_proxy():
     return result
 
 
+@app.put("/api/accounts/{account_id}/connection")
+async def update_account_connection(account_id: str, request: dict):
+    if account_id not in account_manager.accounts:
+        raise HTTPException(404, "Account does not exist")
+    _, settings = login_connection(request, account_id)
+    try:
+        await account_manager.set_account_connection(account_id, settings)
+    except Exception:
+        raise HTTPException(500, "Could not save the connection settings") from None
+    return {"success": True, "proxy_settings": settings}
+
+
 @app.post("/api/proxies/assign")
 async def assign_proxy(request: AssignProxyRequest):
     """为账号分配代理"""
-    success = proxy_manager.assign_proxy_to_account(
-        request.account_id,
-        request.proxy_id
-    )
+    await update_account_connection(request.account_id, {"proxy_mode": "selected", "proxy_id": request.proxy_id})
+    success = proxy_manager.assign_proxy_to_account(request.account_id, request.proxy_id)
 
     if success:
         log_manager.add_log("代理管理", request.account_id, f"分配代理 {request.proxy_id}", "success")
@@ -548,6 +568,12 @@ async def assign_proxy(request: AssignProxyRequest):
 @app.delete("/api/proxies/{proxy_id}/accounts/{account_id}")
 async def unassign_proxy(proxy_id: str, account_id: str):
     """取消账号代理分配"""
+    if proxy_id not in proxy_manager.proxies:
+        raise HTTPException(404, "Proxy does not exist")
+    account = account_manager.accounts.get(account_id)
+    if account and (account.get("proxy_settings") is None or
+                    account["proxy_settings"].get("proxy_id") == proxy_id):
+        await update_account_connection(account_id, {"proxy_mode": "default"})
     success = proxy_manager.unassign_proxy_from_account(account_id, proxy_id)
     if success:
         return {"success": True, "message": "代理分配已取消"}
@@ -558,6 +584,10 @@ async def unassign_proxy(proxy_id: str, account_id: str):
 @app.post("/api/proxies/test")
 async def test_proxies(proxy_id: Optional[str] = None):
     """测试代理"""
+    if proxy_id == "global":
+        if not proxy_manager.global_proxy:
+            raise HTTPException(404, "No global proxy is configured")
+        return {"success": True, "result": await proxy_manager.test_proxy(proxy_manager.global_proxy)}
     if proxy_id:
         if proxy_id not in proxy_manager.proxies:
             raise HTTPException(status_code=404, detail="代理不存在")
