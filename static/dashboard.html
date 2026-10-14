@@ -338,7 +338,20 @@
         .auth-toggle a:hover { text-decoration: underline; }
         .auth-error { background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3); color: #fca5a5; padding: 0.75rem 1rem; border-radius: 8px; font-size: 0.85rem; margin-bottom: 1rem; }
         .auth-success { background: rgba(34,197,94,0.1); border: 1px solid rgba(34,197,94,0.3); color: #86efac; padding: 0.75rem 1rem; border-radius: 8px; font-size: 0.85rem; margin-bottom: 1rem; }
-        .user-menu { display: flex; align-items: center; gap: 0.75rem; }
+        .user-menu { display: flex; align-items: center; gap: 0.6rem; position: relative; }
+        .user-caret { cursor: pointer; color: var(--text-secondary); font-size: 0.8rem; user-select: none; transition: transform 0.15s; }
+        .user-caret.open { transform: rotate(180deg); }
+        .user-overlay { position: fixed; inset: 0; z-index: 900; background: transparent; }
+        .user-dropdown { position: absolute; top: calc(100% + 10px); right: 0; z-index: 901; min-width: 240px; max-width: calc(100vw - 32px); background: #16213e; border: 1px solid rgba(255,255,255,0.12); border-radius: 12px; box-shadow: 0 16px 40px rgba(0,0,0,0.5); padding: 8px; }
+        .user-dropdown-head { display: flex; gap: 10px; align-items: center; padding: 10px 10px 12px; border-bottom: 1px solid rgba(255,255,255,0.08); margin-bottom: 6px; }
+        .user-avatar.sm { width: 40px; height: 40px; font-size: 0.95rem; cursor: default; flex-shrink: 0; }
+        .user-dropdown-head .dd-name { font-size: 0.9rem; font-weight: 600; color: var(--text); word-break: break-word; }
+        .user-dropdown-head .dd-email { font-size: 0.75rem; color: var(--text-secondary); word-break: break-all; }
+        .user-dropdown-head .dd-role { font-size: 0.68rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 2px; }
+        .user-dropdown-item { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 10px 12px; background: transparent; border: none; border-radius: 8px; color: var(--text); font-size: 0.88rem; cursor: pointer; }
+        .user-dropdown-item:hover { background: rgba(255,255,255,0.06); }
+        .user-dropdown-item.danger { color: #fca5a5; }
+        .user-dropdown-item.danger:hover { background: rgba(239,68,68,0.12); }
         .user-avatar { width: 38px; height: 38px; border-radius: 50%; border: none; cursor: pointer; background: linear-gradient(135deg, #7c3aed 0%, #3b82f6 100%); color: #fff; font-weight: 700; font-size: 0.9rem; display: flex; align-items: center; justify-content: center; letter-spacing: 0.5px; transition: transform 0.15s, box-shadow 0.15s; }
         .user-avatar:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(124,58,237,0.4); }
         .user-info-click { cursor: pointer; }
@@ -467,12 +480,25 @@
                     <span>🔴 Offline: {{ offlineCount }}</span>
                 </div>
                 <div class="user-menu">
-                    <button class="user-avatar" @click="openSettings" :title="userProfile.display_name || user.email">{{ avatarInitials }}</button>
-                    <div class="user-info user-info-click" @click="openSettings" title="Account settings">
+                    <button class="user-avatar" @click="userMenuOpen = !userMenuOpen" :title="userProfile.display_name || user.email">{{ avatarInitials }}</button>
+                    <div class="user-info user-info-click" @click="userMenuOpen = !userMenuOpen" title="Account menu">
                         <span class="user-name">{{ userProfile.display_name || user.email }}</span>
                         <span class="user-role">{{ verifiedRole }} · {{ liveStatus }}</span>
                     </div>
-                    <button class="btn-logout" @click="signOut">Logout</button>
+                    <span class="user-caret" :class="{ open: userMenuOpen }" @click="userMenuOpen = !userMenuOpen">▾</span>
+                    <div v-if="userMenuOpen" class="user-overlay" @click="userMenuOpen = false"></div>
+                    <div v-if="userMenuOpen" class="user-dropdown">
+                        <div class="user-dropdown-head">
+                            <div class="user-avatar sm">{{ avatarInitials }}</div>
+                            <div>
+                                <div class="dd-name">{{ userProfile.display_name || user.email }}</div>
+                                <div class="dd-email">{{ user.email }}</div>
+                                <div class="dd-role">{{ verifiedRole }} · {{ liveStatus }}</div>
+                            </div>
+                        </div>
+                        <button class="user-dropdown-item" @click="openSettings">⚙️ Account settings</button>
+                        <button class="user-dropdown-item danger" @click="signOut">🚪 Logout</button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -1808,6 +1834,7 @@
                     session: null,
                     userProfile: {},
                     settings: { show: false, tab: 'profile', displayName: '', savingProfile: false, pwNew: '', pwConfirm: '', savingPassword: false, copied: '' },
+                    userMenuOpen: false,
                     verifiedRole: '',
                     accessReady: false,
                     accessLoading: false,
@@ -2572,6 +2599,7 @@
                     this.phoneData = {phone: '', code: '', password: '', countryCode: '63'}; this.twoFaPassword = ''
                     this.templates = []; this.schedules = []; this.topAccounts = []
                     this.userProfile = {}; this.verifiedRole = ''
+                    this.userMenuOpen = false
                 },
                 async loadProfile() {
                     const userId = this.user?.id
@@ -2758,6 +2786,7 @@
                     if (error) this.authError = 'Sign out could not be completed. Please retry.'
                 },
                 openSettings() {
+                    this.userMenuOpen = false
                     this.settings.show = true
                     this.settings.tab = 'profile'
                     this.settings.displayName = this.userProfile.display_name || this.user?.user_metadata?.display_name || ''
