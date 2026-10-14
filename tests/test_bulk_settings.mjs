@@ -5,6 +5,18 @@ import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 const html = readFileSync('static/dashboard.html', 'utf8');
+const waitHelpers = vm.runInNewContext(`({${html.slice(html.indexOf('outreachDuration(seconds) {'), html.indexOf('parseAdderRecipients() {'))}})`);
+test('wait status explains a multi-hour cooldown and does not promise paused jobs will resume', () => {
+  assert.equal(waitHelpers.outreachDuration(17754), '4h 55m 54s');
+  assert.equal(waitHelpers.outreachDuration(0.2), '1s');
+  assert.equal(waitHelpers.outreachDuration(3600), '1h 0s');
+  assert.equal(waitHelpers.outreachDuration(-1), '0s');
+  assert.match(waitHelpers.outreachReason('telegram_timeout'), /Retrying automatically/);
+  assert.match(waitHelpers.outreachReason('delivery_timeout'), /Check Telegram/);
+  assert.match(html, /job.retry_after > 0 && \['queued','running','waiting'\].includes\(job.state\)/);
+  assert.match(html, /Paused\. Resume is required/);
+  assert.match(html, /Assigned account: \{\{ job.next_account_id \}\}/);
+});
 const method = html.slice(html.indexOf('async runBulkSend() {'), html.indexOf('// === Auth Methods ==='));
 function harness(post) {
   return { accessReady: true, authRevision: 1, outreachJobs: [], loadOutreachJobs() {}, bulksend: { accountId: 'account', accountIds: [], rotationMode: 'single', perAccountLimit: 0,

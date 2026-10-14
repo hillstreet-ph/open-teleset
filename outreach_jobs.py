@@ -45,6 +45,8 @@ from telegram_ops import (
 
 router = APIRouter()
 ACTIVE = ("queued", "running", "waiting")
+TELEGRAM_READ_TIMEOUT = 30
+TELEGRAM_SEND_TIMEOUT = 60
 log = logging.getLogger(__name__)
 
 
@@ -242,12 +244,16 @@ class JobStore:
             counts = {r["state"]: r["n"] for r in db.execute(
                 "SELECT state,COUNT(*) n FROM items WHERE job=? GROUP BY state", (job,))}
             results = []
+            next_item = db.execute("SELECT payload FROM items WHERE job=? AND state IN ('pending','sending') "
+                                   "ORDER BY seq LIMIT 1", (job,)).fetchone()
             # Bounded response with full counts; all outcomes remain in the database.
             for item in db.execute("SELECT * FROM items WHERE job=? ORDER BY seq DESC LIMIT 100", (job,)):
                 p = self.unpack(item["payload"])
                 results.append({"target": p["target"], "account_id": p["account"],
                                 "state": item["state"], "reason": item["reason"]})
             return {"id": job, "kind": row["kind"], "state": row["state"], "reason": row["reason"],
+                    "retry_at": row["retry_at"],
+                    "next_account_id": self.unpack(next_item[0])["account"] if next_item else None,
                     "retry_after": max(0, row["retry_at"] - time.time()), "total": sum(counts.values()),
                     "completed": counts.get("completed", 0), "skipped": counts.get("skipped", 0),
                     "failed": counts.get("failed", 0), "uncertain": counts.get("uncertain", 0),
@@ -267,16 +273,28 @@ class JobStore:
         with self.db() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT * FROM jobs WHERE id=?", (job,)).fetchone()
+            reason = "operator_" + action
             if action == "resume":
                 if row["state"] != "paused":
                     raise HTTPException(409, "Only paused jobs can resume; uncertain delivery requires review")
                 state = "queued"
+                item = db.execute("SELECT payload,reason FROM items WHERE job=? AND state='pending' "
+                                  "ORDER BY seq LIMIT 1", (job,)).fetchone()
+                if item:
+                    remaining = account_cooldown_remaining(self.unpack(item["payload"])["account"])
+                    if remaining:
+                        db.execute("UPDATE jobs SET retry_at=MAX(retry_at,?) WHERE id=?",
+                                   (time.time() + remaining, job))
+                        state, reason = "waiting", "telegram_cooldown"
+                    elif row["retry_at"] > time.time():
+                        state = "waiting"
+                        reason = item["reason"] if item["reason"] in ("telegram_timeout", "account_unavailable") else "scheduled_wait"
             elif row["state"] in ("completed", "stopped", "needs_review"):
                 raise HTTPException(409, "Job is already terminal or requires review")
             else:
                 state = "paused" if action == "pause" else "stopped"
             # Keep retry_at: user resume cannot shorten an existing cooldown.
-            db.execute("UPDATE jobs SET state=?,reason=? WHERE id=?", (state, "operator_" + action, job))
+            db.execute("UPDATE jobs SET state=?,reason=? WHERE id=?", (state, reason, job))
         return self.snapshot(job, operator)
 
     def recover(self):
@@ -412,13 +430,13 @@ class JobWorker:
             if remaining:
                 self.store.waiting(job_id, "account_pacing", remaining)
                 return
-            client = await account_manager.get_client(account)
+            client = await asyncio.wait_for(account_manager.get_client(account), TELEGRAM_READ_TIMEOUT)
             if not client:
                 self.store.waiting(job_id, "account_unavailable", max(30, account_cooldown_remaining(account)))
                 return
             async def check_sender():
                 expected = config.get("sender_identities", {}).get(account)
-                me = await client.get_me()
+                me = await asyncio.wait_for(client.get_me(), TELEGRAM_READ_TIMEOUT)
                 if not expected or not me or me.id != expected:
                     raise SenderChanged()
 
@@ -438,7 +456,7 @@ class JobWorker:
             entity = None
             for value in candidates:
                 try:
-                    entity = await client.get_entity(value)
+                    entity = await asyncio.wait_for(client.get_entity(value), TELEGRAM_READ_TIMEOUT)
                     break
                 except resolution_errors:
                     continue
@@ -482,9 +500,10 @@ class JobWorker:
             # Resolve destination and check existing membership before attempting an add.
             destination = None
             if job["kind"] == "member_add":
-                destination = await client.get_entity(config["dest_target"])
+                destination = await asyncio.wait_for(client.get_entity(config["dest_target"]), TELEGRAM_READ_TIMEOUT)
                 try:
-                    membership = await client(functions.channels.GetParticipantRequest(destination, entity))
+                    membership = await asyncio.wait_for(
+                        client(functions.channels.GetParticipantRequest(destination, entity)), TELEGRAM_READ_TIMEOUT)
                     if not isinstance(membership.participant, types.ChannelParticipantLeft):
                         reason = "membership_restricted" if isinstance(membership.participant, types.ChannelParticipantBanned) else "already_member"
                         self.store.outcome(job_id, seq, "skipped", reason)
@@ -509,11 +528,13 @@ class JobWorker:
             token = dispatch_guard.set(fence)
             async def deliver():
                 if job["kind"] == "member_add":
-                    result = await client(functions.channels.InviteToChannelRequest(destination, [entity]))
+                    result = await asyncio.wait_for(
+                        client(functions.channels.InviteToChannelRequest(destination, [entity])), TELEGRAM_SEND_TIMEOUT)
                     if getattr(result, "missing_invitees", None):
                         raise OutreachDenied("invitation_not_completed")
                     return result
-                return await client.send_message(entity, config["messages"].get(target, config["message"]))
+                return await asyncio.wait_for(
+                    client.send_message(entity, config["messages"].get(target, config["message"])), TELEGRAM_SEND_TIMEOUT)
 
             from outreach_client import ConsentTelegramClient
             await dispatch_outreach(action=job["kind"], subject=peer, account_id=account,
@@ -561,6 +582,13 @@ class JobWorker:
             self.store.outcome(job_id, seq, "uncertain" if attempted else "pending", "worker_interrupted",
                                job_state="needs_review" if attempted else None)
             raise
+        except TimeoutError:
+            # Read-only timeouts can retry. A write may already have reached
+            # Telegram, so uncertain delivery must never be sent twice.
+            self.store.outcome(job_id, seq, "uncertain" if attempted else "pending",
+                               "delivery_timeout" if attempted else "telegram_timeout",
+                               delay=0 if attempted else 30,
+                               job_state="needs_review" if attempted else "waiting")
         except (OSError, sqlite3.Error, ValueError, RuntimeError, TypeError, httpx.HTTPError) as exc:
             self.store.outcome(job_id, seq, "uncertain" if attempted else "pending", type(exc).__name__,
                                job_state="needs_review" if attempted else "paused")

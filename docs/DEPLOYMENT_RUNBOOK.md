@@ -1,5 +1,23 @@
 # Production Readiness Runbook
 
+## Sender waiting and timeout recovery
+
+The outreach tracker shows the assigned account, a readable countdown and the
+earliest next-attempt time in the viewer's local timezone. Telegram cooldowns
+resume automatically; Pause/Resume or submitting another job never clears them.
+Resuming during a future cooldown remains visibly Waiting. Paused and stopped
+jobs do not display an automatic-resume countdown.
+
+Telegram connection/read operations have a 30-second queue deadline and writes
+have a 60-second deadline. A timed-out read remains pending for retry after 30
+seconds, allowing the worker to process other jobs. A timed-out attempted write
+is marked uncertain and needs review, including after restart; inspect Telegram
+before creating any replacement job. No retry switches the assigned sender.
+These deadlines do not shorten Telegram restrictions or establish delivery.
+
+Validation uses synthetic clients and isolated state, never campaign recipients.
+Rollback is a code revert; existing encrypted queue and account data are retained.
+
 This runbook explains the Open-Teleset setup, automated deploy path and release
 gates. Provider changes require an authorized connector or verified console
 session. A successful frontend deployment does not prove runtime or OAuth
