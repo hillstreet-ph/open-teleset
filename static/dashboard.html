@@ -339,6 +339,18 @@
         .auth-error { background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3); color: #fca5a5; padding: 0.75rem 1rem; border-radius: 8px; font-size: 0.85rem; margin-bottom: 1rem; }
         .auth-success { background: rgba(34,197,94,0.1); border: 1px solid rgba(34,197,94,0.3); color: #86efac; padding: 0.75rem 1rem; border-radius: 8px; font-size: 0.85rem; margin-bottom: 1rem; }
         .user-menu { display: flex; align-items: center; gap: 0.75rem; }
+        .user-avatar { width: 38px; height: 38px; border-radius: 50%; border: none; cursor: pointer; background: linear-gradient(135deg, #7c3aed 0%, #3b82f6 100%); color: #fff; font-weight: 700; font-size: 0.9rem; display: flex; align-items: center; justify-content: center; letter-spacing: 0.5px; transition: transform 0.15s, box-shadow 0.15s; }
+        .user-avatar:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(124,58,237,0.4); }
+        .user-info-click { cursor: pointer; }
+        .settings-tabs { display: flex; gap: 6px; margin-bottom: 20px; flex-wrap: wrap; }
+        .settings-tab { padding: 8px 16px; border-radius: 8px; background: var(--bg); border: 1px solid var(--border); color: var(--text-secondary); cursor: pointer; font-size: 0.9rem; }
+        .settings-tab.active { background: linear-gradient(135deg, #7c3aed 0%, #3b82f6 100%); color: #fff; border-color: transparent; }
+        .settings-field { text-align: left; margin-bottom: 16px; }
+        .settings-field label { display: block; font-size: 0.82rem; color: var(--text-secondary); margin-bottom: 6px; }
+        .settings-field input { width: 100%; padding: 0.65rem 0.9rem; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 0.92rem; box-sizing: border-box; }
+        .settings-field .readonly-box { width: 100%; padding: 0.6rem 0.9rem; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text-secondary); box-sizing: border-box; word-break: break-all; font-family: monospace; font-size: 0.78rem; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+        .copy-btn { padding: 4px 10px; font-size: 0.75rem; border-radius: 6px; border: 1px solid var(--border); background: transparent; color: #3b82f6; cursor: pointer; white-space: nowrap; }
+        .copy-btn:hover { border-color: #3b82f6; }
         .user-menu .user-info { display: flex; flex-direction: column; align-items: flex-end; }
         .user-menu .user-name { font-size: 0.85rem; font-weight: 500; color: var(--text); }
         .user-menu .user-role { font-size: 0.7rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; }
@@ -455,11 +467,73 @@
                     <span>🔴 Offline: {{ offlineCount }}</span>
                 </div>
                 <div class="user-menu">
-                    <div class="user-info">
+                    <button class="user-avatar" @click="openSettings" :title="userProfile.display_name || user.email">{{ avatarInitials }}</button>
+                    <div class="user-info user-info-click" @click="openSettings" title="Account settings">
                         <span class="user-name">{{ userProfile.display_name || user.email }}</span>
                         <span class="user-role">{{ verifiedRole }} · {{ liveStatus }}</span>
                     </div>
                     <button class="btn-logout" @click="signOut">Logout</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Account settings -->
+        <div v-if="settings.show" class="modal" @click.self="settings.show = false">
+            <div class="modal-content" style="text-align:left; min-width: 480px; max-width: 560px; max-height: 90vh; overflow-y: auto;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 18px;">
+                    <h2 style="margin:0;">⚙️ Account settings</h2>
+                    <button class="btn-logout" @click="settings.show = false">Close</button>
+                </div>
+                <div class="settings-tabs">
+                    <div class="settings-tab" :class="{active: settings.tab==='profile'}" @click="settings.tab='profile'">👤 Profile</div>
+                    <div class="settings-tab" :class="{active: settings.tab==='security'}" @click="settings.tab='security'">🔒 Security</div>
+                    <div class="settings-tab" :class="{active: settings.tab==='integrations'}" @click="settings.tab='integrations'">🔌 Integrations</div>
+                </div>
+
+                <div v-show="settings.tab==='profile'">
+                    <div class="settings-field">
+                        <label>Display name</label>
+                        <input v-model="settings.displayName" maxlength="80" placeholder="Your name" />
+                    </div>
+                    <div class="settings-field">
+                        <label>Email</label>
+                        <div class="readonly-box"><span>{{ user.email }}</span></div>
+                    </div>
+                    <div class="settings-field">
+                        <label>Role</label>
+                        <div class="readonly-box"><span>{{ verifiedRole || '—' }}</span></div>
+                    </div>
+                    <button class="btn btn-primary" @click="saveProfile" :disabled="settings.savingProfile">{{ settings.savingProfile ? 'Saving…' : 'Save profile' }}</button>
+                </div>
+
+                <div v-show="settings.tab==='security'">
+                    <div class="settings-field">
+                        <label>New password</label>
+                        <input type="password" v-model="settings.pwNew" autocomplete="new-password" minlength="8" placeholder="At least 8 characters" />
+                    </div>
+                    <div class="settings-field">
+                        <label>Confirm new password</label>
+                        <input type="password" v-model="settings.pwConfirm" autocomplete="new-password" minlength="8" placeholder="Re-enter new password" />
+                    </div>
+                    <button class="btn btn-primary" @click="changePassword" :disabled="settings.savingPassword">{{ settings.savingPassword ? 'Updating…' : 'Change password' }}</button>
+                    <p style="color: var(--text-secondary); font-size: 0.78rem; margin-top: 10px;">Changes your sign-in password immediately. If it fails, sign out and in again, then retry.</p>
+                </div>
+
+                <div v-show="settings.tab==='integrations'">
+                    <p style="color: var(--text-secondary); font-size: 0.85rem; margin-bottom: 14px;">Connect an MCP or API client to Open-Teleset using your Supabase access token as a Bearer credential.</p>
+                    <div class="settings-field">
+                        <label>MCP endpoint (read-only)</label>
+                        <div class="readonly-box"><span>{{ mcpEndpoint }}</span><button class="copy-btn" @click="copyText(mcpEndpoint, 'mcp')">{{ settings.copied==='mcp' ? 'Copied' : 'Copy' }}</button></div>
+                    </div>
+                    <div class="settings-field">
+                        <label>Authorization header</label>
+                        <div class="readonly-box"><span>Bearer &lt;your access token&gt;</span><button class="copy-btn" @click="copyAccessToken">{{ settings.copied==='token' ? 'Copied token' : 'Copy token' }}</button></div>
+                    </div>
+                    <div class="settings-field">
+                        <label>Supabase URL</label>
+                        <div class="readonly-box"><span>{{ supabaseUrl }}</span><button class="copy-btn" @click="copyText(supabaseUrl, 'suburl')">{{ settings.copied==='suburl' ? 'Copied' : 'Copy' }}</button></div>
+                    </div>
+                    <p style="color: var(--text-secondary); font-size: 0.78rem; margin-top: 10px;">The access token is short-lived and refreshes automatically — copy a fresh one when you connect. The MCP endpoint enforces your administrator access.</p>
                 </div>
             </div>
         </div>
@@ -1733,6 +1807,7 @@
                     user: null,
                     session: null,
                     userProfile: {},
+                    settings: { show: false, tab: 'profile', displayName: '', savingProfile: false, pwNew: '', pwConfirm: '', savingPassword: false, copied: '' },
                     verifiedRole: '',
                     accessReady: false,
                     accessLoading: false,
@@ -2075,6 +2150,17 @@
             },
             computed: {
                 adderRecipients() { return this.parseAdderRecipients(); },
+                avatarInitials() {
+                    const name = this.userProfile.display_name || this.user?.email || '?'
+                    const parts = name.replace(/@.*/, '').trim().split(/[\s._-]+/).filter(Boolean)
+                    const letters = parts.length >= 2 ? (parts[0][0] + parts[1][0]) : name.slice(0, 2)
+                    return (letters || '?').toUpperCase()
+                },
+                mcpEndpoint() {
+                    const base = window.OPEN_TELESET_CONFIG?.apiBase || window.location.origin
+                    return base.replace(/\/$/, '') + '/mcp'
+                },
+                supabaseUrl() { return (window.OPEN_TELESET_CONFIG?.supabaseUrl || '').replace(/\/$/, '') },
                 onlineCount() { return this.accounts.filter(a => a.status === 'online').length },
                 offlineCount() { return this.accounts.filter(a => a.status !== 'online').length },
                 currentYear() { return new Date().getFullYear() },
@@ -2490,10 +2576,14 @@
                 async loadProfile() {
                     const userId = this.user?.id
                     if (!userId) return
+                    const fallback = this.user?.user_metadata?.display_name || ''
                     try {
                         const { data } = await _supabase.from('profiles').select('display_name').eq('id', userId).single()
-                        if (this.user?.id === userId && data) this.userProfile = data
-                    } catch (_) { /* Display name is optional; API authorization is server-owned. */ }
+                        if (this.user?.id === userId) this.userProfile = { display_name: (data && data.display_name) || fallback }
+                    } catch (_) {
+                        // Display name is optional; API authorization is server-owned.
+                        if (this.user?.id === userId && fallback) this.userProfile = { display_name: fallback }
+                    }
                 },
                 disconnectStatusSocket() {
                     clearTimeout(this.socketRetry)
@@ -2666,6 +2756,63 @@
                     this.setAxiosAuth(null)
                     const { error } = await _supabase.auth.signOut()
                     if (error) this.authError = 'Sign out could not be completed. Please retry.'
+                },
+                openSettings() {
+                    this.settings.show = true
+                    this.settings.tab = 'profile'
+                    this.settings.displayName = this.userProfile.display_name || this.user?.user_metadata?.display_name || ''
+                    this.settings.pwNew = ''; this.settings.pwConfirm = ''; this.settings.copied = ''
+                },
+                async saveProfile() {
+                    if (this.settings.savingProfile) return
+                    const name = (this.settings.displayName || '').trim()
+                    if (name.length > 80) { this.showToast('Display name is too long (max 80).', true); return }
+                    this.settings.savingProfile = true
+                    try {
+                        const { error } = await _supabase.auth.updateUser({ data: { display_name: name } })
+                        if (error) throw error
+                        // Best-effort mirror into the profiles table used for display elsewhere.
+                        if (this.user?.id) {
+                            try { await _supabase.from('profiles').upsert({ id: this.user.id, display_name: name }) } catch (_) { /* RLS may restrict; metadata is source of truth */ }
+                        }
+                        this.userProfile = { ...this.userProfile, display_name: name }
+                        this.showToast('Profile updated.')
+                    } catch (e) {
+                        this.showToast(e.message || 'Could not update profile.', true)
+                    } finally {
+                        this.settings.savingProfile = false
+                    }
+                },
+                async changePassword() {
+                    if (this.settings.savingPassword) return
+                    const pw = this.settings.pwNew, confirmPw = this.settings.pwConfirm
+                    if (pw.length < 8) { this.showToast('Use at least 8 characters.', true); return }
+                    if (pw !== confirmPw) { this.showToast('The passwords do not match.', true); return }
+                    this.settings.savingPassword = true
+                    try {
+                        const { error } = await _supabase.auth.updateUser({ password: pw })
+                        if (error) throw error
+                        this.settings.pwNew = ''; this.settings.pwConfirm = ''
+                        this.showToast('Password changed.')
+                    } catch (e) {
+                        this.showToast(e.message || 'Could not change password. You may need to sign in again.', true)
+                    } finally {
+                        this.settings.savingPassword = false
+                    }
+                },
+                async copyText(text, label) {
+                    try {
+                        await navigator.clipboard.writeText(text)
+                        this.settings.copied = label
+                        setTimeout(() => { if (this.settings.copied === label) this.settings.copied = '' }, 1500)
+                    } catch (_) { this.showToast('Copy failed — select and copy manually.', true) }
+                },
+                async copyAccessToken() {
+                    try {
+                        const { data: { session } } = await _supabase.auth.getSession()
+                        if (!session?.access_token) throw new Error('No active session')
+                        await this.copyText(session.access_token, 'token')
+                    } catch (e) { this.showToast(e.message || 'Could not read access token.', true) }
                 },
                 loadDashboardData() {
                     if (!this.accessReady) return
