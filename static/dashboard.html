@@ -2195,13 +2195,17 @@
                     const labels = {
                         invalid_username: 'Invalid username — skipped',
                         recipient_not_found: 'Username not found — skipped',
+                        recipient_unresolvable: 'Username could not be resolved',
+                        recipient_unreachable: 'Telegram cannot deliver to this recipient — skipped',
                         recipient_deleted: 'Deleted account — skipped',
                         recipient_not_user: 'This target is a group or channel — skipped',
                         activity_not_matched: 'Outside the selected activity filter — skipped',
                         already_member: 'Already a member — skipped',
                         duplicate_recipient: 'Duplicate recipient — skipped',
                         bot_excluded: 'Bot excluded — skipped',
-                        UserPrivacyRestrictedError: 'Recipient privacy settings prevent invitations — skipped',
+                        UserPrivacyRestrictedError: 'Recipient privacy settings prevent this action — skipped',
+                        UserIsBlockedError: 'Recipient is blocked — skipped',
+                        YouBlockedUserError: 'You blocked this recipient — skipped',
                         UserNotMutualContactError: 'Telegram requires a mutual contact — skipped',
                         UserChannelsTooMuchError: 'Recipient has reached their group limit — skipped',
                         InputUserDeactivatedError: 'Deleted account — skipped',
@@ -2217,6 +2221,8 @@
                         delivery_timeout: 'Telegram did not confirm delivery. Check Telegram before retrying',
                         operator_resume: 'Resumed; waiting for the worker',
                         account_unavailable: 'Waiting for the selected account to reconnect',
+                        consent_missing_or_invalid: 'Paused: current recipient consent is missing or expired. Verify consent before submitting a new job; Resume does not renew consent',
+                        suppressed: 'Paused: this recipient has opted out. Do not contact them',
                     };
                     return labels[reason] || (reason || '').replaceAll('_', ' ');
                 },

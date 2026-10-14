@@ -18,6 +18,14 @@ test('wait status explains a multi-hour cooldown and does not promise paused job
   assert.match(html, /Assigned account: \{\{ job.next_account_id \}\}/);
 });
 const method = html.slice(html.indexOf('async runBulkSend() {'), html.indexOf('// === Auth Methods ==='));
+test('recipient skips are distinct from consent and destination pauses', () => {
+  for (const reason of ['recipient_not_found', 'recipient_deleted', 'recipient_not_user',
+    'recipient_unreachable', 'UserPrivacyRestrictedError', 'UserIsBlockedError', 'YouBlockedUserError']) {
+    assert.match(waitHelpers.outreachReason(reason), /skipped/);
+  }
+  assert.match(waitHelpers.outreachReason('ChatWriteForbiddenError'), /paused/);
+  assert.match(waitHelpers.outreachReason('consent_missing_or_invalid'), /Resume does not renew consent/);
+});
 function harness(post) {
   return { accessReady: true, authRevision: 1, outreachJobs: [], loadOutreachJobs() {}, bulksend: { accountId: 'account', accountIds: [], rotationMode: 'single', perAccountLimit: 0,
     consentConfirmed: true, delay: 0, message: 'test', messages: {}, targets: Array.from({length: 30}, (_,i)=>String(i+1)).join('\n') },

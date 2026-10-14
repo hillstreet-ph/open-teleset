@@ -461,10 +461,9 @@ class JobWorker:
                 except resolution_errors:
                     continue
             if entity is None:
-                self.store.outcome(job_id, seq, "skipped" if job["kind"] == "member_add" else "failed",
-                                   "recipient_not_found" if job["kind"] == "member_add" else "recipient_unresolvable")
+                self.store.outcome(job_id, seq, "skipped", "recipient_not_found")
                 return
-            if job["kind"] == "member_add" and (not isinstance(entity, types.User) or entity.deleted):
+            if not isinstance(entity, types.User) or entity.deleted:
                 reason = "recipient_deleted" if isinstance(entity, types.User) else "recipient_not_user"
                 self.store.outcome(job_id, seq, "skipped", reason)
                 return
@@ -567,12 +566,19 @@ class JobWorker:
             else:
                 self.store.outcome(job_id, seq, "failed", str(exc), job_state="paused")
         except (errors.UserPrivacyRestrictedError, errors.UserNotMutualContactError,
-                errors.UserChannelsTooMuchError, errors.InputUserDeactivatedError) as exc:
-            self.store.outcome(job_id, seq, "skipped" if job["kind"] == "member_add" else "failed",
+                errors.UserChannelsTooMuchError, errors.InputUserDeactivatedError,
+                errors.UserIsBlockedError, errors.YouBlockedUserError) as exc:
+            self.store.outcome(job_id, seq, "skipped",
                                type(exc).__name__, delay=config["delay"])
         except (errors.ChatAdminRequiredError, errors.ChannelPrivateError,
                 errors.ChannelInvalidError, errors.ChatWriteForbiddenError) as exc:
-            self.store.outcome(job_id, seq, "pending", type(exc).__name__, job_state="paused")
+            # For member jobs these are destination-wide permission failures.
+            # Personal jobs have already resolved a User, so rejection belongs
+            # to this recipient and must not strand unrelated pending users.
+            if job["kind"] == "personal_send" and attempted:
+                self.store.outcome(job_id, seq, "skipped", "recipient_unreachable", delay=config["delay"])
+            else:
+                self.store.outcome(job_id, seq, "pending", type(exc).__name__, job_state="paused")
         except errors.RPCError as exc:
             # A server error may have happened after accepting a write.
             uncertain = attempted and getattr(exc, "code", 500) >= 500
