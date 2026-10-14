@@ -21,6 +21,7 @@ from starlette.websockets import WebSocketDisconnect
 PUBLIC_PATHS = frozenset({"/health", "/healthz", "/readyz", "/", "/dashboard", "/config.js"})
 PROJECT_KEY = "open-teleset"
 ADMIN_ROLES = frozenset({"owner", "admin"})
+API_KEY_PREFIX = "ott_"
 WS_PROTOCOL = "open-teleset.v1"
 WS_TOKEN_PREFIX = "bearer."
 PUBLIC_ORIGINS = frozenset({
@@ -156,7 +157,17 @@ def _extract_bearer(scope: Scope) -> str:
 
 
 async def _authenticate(scope: Scope) -> AuthenticatedUser:
-    claims = await run_in_threadpool(_decode_access_token, _extract_bearer(scope))
+    token = _extract_bearer(scope)
+    if token.startswith(API_KEY_PREFIX):
+        # Programmatic API key: resolve its owner, then apply the same
+        # server-owned administrator gate as a user access token. A revoked key
+        # or a revoked role denies access without any fallback.
+        from open_teleset.api_keys import authenticate_api_key
+
+        user_id = await authenticate_api_key(token)
+        profile = await _load_profile(user_id)
+        return AuthenticatedUser(id=user_id, email=None, role=profile["role"])
+    claims = await run_in_threadpool(_decode_access_token, token)
     profile = await _load_profile(claims["sub"])
     return AuthenticatedUser(id=claims["sub"], email=claims.get("email"), role=profile["role"])
 

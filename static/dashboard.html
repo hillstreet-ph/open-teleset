@@ -560,6 +560,40 @@
                         <div class="readonly-box"><span>{{ supabaseUrl }}</span><button class="copy-btn" @click="copyText(supabaseUrl, 'suburl')">{{ settings.copied==='suburl' ? 'Copied' : 'Copy' }}</button></div>
                     </div>
                     <p style="color: var(--text-secondary); font-size: 0.78rem; margin-top: 10px;">The access token is short-lived and refreshes automatically — copy a fresh one when you connect. The MCP endpoint enforces your administrator access.</p>
+
+                    <div style="border-top: 1px solid rgba(255,255,255,0.08); margin: 18px 0 14px;"></div>
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 8px;">
+                        <strong style="font-size: 0.95rem;">API keys</strong>
+                        <button class="copy-btn" @click="loadApiKeys" :disabled="apiKeys.loading">↻ Refresh</button>
+                    </div>
+                    <p style="color: var(--text-secondary); font-size: 0.78rem; margin-bottom: 12px;">Long-lived keys for programmatic access. Use as <code>Authorization: Bearer &lt;key&gt;</code>. A key grants full administrator API access while your role is active; revoke it anytime. The secret is shown only once.</p>
+
+                    <div v-if="apiKeys.created" class="settings-field" style="background: rgba(16,185,129,0.08); border: 1px solid rgba(16,185,129,0.3); border-radius: 8px; padding: 12px;">
+                        <label style="color:#6ee7b7;">New key — copy it now, it won't be shown again</label>
+                        <div class="readonly-box"><span>{{ apiKeys.created.key }}</span><button class="copy-btn" @click="copyText(apiKeys.created.key, 'newkey')">{{ settings.copied==='newkey' ? 'Copied' : 'Copy' }}</button></div>
+                        <button class="copy-btn" style="margin-top:8px;" @click="apiKeys.created = null">Done</button>
+                    </div>
+
+                    <div class="settings-field" style="display:flex; gap:8px; align-items:flex-end;">
+                        <div style="flex:1;">
+                            <label>Create a new key</label>
+                            <input v-model="apiKeys.newName" maxlength="80" placeholder="Key name (e.g. laptop, CI)" @keyup.enter="generateApiKey" />
+                        </div>
+                        <button class="btn btn-primary" @click="generateApiKey" :disabled="apiKeys.generating" style="white-space:nowrap;">{{ apiKeys.generating ? 'Generating…' : 'Generate' }}</button>
+                    </div>
+
+                    <div v-if="apiKeys.loading" style="color: var(--text-secondary); font-size: 0.82rem;">Loading…</div>
+                    <div v-else-if="!apiKeys.list.length" style="color: var(--text-secondary); font-size: 0.82rem;">No API keys yet.</div>
+                    <div v-for="k in apiKeys.list" :key="k.id" class="readonly-box" style="justify-content:space-between; margin-bottom:8px;">
+                        <span style="font-family: inherit;">
+                            <strong :style="{ color: k.revoked_at ? '#9ca3af' : 'var(--text)' }">{{ k.name }}</strong>
+                            <span style="color: var(--text-secondary);"> · ott_{{ k.prefix }}…</span>
+                            <span v-if="k.revoked_at" style="color:#fca5a5;"> · revoked</span>
+                            <span v-else-if="k.last_used_at" style="color: var(--text-secondary);"> · last used {{ new Date(k.last_used_at).toLocaleDateString() }}</span>
+                            <span v-else style="color: var(--text-secondary);"> · never used</span>
+                        </span>
+                        <button v-if="!k.revoked_at" class="copy-btn" style="color:#fca5a5; border-color: rgba(239,68,68,0.3);" @click="revokeApiKey(k)">Revoke</button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -1834,6 +1868,7 @@
                     session: null,
                     userProfile: {},
                     settings: { show: false, tab: 'profile', displayName: '', savingProfile: false, pwNew: '', pwConfirm: '', savingPassword: false, copied: '' },
+                    apiKeys: { list: [], loading: false, newName: '', generating: false, created: null },
                     userMenuOpen: false,
                     verifiedRole: '',
                     accessReady: false,
@@ -2791,6 +2826,43 @@
                     this.settings.tab = 'profile'
                     this.settings.displayName = this.userProfile.display_name || this.user?.user_metadata?.display_name || ''
                     this.settings.pwNew = ''; this.settings.pwConfirm = ''; this.settings.copied = ''
+                    this.apiKeys.created = null; this.apiKeys.newName = ''
+                    this.loadApiKeys()
+                },
+                async loadApiKeys() {
+                    this.apiKeys.loading = true
+                    try {
+                        const { data } = await _api.get('/api/keys')
+                        this.apiKeys.list = data.keys || []
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not load API keys.', true)
+                    } finally {
+                        this.apiKeys.loading = false
+                    }
+                },
+                async generateApiKey() {
+                    if (this.apiKeys.generating) return
+                    this.apiKeys.generating = true
+                    try {
+                        const { data } = await _api.post('/api/keys', { name: this.apiKeys.newName })
+                        this.apiKeys.created = data
+                        this.apiKeys.newName = ''
+                        this.loadApiKeys()
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not generate API key.', true)
+                    } finally {
+                        this.apiKeys.generating = false
+                    }
+                },
+                async revokeApiKey(key) {
+                    if (!confirm('Revoke "' + (key.name || 'this key') + '"? Any client using it will stop working.')) return
+                    try {
+                        await _api.delete('/api/keys/' + key.id)
+                        this.showToast('API key revoked.')
+                        this.loadApiKeys()
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not revoke API key.', true)
+                    }
                 },
                 async saveProfile() {
                     if (this.settings.savingProfile) return

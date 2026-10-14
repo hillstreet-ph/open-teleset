@@ -33,6 +33,7 @@ from outreach_jobs import router as outreach_jobs_router, worker as outreach_wor
 from open_teleset.security import SupabaseAuthMiddleware
 from open_teleset.observability import initialize_error_monitoring
 from open_teleset.read_only_mcp import create_read_only_mcp
+from open_teleset.api_keys import create_key, list_keys, revoke_key
 
 
 # ============ FastAPI 应用 ============
@@ -111,6 +112,30 @@ async def authenticated_identity(request: Request):
     """Return the administrator identity verified by the authentication gate."""
     user = request.state.user
     return {"id": user.id, "role": user.role}
+
+
+class ApiKeyCreate(BaseModel):
+    name: Optional[str] = None
+
+
+@app.get("/api/keys")
+async def api_keys_list(request: Request):
+    """List the current administrator's API keys (metadata only, never secrets)."""
+    return {"keys": await list_keys(request.state.user.id)}
+
+
+@app.post("/api/keys")
+async def api_keys_create(request: Request, body: ApiKeyCreate):
+    """Generate a new API key. The plaintext key is returned exactly once."""
+    return await create_key(request.state.user.id, body.name)
+
+
+@app.delete("/api/keys/{key_id}")
+async def api_keys_revoke(request: Request, key_id: str):
+    """Revoke one of the current administrator's API keys."""
+    if not await revoke_key(request.state.user.id, key_id):
+        raise HTTPException(404, "API key not found")
+    return {"success": True}
 
 
 # ============ 数据模型 ============
