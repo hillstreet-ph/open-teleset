@@ -392,7 +392,8 @@ async def test_invalid_recipient_does_not_block_later_recipients(env):
     await env.worker.tick()
     await env.worker.tick()
     result = env.store.snapshot(job, 'owner')
-    assert result['state'] == 'completed' and result['failed'] == 1 and result['completed'] == 1
+    assert result['state'] == 'completed' and result['skipped'] == 1 and result['completed'] == 1
+    assert result['failed'] == 0
     env.client.send_message.assert_awaited_once()
 
 
@@ -824,16 +825,81 @@ async def test_member_recipient_failures_skip_and_continue(env, monkeypatch, bad
 
 
 @pytest.mark.asyncio
-async def test_member_destination_permission_failure_pauses_without_skipping_list(env, monkeypatch):
+@pytest.mark.parametrize('failure', [errors.ChatAdminRequiredError, errors.ChannelPrivateError,
+                                    errors.ChannelInvalidError, errors.ChatWriteForbiddenError])
+async def test_member_destination_permission_failure_pauses_without_skipping_list(env, monkeypatch, failure):
     req = member_request()
     job = env.store.submit('member_add', 'owner', req, req.usernames, ['a'])
-    client = AsyncMock(side_effect=errors.ChatAdminRequiredError(None))
+    client = AsyncMock(side_effect=failure(None))
     client.get_me.return_value = types.User(id=999)
     client.get_entity.side_effect = lambda value: types.User(id=111)
     monkeypatch.setattr(jobs.account_manager, 'get_client', AsyncMock(return_value=client))
     await env.worker.tick()
     result = env.store.snapshot(job, 'owner')
     assert result['state'] == 'paused' and result['pending'] == 1 and result['completed'] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('bad', [
+    'missing', 'invalid', 'deleted', 'channel', 'privacy', 'blocked',
+    'blocked_by_sender', 'write_forbidden', 'channel_private', 'deactivated',
+])
+async def test_personal_unavailable_recipient_skips_then_delivers_next(env, bad):
+    job = env.submit(consent_confirmed=True, delay=15)
+    def resolve(value):
+        if value == 111:
+            if bad == 'missing':
+                raise errors.UsernameNotOccupiedError(None)
+            if bad == 'invalid':
+                raise errors.UsernameInvalidError(None)
+            if bad == 'deleted':
+                return types.User(id=111, deleted=True)
+            if bad == 'channel':
+                return types.Channel(id=111, title='Synthetic', photo=types.ChatPhotoEmpty(), date=None)
+        return types.User(id=int(value))
+    failures = {
+        'privacy': errors.UserPrivacyRestrictedError,
+        'blocked': errors.UserIsBlockedError,
+        'blocked_by_sender': errors.YouBlockedUserError,
+        'write_forbidden': errors.ChatWriteForbiddenError,
+        'channel_private': errors.ChannelPrivateError,
+        'deactivated': errors.InputUserDeactivatedError,
+    }
+    async def send(entity, message):
+        if entity.id == 111 and bad in failures:
+            raise failures[bad](None)
+    env.client.get_entity.side_effect = resolve
+    env.client.send_message.side_effect = send
+    await env.worker.tick()
+    first = env.store.snapshot(job, 'owner')
+    assert first['state'] == 'running'
+    assert (first['skipped'], first['pending'], first['failed']) == (1, 1, 0)
+    if bad in failures:
+        await env.worker.tick()
+        assert env.client.send_message.await_count == 1  # retain configured pacing
+    else:
+        env.client.send_message.assert_not_called()
+    env.clock[0] += 15
+    await env.worker.tick()
+    env.clock[0] += 15
+    await env.worker.tick()
+    result = env.store.snapshot(job, 'owner')
+    assert result['state'] == 'completed'
+    assert (result['completed'], result['skipped'], result['pending'], result['uncertain']) == (1, 1, 0, 0)
+    assert env.client.send_message.call_args.args[0].id == 222
+    assert env.client.send_message.await_count == (2 if bad in failures else 1)
+
+
+@pytest.mark.asyncio
+async def test_personal_missing_consent_still_prevents_delivery(env):
+    job = env.submit()
+    env.doc['consents'] = []
+    env.evaluator.path.write_text(json.dumps(env.doc))
+    await env.worker.tick()
+    result = env.store.snapshot(job, 'owner')
+    assert result['state'] == 'paused'
+    assert result['reason'] == 'consent_missing_or_invalid'
+    env.client.send_message.assert_not_called()
 
 
 def test_member_setup_preserves_suppression_and_rejects_corrupt_policy(env):
