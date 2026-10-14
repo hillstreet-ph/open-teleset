@@ -1,5 +1,23 @@
 # Production Readiness Runbook
 
+## Sender waiting and timeout recovery
+
+The outreach tracker shows the assigned account, a readable countdown and the
+earliest next-attempt time in the viewer's local timezone. Telegram cooldowns
+resume automatically; Pause/Resume or submitting another job never clears them.
+Resuming during a future cooldown remains visibly Waiting. Paused and stopped
+jobs do not display an automatic-resume countdown.
+
+Telegram connection/read operations have a 30-second queue deadline and writes
+have a 60-second deadline. A timed-out read remains pending for retry after 30
+seconds, allowing the worker to process other jobs. A timed-out attempted write
+is marked uncertain and needs review, including after restart; inspect Telegram
+before creating any replacement job. No retry switches the assigned sender.
+These deadlines do not shorten Telegram restrictions or establish delivery.
+
+Validation uses synthetic clients and isolated state, never campaign recipients.
+Rollback is a code revert; existing encrypted queue and account data are retained.
+
 This runbook explains the Open-Teleset setup, automated deploy path and release
 gates. Provider changes require an authorized connector or verified console
 session. A successful frontend deployment does not prove runtime or OAuth
@@ -205,3 +223,41 @@ PYTHONPATH=src:. python -m uvicorn dashboard:app --host 127.0.0.1 --port 8080
 curl -s localhost:8080/health   # 200
 curl -s localhost:8080/readyz   # 503 until a database is configured
 ```
+
+## Dashboard recipient script and queued member lists
+
+The dashboard pins `static/csv.js` with its SHA-256 prefix in the script query
+string. Update that prefix whenever the CSV module changes; the Node regression
+check enforces it. Pages `_headers` revalidates mutable dashboard/CSV assets.
+This prevents a browser retaining the previous four-hour cached module after
+loading a newly deployed dashboard.
+
+Member Adder queues the full explicit recipient list without a ten-recipient
+job cap. CSV/pasted payloads remain bounded to 2 MB. Existing API clients can
+still supply a positive optional job limit; zero/default processes all entries.
+The synchronous legacy endpoint retains its bounded request contract. Queued
+operations remain sequential, with at least 35 seconds between additions,
+current consent and authorization, suppression checks, provider cooldowns,
+duplicate/existing-member skipping, and Pause/Resume/Stop. A large queued list
+does not guarantee Telegram will permit every invitation; expired/revoked
+consent or authorization pauses processing and must be resolved separately.
+
+## Member Adder recipient outcomes and operator setup
+
+Member Adder retains malformed pasted/CSV usernames in skipped job history while
+processing valid entries. Missing/deleted/non-user targets, excluded activity,
+existing members and known recipient privacy restrictions are skipped. Missing
+destination access/admin rights pause the job; FloodWait waits; account limits,
+revoked authorization and uncertain delivery remain stopped/paused for review.
+
+The authenticated administrator explicitly confirms recipient consent and the
+selected destination/account in the Member Adder checkbox. On a new submission,
+this creates a random member-job authorization scoped to the selected account and
+recipient hashes, with separate member-only consent records expiring after 30
+days. The checkbox defaults off. Idempotent retries and Resume never renew it.
+Form-generated authorizations cannot be reused by a second job or destination.
+Existing explicit approval references remain validated. Resolution binds the
+confirmed username to a user ID without extending expiry; source consent and
+resolved-user consent/opt-outs are rechecked at dispatch. Telegram admin rights
+are separate and still enforced by Telegram. No invite is attempted for entries
+marked invalid. No live invitations are dispatched by automated tests.

@@ -224,6 +224,10 @@ async def add_members(request: AddMembersRequest):
         user_list = list(dict.fromkeys(u.strip().lower().lstrip("@") for u in request.usernames))[:request.limit]
         if not all(user_list):
             raise HTTPException(status_code=400, detail="Recipient cannot be empty")
+        try:
+            outreach_policy.validate_new_member_approval(request.approval_id)
+        except OutreachDenied as exc:
+            raise HTTPException(status_code=403, detail=f"Outreach denied: {exc}") from None
         _enforce_outreach("member_add", user_list, request.account_id, request.approval_id)
 
         client = await account_manager.get_client(request.account_id)

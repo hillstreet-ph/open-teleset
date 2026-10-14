@@ -29,7 +29,7 @@ test('timestamps are interpreted as UTC across browser timezones and invalid dat
 test('QR polling displays terminal persistence errors and stops polling', async () => {
   let poll;
   const method = html.slice(html.indexOf('startQrPolling() {'), html.indexOf('stopQrPolling() {'));
-  const state = {qrRemaining:120, qrAccountId:'fixture', stopQrPolling(){this.stopped=true;}};
+  const state = {qrRemaining:120, qrAccountId:'fixture', authRevision:1, showQrModal:true, stopQrPolling(){this.stopped=true;}};
   const start = vm.runInNewContext(`({${method}}).startQrPolling`, {
     setInterval(fn){poll=fn;return 1;},
     _api:{get:async()=>({data:{status:'failed',error:'Unable to save the Telegram session.'}})},

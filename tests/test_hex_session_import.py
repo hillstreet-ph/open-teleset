@@ -172,6 +172,7 @@ async def test_pending_interactive_login_cannot_overwrite_import(setup, method):
     original = {'user_id': 99, 'session_string': 'existing'}
     manager.accounts['same'] = original
     state = {}
+    (manager.phone_sessions if method == '_complete_phone_login' else manager.qr_sessions)['same'] = state
     if method == '_complete_phone_login':
         with pytest.raises(ValueError, match='already exists'):
             await getattr(manager, method)('same', client, state)

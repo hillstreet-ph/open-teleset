@@ -14,7 +14,8 @@ from outreach_client import ConsentTelegramClient
 
 
 @pytest.fixture
-def manager():
+def manager(tmp_path, monkeypatch):
+    monkeypatch.setenv("OUTREACH_RATE_DB", str(tmp_path / "rate.sqlite"))
     result = module.AccountManager.__new__(module.AccountManager)
     session = StringSession()
     session.set_dc(2, "149.154.167.51", 443)

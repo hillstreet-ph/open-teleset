@@ -357,6 +357,12 @@
             .tab { padding: 10px 12px; }
             table { display: block; overflow-x: auto; }
         }
+    @media (max-width: 640px) {
+            .modal { padding: 12px; }
+            .modal-content { min-width: 0 !important; width: 100%; max-width: 100%; max-height: 90dvh; overflow-y: auto; padding: 20px; }
+            .login-methods { flex-wrap: wrap; }
+            .login-methods > button { flex: 1 1 120px; padding: 14px !important; }
+        }
     </style>
 </head>
 <body>
@@ -545,6 +551,12 @@
                                 <td>{{ formatTime(acc.last_online) }}</td>
                                 <td>{{ acc.use_count || 0 }}</td>
                                 <td>
+                                    <select class="form-control" aria-label="Account connection" :value="accountConnectionChoice(acc)" @change="updateAccountConnection(acc, $event.target.value)" :disabled="checkingAccounts[acc.account_id]">
+                                        <option value="default">Global default</option>
+                                        <option value="direct">Direct connection</option>
+                                        <option v-for="proxy in proxies" :key="proxy.proxy_id" :value="'proxy:' + proxy.proxy_id">{{ proxy.proxy_id }} · {{ proxy.host }}:{{ proxy.port }}</option>
+                                        <option v-if="acc.proxy_settings?.mode === 'selected' && !proxies.some(p => p.proxy_id === acc.proxy_settings.proxy_id)" :value="'proxy:' + acc.proxy_settings.proxy_id" disabled>Missing proxy — choose another</option>
+                                    </select>
                                     <button class="btn btn-sm btn-outline" :disabled="checkingAccounts[acc.account_id]" @click="checkAccountConnection(acc.account_id)">{{ checkingAccounts[acc.account_id] ? 'Checking...' : 'Check connection' }}</button>
                                     <button class="btn btn-sm btn-outline" @click="exportSession(acc.account_id)">Export</button>
                                     <button class="btn btn-sm btn-danger" @click="deleteAccount(acc.account_id)">Delete</button>
@@ -593,7 +605,7 @@
                                 <select v-model="newGlobal.protocol" class="form-control">
                                     <option value="socks5">SOCKS5</option>
                                     <option value="http">HTTP</option>
-                                    <option value="https">HTTPS</option>
+
                                     <option value="socks4">SOCKS4</option>
                                 </select>
                             </div>
@@ -637,7 +649,7 @@
                             <select v-model="newProxy.protocol" class="form-control">
                                 <option value="socks5">SOCKS5</option>
                                 <option value="http">HTTP</option>
-                                <option value="https">HTTPS</option>
+
                                 <option value="socks4">SOCKS4</option>
                             </select>
                         </div>
@@ -684,6 +696,7 @@
                             </div>
                             <div class="proxy-actions">
                                 <button class="btn btn-sm btn-success" @click="testProxy(proxy.proxy_id)">Test</button>
+                                <button class="btn btn-sm btn-outline" @click="useProxyAsGlobal(proxy)">Use as global</button>
                                 <button class="btn btn-sm btn-danger" @click="deleteProxy(proxy.proxy_id)">Delete</button>
                             </div>
                         </div>
@@ -1015,19 +1028,21 @@
                         <input class="form-control" v-model="adder.destTarget" placeholder="e.g. @mydestchannel">
                     </div>
                     <div class="form-group">
-                        <label>Consenting recipients (usernames or IDs, one per line; maximum 10)</label>
-                        <textarea class="form-control" v-model="adder.usernames" rows="5" placeholder="user1&#10;user2&#10;user3"></textarea>
+                        <label>Consenting recipients (usernames or IDs, one per line)</label>
+                        <textarea class="form-control" v-model="adder.usernames" rows="5" aria-describedby="adder-recipient-summary" placeholder="user1&#10;user2&#10;user3"></textarea>
+                        <small id="adder-recipient-summary" role="status" aria-live="polite">
+                            {{ adderRecipients.targets.length }} valid unique recipients. Valid entries will be processed in order.
+                            {{ adderRecipients.duplicates }} duplicate lines will be skipped. Blank lines are ignored.
+                            <span v-if="adderRecipients.tooLarge">Recipient list must be at most 2 MB.</span>
+                            <span v-if="adderRecipients.invalidLines.length">{{ adderRecipients.invalidLines.length }} invalid entries will be skipped automatically; first on line {{ adderRecipients.invalidLines[0] }}.</span>
+                        </small>
                     </div>
                     <div class="form-group">
                         <label>Import consenting recipients from CSV</label>
                         <input type="file" accept=".csv,text/csv" @change="importRecipientCSV($event, 'adder')" :disabled="adder.loading">
-                        <small>Use a recipient, username or id header. Up to 10 recipients.</small>
+                        <small>Use a recipient, username or id header. Maximum file size: 2 MB.</small>
                     </div>
                     <div style="display: flex; gap: 15px;">
-                        <div class="form-group" style="flex:1;">
-                            <label>Max Members to Add</label>
-                            <input class="form-control" type="number" v-model.number="adder.limit" min="1" max="10">
-                        </div>
                         <div class="form-group" style="flex:1;">
                             <label>Delay Between Adds (sec)</label>
                             <input class="form-control" type="number" v-model.number="adder.delay" min="35" max="3600" step="5">
@@ -1043,11 +1058,11 @@
                         </select>
                     </div>
                     <div class="form-group">
-                        <label>Approval reference</label>
-                        <input class="form-control" v-model.trim="adder.approvalId" placeholder="Approved member-add reference" autocomplete="off">
+                        <label><input type="checkbox" v-model="adder.consentConfirmed"> I confirm these recipients agreed to join this destination, and I authorize this job using the selected account.</label>
+                        <small>Only confirmed recipients are processed. Telegram permissions and cooldowns still apply. Missing users are skipped; account or destination problems pause the job.</small>
                     </div>
-                    <button class="btn btn-primary" @click="runAdder" :disabled="adder.loading || !adder.accountId || !adder.destTarget || !adder.approvalId || !adder.usernames.trim()">
-                        {{ adder.loading ? '⏳ Adding...' : '➕ Add Members' }}
+                    <button class="btn btn-primary" @click="runAdder" :disabled="adder.loading || !adder.accountId || !adder.destTarget || !adder.usernames.trim()">
+                        {{ adder.loading ? 'Submitting...' : 'Start Member Adder' }}
                     </button>
 
                     <!-- Results -->
@@ -1074,12 +1089,14 @@
                     </div>
                     <div class="form-group" v-if="bulksend.rotationMode === 'round_robin'">
                         <label>Rotation accounts</label>
-                        <select class="form-control" v-model="bulksend.accountIds" multiple size="5">
-                            <option v-for="acc in accounts" :key="acc.account_id" :value="acc.account_id">
-                                {{ acc.phone || acc.account_id }} {{ acc.username ? '(@' + acc.username + ')' : '' }}
-                            </option>
-                        </select>
-                        <small>Recipient consent must cover the selected sender. A Telegram restriction stops the batch; recipients are never retried through another account.</small>
+                        <div style="display:grid;gap:8px;max-height:220px;overflow:auto;">
+                            <label v-for="acc in accounts" :key="acc.account_id" style="display:flex;align-items:center;gap:10px;padding:10px;">
+                                <input type="checkbox" v-model="bulksend.accountIds" :value="acc.account_id">
+                                {{ acc.username || acc.phone || acc.account_id }} · {{ acc.connected ? 'Connected' : 'Check connection' }}
+                            </label>
+                        </div>
+                        <small>{{ bulksend.accountIds.length }} selected. One or more accounts supported.</small>
+                        <small>Recipient consent must cover the selected sender. Each recipient keeps their assigned sender. Timed waits resume after cooldown; other restrictions pause for review. No restricted recipient is retried through another account.</small>
                     </div>
                     <div class="form-group" v-else>
                         <label>Account</label>
@@ -1129,7 +1146,7 @@
 
                     </div>
                     <button class="btn btn-primary" @click="runBulkSend" :disabled="bulksend.loading || (bulksend.rotationMode === 'single' ? !bulksend.accountId : !bulksend.accountIds.length) || (!bulksend.message && !Object.keys(bulksend.messages).length) || !bulksend.targets">
-                        {{ bulksend.loading ? '⏳ Sending...' : '📨 Send Messages' }}
+                        {{ bulksend.loading ? 'Submitting...' : 'Start BulkSend' }}
                     </button>
 
                     <!-- Results -->
@@ -1144,41 +1161,59 @@
                 </div>
             </div>
 
+            <div v-if="tab === 'adder' || tab === 'bulksend'" class="card" style="margin-top:16px;">
+                <div class="card-header"><h3>Progress tracker</h3><button class="btn btn-outline" @click="loadOutreachJobs" :disabled="outreachJobsLoading">Refresh</button></div>
+                <p>Worker: {{ outreachWorker || 'Checking' }}. Jobs continue while this browser is closed. Pause or Stop prevents the next operation; an in-flight operation may finish.</p>
+                <p v-if="outreachJobError" role="alert">{{ outreachJobError }}</p>
+                <p v-if="!outreachJobs.length">No jobs yet.</p>
+                <div v-for="job in outreachJobs.filter(j => j.kind === (tab === 'adder' ? 'member_add' : 'personal_send'))" :key="job.id" style="padding:16px 0;border-top:1px solid #555;overflow-wrap:anywhere;">
+                    <strong>{{ job.state === 'queued' && job.retry_after > 0 ? 'waiting' : job.state }} · {{ job.id.slice(0,8) }}</strong>
+                    <p>{{ job.reason === 'operator_resume' && job.retry_after > 0 ? 'Resumed; waiting for the next eligible attempt' : job.reason ? outreachReason(job.reason) : (job.state === 'completed' ? 'Finished processing this list' : 'Processing consenting recipients') }}</p>
+                    <progress :value="job.completed + job.skipped + job.failed + job.uncertain" :max="job.total || 1" style="width:100%;"></progress>
+                    <p aria-live="polite">Total {{ job.total }} · {{ job.kind === 'member_add' ? 'Added' : 'Sent' }} {{ job.completed }} · Pending {{ job.pending }} · In flight {{ job.in_flight }} · Skipped {{ job.skipped }} · Failed {{ job.failed }} · Uncertain {{ job.uncertain }}</p>
+                    <p v-if="job.next_account_id && ['queued','running','waiting','paused'].includes(job.state)">Assigned account: {{ job.next_account_id }}</p>
+                    <p v-if="job.retry_after > 0 && ['queued','running','waiting'].includes(job.state)">Next eligible attempt in {{ outreachDuration(job.retry_after) }}<span v-if="job.retry_at"> · {{ outreachRetryTime(job.retry_at) }} (your local time)</span>. Updates every 2 seconds.</p>
+                    <p v-if="job.reason === 'telegram_cooldown' && ['queued','running','waiting'].includes(job.state)">Telegram has temporarily limited this account. The job waits automatically and retries after the cooldown; no click is needed. Pause, Resume, or a new job cannot shorten Telegram's wait.</p>
+                    <p v-if="job.state === 'paused'">Paused. Resume is required to continue; any remaining Telegram cooldown still applies.</p>
+                    <div style="display:flex;flex-wrap:wrap;gap:8px;margin:10px 0;">
+                        <button v-if="['queued','running','waiting'].includes(job.state)" class="btn btn-outline" @click="controlOutreachJob(job, 'pause')" :disabled="!!outreachJobBusy">Pause</button>
+                        <button v-if="job.state === 'paused'" class="btn btn-primary" @click="controlOutreachJob(job, 'resume')" :disabled="!!outreachJobBusy">Resume</button>
+                        <button v-if="['queued','running','waiting','paused'].includes(job.state)" class="btn btn-danger" @click="controlOutreachJob(job, 'stop')" :disabled="!!outreachJobBusy">Stop</button>
+                    </div>
+                    <p v-if="job.state === 'needs_review'">Delivery is uncertain. Check Telegram before creating another job; automatic retry is disabled.</p>
+                    <details><summary>Recipient history (latest 100)</summary>
+                        <ul><li v-for="(result,index) in job.results" :key="index">{{ result.target }} · {{ result.account_id }} · {{ result.state }} · {{ outreachReason(result.reason) }}</li></ul>
+                    </details>
+                </div>
+            </div>
+
         </div>
 
         <!-- QR/Phone Login Modal -->
         <div v-if="showQrModal" class="modal" @click.self="closeQrModal">
             <div class="modal-content" style="min-width: 450px;">
+                <div v-if="loginMode === 'select' || (loginMode === 'phone' && phoneStep === 'input') || loginMode === 'hex'" style="margin-bottom: 18px; text-align: left;">
+                    <label for="login-connection">Connection</label>
+                    <select id="login-connection" v-model="loginProxyMode" class="form-control" :disabled="phoneLoading || hexLoading || testing">
+                        <option value="default">Global default</option>
+                        <option value="direct">Direct connection (no proxy)</option>
+                        <option value="selected" :disabled="proxies.length === 0">Choose saved proxy</option>
+                    </select>
+                    <select v-if="loginProxyMode === 'selected'" v-model="loginProxyId" class="form-control" :disabled="phoneLoading || hexLoading" style="margin-top: 8px;">
+                        <option value="">Select a proxy</option>
+                        <option v-for="proxy in proxies" :key="proxy.proxy_id" :value="proxy.proxy_id">{{ proxy.proxy_id }} · {{ proxy.protocol }} · {{ proxy.host }}:{{ proxy.port }}</option>
+                    </select>
+                    <p v-if="loginProxyMode === 'default'" class="subtitle">{{ globalProxy?.host ? 'Global proxy: ' + globalProxy.host + ':' + globalProxy.port : 'No global proxy is configured. Default currently connects directly.' }}</p>
+                    <p v-if="loginProxyMode === 'direct'" class="subtitle">Connect directly to Telegram, even when a global proxy exists.</p>
+                    <p v-if="!proxies.length" class="subtitle">Add a proxy in the Proxies tab to make it available here.</p>
+                    <button v-if="!globalProxy?.host" class="btn btn-sm btn-outline" @click="findFreeGlobalProxy" :disabled="testing || phoneLoading || hexLoading">{{ testing ? 'Checking proxies…' : 'Find free global proxy' }}</button>
+                </div>
                 <!-- Login mode -->
                 <div v-if="loginMode === 'select'" style="text-align: center;">
                     <h2>Add account</h2>
                     <p class="subtitle">Choose login method</p>
 
-                    <!-- ProxySelect -->
-                    <div style="margin: 20px 0; text-align: left; background: rgba(255,255,255,0.03); padding: 15px; border-radius: 10px;">
-                        <label style="color: #999; font-size: 14px;">🌐 Proxy settings (optional)</label>
-                        <div style="display: flex; gap: 10px; margin-top: 10px;">
-                            <button class="btn btn-sm" :class="loginProxyMode === 'none' ? 'btn-primary' : 'btn-outline'" @click="loginProxyMode = 'none'; loginProxyId = null" style="flex: 1;">
-                                No proxy
-                            </button>
-                            <button class="btn btn-sm" :class="loginProxyMode === 'select' ? 'btn-primary' : 'btn-outline'" @click="loginProxyMode = 'select'" style="flex: 1;" :disabled="proxies.length === 0">
-                                UseProxy
-                            </button>
-                        </div>
-                        <div v-if="loginProxyMode === 'select'" style="margin-top: 10px;">
-                            <select v-model="loginProxyId" class="form-control">
-                                <option value="">-- SelectProxy --</option>
-                                <option v-for="proxy in proxies" :key="proxy.proxy_id" :value="proxy.proxy_id">
-                                    {{ proxy.proxy_id }} ({{ proxy.protocol }}) - {{ proxy.host }}:{{ proxy.port }}
-                                </option>
-                            </select>
-                            <div v-if="loginProxyId" style="font-size: 12px; color: #27ae60; margin-top: 5px;">
-                                ✓ Selected: {{ proxies.find(p => p.proxy_id === loginProxyId)?.host }}:{{ proxies.find(p => p.proxy_id === loginProxyId)?.port }}
-                            </div>
-                        </div>
-                    </div>
-
-                    <div style="display: flex; gap: 15px; margin-top: 20px; justify-content: center;">
+                    <div class="login-methods" style="display: flex; gap: 15px; margin-top: 20px; justify-content: center;">
                         <button class="btn btn-primary" style="padding: 20px 30px; font-size: 16px;" @click="startQrLogin">
                             <div style="font-size: 32px; margin-bottom: 10px;">📱</div>
                             <div>Scan to log in</div>
@@ -1190,6 +1225,7 @@
                             <div style="font-size: 12px; opacity: 0.7; margin-top: 5px;">International numbers supported</div>
                         </button>
                     </div>
+                    <button class="btn btn-outline" @click="startHexLogin" style="margin-top: 15px;">Import Hex session</button>
                     <button class="btn btn-outline" @click="closeQrModal" style="margin-top: 25px;">Cancel</button>
                 </div>
 
@@ -1208,7 +1244,7 @@
                     <div v-if="qrStatus === 'waiting'">
                         <div class="timer" :class="{ warning: qrRemaining <= 10 }">{{ Math.max(0, Math.floor(qrRemaining)) }}s</div>
                         <p class="status-text status-waiting">Waiting for scan...</p>
-                        <button class="btn btn-primary" @click="refreshQr" style="margin-top: 10px;">🔄 Refresh QR</button>
+                        <button class="btn btn-primary" @click="refreshQr" :disabled="qrLoading || qrRefreshing" style="margin-top: 10px;">🔄 Refresh QR</button>
                     </div>
 
                     <div v-else-if="qrStatus === 'success'">
@@ -1217,7 +1253,7 @@
 
                     <div v-else-if="qrStatus === 'timeout'">
                         <p class="status-text status-timeout">⏱️ QR code expired</p>
-                        <button class="btn btn-primary" @click="refreshQr" style="margin-top: 10px;">🔄 Refresh QR</button>
+                        <button class="btn btn-primary" @click="refreshQr" :disabled="qrLoading || qrRefreshing" style="margin-top: 10px;">🔄 Refresh QR</button>
                     </div>
 
                     <div v-else-if="qrStatus === 'need_password'">
@@ -1234,16 +1270,28 @@
 
                     <div v-else-if="qrStatus === 'error'">
                         <p class="status-text status-error">❌ {{ qrError }}</p>
-                        <button class="btn btn-primary" @click="refreshQr" style="margin-top: 10px;">🔄 Retry</button>
+                        <button class="btn btn-primary" @click="refreshQr" :disabled="qrLoading || qrRefreshing" style="margin-top: 10px;">🔄 Retry</button>
                     </div>
 
                     <button v-if="qrStatus !== 'success' && qrStatus !== 'need_password'" class="btn btn-outline" @click="closeQrModal" style="margin-top: 15px;">Close</button>
                     <button v-if="qrStatus === 'need_password'" class="btn btn-outline" @click="closeQrModal" style="margin-top: 15px;">CancelLog in</button>
                 </div>
 
+                <div v-else-if="loginMode === 'hex'">
+                    <h2>Import Hex session</h2>
+                    <p class="subtitle">Use an existing session from your own Telegram account and its original data center.</p>
+                    <label>Data center</label>
+                    <select v-model.number="hexData.dc" class="form-control" :disabled="hexLoading"><option :value="null">Select original DC</option><option v-for="dc in [1,2,3,4,5]" :value="dc">DC {{ dc }}</option></select>
+                    <label>Hex authorization key</label>
+                    <input v-model="hexData.key" type="password" autocomplete="off" class="form-control" placeholder="512 hexadecimal characters" :disabled="hexLoading">
+                    <p v-if="hexError" role="alert" style="color: #e74c3c;">{{ hexError }}</p>
+                    <button class="btn btn-primary" @click="importHexSession" :disabled="hexLoading || !hexData.key || !hexData.dc">{{ hexLoading ? 'Verifying session…' : 'Verify and add account' }}</button>
+                    <button class="btn btn-outline" @click="closeQrModal" :disabled="hexLoading">Cancel</button>
+                </div>
+
                 <!-- Phone login -->
                 <div v-else-if="loginMode === 'phone'">
-                    <h2 style="cursor: pointer;" @click="loginMode = 'select'">⬅ Phone login</h2>
+                    <h2 style="cursor: pointer;" @click="backToLoginMethods">⬅ Phone login</h2>
                     <p class="subtitle">Supports international phone numbers</p>
 
                     <!-- Step 1: Select region+Enter phone -->
@@ -1637,7 +1685,7 @@
         </template>
     </div>
 
-    <script src="/static/csv.js"></script>
+    <script src="/static/csv.js?v=0ce96ee8749902b2"></script>
     <script>
         // Supabase client
         const _supabase = supabase.createClient(
@@ -1714,8 +1762,10 @@
                     // Login Modal (QR + Phone)
                     showQrModal: false,
                     loginMode: 'select', // 'select', 'qr', 'phone'
-                    loginProxyMode: 'none', // 'none', 'select'
-                    loginProxyId: null,
+                    loginProxyMode: 'default', // default, direct, selected
+                    loginProxyId: '',
+                    hexData: { key: '', dc: null }, hexError: '', hexLoading: false, hexAccountId: '', qrLoading: false,
+                    qrRefreshing: false,
                     // QR login states
                     qrCode: '',
                     qrStatus: '',
@@ -1972,21 +2022,24 @@
                         loading: false,
                         results: [],
                     },
+                    outreachJobs: [], outreachJobsLoading: false, outreachJobError: '', outreachWorker: '',
+                    outreachJobBusy: '', jobsPoll: null,
                     // Adder
                     adder: {
+                        consentConfirmed: false,
+                        requestId: '',
                         accountId: '',
                         destTarget: '',
                         filterBots: true,
                         activityFilter: 'all',
                         usernames: '',
-                        limit: 10,
-                        approvalId: '',
                         delay: 35,
                         loading: false,
                         resultMsg: '',
                     },
                     // BulkSend
                     bulksend: {
+                        requestId: '',
                         accountId: '',
                         accountIds: [],
                         rotationMode: 'single',
@@ -2021,6 +2074,7 @@
                 }
             },
             computed: {
+                adderRecipients() { return this.parseAdderRecipients(); },
                 onlineCount() { return this.accounts.filter(a => a.status === 'online').length },
                 offlineCount() { return this.accounts.filter(a => a.status !== 'online').length },
                 currentYear() { return new Date().getFullYear() },
@@ -2077,7 +2131,7 @@
                 async findFreeGlobalProxy() {
                     this.testing = true;
                     try {
-                        const {data} = await _api.post('/api/proxies/free-global');
+                        const {data} = await _api.post('/api/proxies/free-global', {}, {timeout: 90000});
                         await this.loadProxies();
                         this.showToast(data.success ? 'Global proxy ready. Reconnect accounts to apply it.' : data.status.replace(/_/g, ' '), !data.success);
                     } catch (e) {
@@ -2104,7 +2158,7 @@
                     if (!file) return;
                     try {
                         if (file.size > 2 * 1024 * 1024) throw new Error('CSV must be at most 2 MB.');
-                        const parsed = OpenTelesetCSV.recipients(await file.text(), destination === 'adder' ? 10 : 0);
+                        const parsed = OpenTelesetCSV.recipients(await file.text(), 0, destination === 'adder');
                         if (destination === 'adder') {
                             if (!parsed.targets.length) throw new Error('Recipient rows are required.');
                             this.adder.usernames = parsed.targets.join('\n');
@@ -2149,40 +2203,111 @@
                     alert('Copied ' + this.scraper.results.filter(m => m.username).length + ' usernames');
                 },
                 // ---- Adder ----
+                outreachDuration(seconds) {
+                    const total = Math.max(0, Math.ceil(Number(seconds) || 0));
+                    const hours = Math.floor(total / 3600), minutes = Math.floor((total % 3600) / 60);
+                    return [hours ? `${hours}h` : '', minutes ? `${minutes}m` : '', `${total % 60}s`].filter(Boolean).join(' ');
+                },
+                outreachRetryTime(timestamp) {
+                    return new Date(timestamp * 1000).toLocaleString();
+                },
+                outreachReason(reason) {
+                    const labels = {
+                        invalid_username: 'Invalid username — skipped',
+                        recipient_not_found: 'Username not found — skipped',
+                        recipient_unresolvable: 'Username could not be resolved',
+                        recipient_unreachable: 'Telegram cannot deliver to this recipient — skipped',
+                        recipient_deleted: 'Deleted account — skipped',
+                        recipient_not_user: 'This target is a group or channel — skipped',
+                        activity_not_matched: 'Outside the selected activity filter — skipped',
+                        already_member: 'Already a member — skipped',
+                        duplicate_recipient: 'Duplicate recipient — skipped',
+                        bot_excluded: 'Bot excluded — skipped',
+                        UserPrivacyRestrictedError: 'Recipient privacy settings prevent this action — skipped',
+                        UserIsBlockedError: 'Recipient is blocked — skipped',
+                        YouBlockedUserError: 'You blocked this recipient — skipped',
+                        UserNotMutualContactError: 'Telegram requires a mutual contact — skipped',
+                        UserChannelsTooMuchError: 'Recipient has reached their group limit — skipped',
+                        InputUserDeactivatedError: 'Deleted account — skipped',
+                        invitation_not_completed: 'Telegram did not complete this invitation — skipped',
+                        ChatAdminRequiredError: 'Selected account needs permission to invite members — paused',
+                        ChannelPrivateError: 'Selected account cannot access the destination — paused',
+                        ChannelInvalidError: 'Destination could not be found — paused',
+                        ChatWriteForbiddenError: 'Destination permissions prevent this action — paused',
+                        telegram_cooldown: 'Waiting for Telegram cooldown',
+                        scheduled_wait: 'Waiting for the next scheduled attempt',
+                        account_pacing: 'Waiting between operations on this account',
+                        telegram_timeout: 'Telegram did not respond in time. Retrying automatically',
+                        delivery_timeout: 'Telegram did not confirm delivery. Check Telegram before retrying',
+                        operator_resume: 'Resumed; waiting for the worker',
+                        account_unavailable: 'Waiting for the selected account to reconnect',
+                        consent_missing_or_invalid: 'Paused: current recipient consent is missing or expired. Verify consent before submitting a new job; Resume does not renew consent',
+                        suppressed: 'Paused: this recipient has opted out. Do not contact them',
+                    };
+                    return labels[reason] || (reason || '').replaceAll('_', ' ');
+                },
+                parseAdderRecipients() {
+                    const targets = [], seen = new Set(), invalidLines = [];
+                    let duplicates = 0;
+                    if (this.adder.usernames.length > 2 * 1024 * 1024) return { targets, duplicates, invalidLines, tooLarge: true };
+                    this.adder.usernames.split(/\r\n|\r|\n/).forEach((line, index) => {
+                        if (!line.trim()) return;
+                        const target = line.trim().toLowerCase().replace(/^@/, '');
+                        if (!OpenTelesetCSV.isRecipient(target)) { invalidLines.push(index + 1); return; }
+                        if (seen.has(target)) { duplicates++; return; }
+                        seen.add(target);
+                        targets.push(target);
+                    });
+                    return { targets, duplicates, invalidLines };
+                },
                 async runAdder() {
+                    if (!this.accessReady || this.adder.loading) return;
+                    const revision = this.authRevision;
                     this.adder.loading = true;
                     this.adder.resultMsg = '';
                     try {
-                        const usernames = this.adder.usernames.trim().split('\n').map(u => u.trim()).filter(Boolean);
-                        if (!this.adder.approvalId || !usernames.length || usernames.length > 10 ||
-                            !Number.isInteger(this.adder.limit) || this.adder.limit < 1 || this.adder.limit > 10 ||
-                            !Number.isFinite(this.adder.delay) || this.adder.delay < 35 || this.adder.delay > 3600) {
-                            throw new Error('Provide an approval reference, 1–10 consenting recipients, and a delay of at least 35 seconds.');
+                        const { targets: usernames, invalidLines, tooLarge } = this.parseAdderRecipients();
+                        if (tooLarge) throw new Error('Recipient list must be at most 2 MB.');
+                        if (!usernames.length) throw new Error('Enter at least one valid consenting recipient. Invalid entries are skipped automatically.');
+                        if (!this.adder.consentConfirmed) throw new Error('Confirm that these recipients agreed to join before starting.');
+                        if (!Number.isFinite(this.adder.delay) || this.adder.delay < 35 || this.adder.delay > 3600) {
+                            throw new Error('Delay Between Adds must be a number from 35 to 3600 seconds.');
                         }
                         const payload = {
                             account_id: this.adder.accountId,
                             dest_target: this.adder.destTarget,
-                            limit: this.adder.limit,
                             delay: this.adder.delay,
-                            approval_id: this.adder.approvalId.trim(),
                             filter_bots: this.adder.filterBots,
                             activity_filter: this.adder.activityFilter,
-                            usernames,
+                            // Keep invalid rows in the job history as skipped, never dispatch them.
+                            usernames: Array.from(new Set(this.adder.usernames.split(/\r\n|\r|\n/).filter(line => line.trim()).map(line => { const raw = line.trim().toLowerCase(); const target = raw.replace(/^@/, ''); return OpenTelesetCSV.isRecipient(target) ? target : raw; }))),
+                            consent_confirmed: this.adder.consentConfirmed,
                         };
-                        const res = await _api.post('/api/members/add', payload);
-                        const d = res.data;
-                        const outcome = d.success === true && !d.failed ? 'Completed' : 'Incomplete or denied';
-                        this.adder.resultMsg = `${outcome}: added ${d.added || 0}, failed ${d.failed || 0}, skipped ${d.skipped || 0}, pending ${d.pending || 0}, total ${d.total || 0}.`;
-                        if (d.stopped_reason) this.adder.resultMsg += ' Stopped: ' + d.stopped_reason;
-                        if (d.error) this.adder.resultMsg += ' ' + d.error;
+                        this.adder.requestId ||= crypto.randomUUID();
+                        payload.request_id = this.adder.requestId;
+                        const res = await _api.post('/api/outreach/jobs/members', payload);
+                        if (!this.accessReady || revision !== this.authRevision) return;
+                        this.adder.requestId = '';
+                        this.adder.resultMsg = `Queued. ${invalidLines.length} invalid entries will be skipped. Missing, deleted and activity-filtered users are skipped automatically. Monitor progress below.`;
+                        this.outreachJobs.unshift(res.data);
+                        await this.loadOutreachJobs();
                     } catch (e) {
+                        if (!this.accessReady || revision !== this.authRevision) return;
+                        if (e.response?.status === 409) {
+                            this.adder.requestId = '';
+                            await this.loadOutreachJobs();
+                            this.adder.resultMsg = 'Your previous submission exists. Check its progress below. Press Start again only if this edited input is a separate job.';
+                            return;
+                        }
                         this.adder.resultMsg = '❌ ' + (e.response?.data?.detail || e.message);
                     } finally {
-                        this.adder.loading = false;
+                        if (revision === this.authRevision) this.adder.loading = false;
                     }
                 },
                 // ---- BulkSend ----
                 async runBulkSend() {
+                    if (!this.accessReady || this.bulksend.loading) return;
+                    const revision = this.authRevision;
                     this.bulksend.loading = true;
                     this.bulksend.resultMsg = '';
                     this.bulksend.results = [];
@@ -2199,7 +2324,9 @@
                             (this.bulksend.perAccountLimit > 0 && targets.length > accountIds.length * this.bulksend.perAccountLimit)) {
                             throw new Error('Select accounts and set the per-account cap to 0 (unlimited) or enough capacity for this run.');
                         }
-                        const res = await _api.post('/api/bulk/send-personal', {
+                        this.bulksend.requestId ||= crypto.randomUUID();
+                        const res = await _api.post('/api/outreach/jobs/personal', {
+                            request_id: this.bulksend.requestId,
                             account_id: rotating ? '' : this.bulksend.accountId,
                             account_ids: rotating ? accountIds : [],
                             rotation_mode: this.bulksend.rotationMode,
@@ -2212,18 +2339,54 @@
                             targets: targets,
                             delay: this.bulksend.delay,
                         });
-                        const d = res.data;
-                        const outcome = d.success === true && !d.failed ? 'Completed' : 'Incomplete or denied';
-                        this.bulksend.results = d.results || [];
-                        this.bulksend.resultMsg = `${outcome}: sent ${d.sent || 0}, failed ${d.failed || 0}, skipped ${d.skipped || 0}, pending ${d.pending || 0}, total ${d.total || 0}.`;
-                        if (d.stopped_reason) this.bulksend.resultMsg += ' Stopped: ' + d.stopped_reason;
-                        if (d.error) this.bulksend.resultMsg += ' ' + d.error;
+                        if (!this.accessReady || revision !== this.authRevision) return;
+                        this.bulksend.requestId = '';
+                        this.bulksend.resultMsg = 'Queued. Monitor progress below; you can close the browser.';
+                        this.outreachJobs.unshift(res.data);
+                        await this.loadOutreachJobs();
                     } catch (e) {
+                        if (!this.accessReady || revision !== this.authRevision) return;
+                        if (e.response?.status === 409) {
+                            this.bulksend.requestId = '';
+                            await this.loadOutreachJobs();
+                            this.bulksend.resultMsg = 'Your previous submission exists. Check its progress below. Press Start again only if this edited input is a separate job.';
+                            return;
+                        }
                         this.bulksend.resultMsg = '❌ ' + (e.response?.data?.detail || e.message);
                         if (/policy_unavailable|consent_missing_or_invalid/.test(this.bulksend.resultMsg)) this.bulksend.resultMsg += ' Confirm recipient consent before sending.';
                     } finally {
-                        this.bulksend.loading = false;
+                        if (revision === this.authRevision) this.bulksend.loading = false;
                     }
+                },
+                async loadOutreachJobs() {
+                    if (!this.accessReady || this.outreachJobsLoading) return;
+                    const revision = this.authRevision;
+                    this.outreachJobsLoading = true;
+                    try {
+                        const { data } = await _api.get('/api/outreach/jobs');
+                        if (!this.accessReady || revision !== this.authRevision) return;
+                        this.outreachJobs = data.jobs;
+                        this.outreachWorker = data.worker;
+                        this.outreachJobError = '';
+                    } catch (error) {
+                        if (this.accessReady && revision === this.authRevision)
+                            this.outreachJobError = 'Progress unavailable. The job may still be running. Retry refresh before submitting again.';
+                    } finally { this.outreachJobsLoading = false; }
+                },
+                async controlOutreachJob(job, action) {
+                    if (this.outreachJobBusy) return;
+                    this.outreachJobBusy = job.id;
+                    const revision = this.authRevision;
+                    try {
+                        const { data } = await _api.post('/api/outreach/jobs/' + job.id + '/' + action);
+                        if (!this.accessReady || revision !== this.authRevision) return;
+                        const index = this.outreachJobs.findIndex(j => j.id === data.id);
+                        if (index >= 0) this.outreachJobs.splice(index, 1, data);
+                        this.outreachJobError = '';
+                    } catch (error) {
+                        if (this.accessReady && revision === this.authRevision)
+                            this.outreachJobError = error.response?.data?.detail || 'Control request failed. Refresh to verify the job state.';
+                    } finally { this.outreachJobBusy = ''; }
                 },
                 // === Auth Methods ===
                 async initAuth() {
@@ -2295,6 +2458,7 @@
                         this.accessReady = true
                         this.loadProfile()
                         this.loadDashboardData()
+                        this.loadOutreachJobs()
                         this.connectStatusSocket(revision)
                     } catch (error) {
                         if (revision !== this.authRevision) return
@@ -2310,8 +2474,16 @@
                     else { delete _api.defaults.headers.common.Authorization }
                 },
                 clearPrivateData() {
+                    this.outreachJobs = []; this.outreachJobError = ''; this.outreachWorker = '';
+                    this.adder.requestId = ''; this.bulksend.requestId = '';
+                    this.adder.loading = false; this.bulksend.loading = false;
+                    this.adder.resultMsg = ''; this.bulksend.resultMsg = ''; this.bulksend.results = [];
+
                     this.accounts = []; this.proxies = []; this.logs = []
                     this.globalProxy = null; this.health = {}; this.stats = {}
+                    this.showQrModal = false; this.showImportModal = false; this.stopQrPolling()
+                    this.hexData = {key: '', dc: null}; this.importData = {id: '', session: ''}
+                    this.phoneData = {phone: '', code: '', password: '', countryCode: '63'}; this.twoFaPassword = ''
                     this.templates = []; this.schedules = []; this.topAccounts = []
                     this.userProfile = {}; this.verifiedRole = ''
                 },
@@ -2523,7 +2695,7 @@
                     try {
                         const res = await _api.get('/api/proxies')
                         this.globalProxy = res.data.global
-                        this.proxies = Object.entries(res.data.proxies || {}).map(([id, p]) => ({ id, ...p }))
+                        this.proxies = Object.entries(res.data.proxies || {}).map(([id, p]) => ({ ...p, id, proxy_id: id }))
                     } catch (e) { console.error('API request failed') }
                 },
 
@@ -2586,11 +2758,14 @@
                 // QR & Phone Login
                 openQrModal() {
                     this.loginMode = 'select'
+                    this.loginProxyMode = 'default'; this.loginProxyId = ''
+                    this.hexData = { key: '', dc: null }; this.hexError = ''
+                    this.loadProxies()
                     this.showQrModal = true
                     this.qrCode = ''
                     this.qrStatus = ''
                     this.qrError = ''
-                    this.qrRemaining = 30
+                    this.qrRemaining = res.data.expires_in || 120
                 },
 
                 startQrLogin() {
@@ -2603,34 +2778,72 @@
                     this.loginMode = 'phone'
                     this.phoneStep = 'input'
                     this.phoneAccountId = 'account_' + Date.now()
-                    this.phoneData = { phone: '', code: '', password: '' }
+                    this.phoneData = { phone: '', code: '', password: '', countryCode: '63' }
                     this.phoneError = ''
                 },
 
                 closeQrModal() {
+                    if (this.phoneLoading || this.hexLoading || this.twoFaLoading || this.qrLoading || this.qrRefreshing) return
+                    this.hexData = { key: '', dc: null }; this.hexError = ''
+                    if (this.phoneAccountId && this.phoneStep !== 'success') _api.delete(`/api/accounts/${this.phoneAccountId}/phone-login`).catch(() => {});
+                    if (this.qrAccountId && this.qrStatus !== 'success') _api.delete(`/api/accounts/${this.qrAccountId}/qr-login`).catch(() => {});
+                    this.phoneAccountId = ''; this.qrAccountId = '';
                     this.stopQrPolling()
                     this.showQrModal = false
                     this.loginMode = 'select'
                     this.twoFaPassword = ''
                     this.twoFaError = ''
-                    this.phoneData = { phone: '', code: '', password: '' }
+                    this.phoneData = { phone: '', code: '', password: '', countryCode: '63' }
                     this.phoneError = ''
                     this.loadAccounts()
                 },
 
+                loginConnectionPayload() {
+                    if (this.loginProxyMode === 'selected' && !this.loginProxyId) throw new Error('Choose a saved proxy first.');
+                    return { proxy_mode: this.loginProxyMode, ...(this.loginProxyMode === 'selected' ? {proxy_id: this.loginProxyId} : {}) };
+                },
+                backToLoginMethods() {
+                    if (this.phoneLoading || this.phoneStep !== 'input') return;
+                    this.loginMode = 'select';
+                },
+                startHexLogin() {
+                    this.hexData = {key: '', dc: null}; this.hexError = '';
+                    this.loginMode = 'hex'; this.hexAccountId = 'account_' + crypto.randomUUID();
+                },
+                async importHexSession() {
+                    if (this.hexLoading) return;
+                    this.hexLoading = true; this.hexError = '';
+                    const revision = this.authRevision;
+                    try {
+                        const {data} = await _api.post('/api/accounts/add-hex-session', {
+                            account_id: this.hexAccountId, hex_key: this.hexData.key, dc_id: this.hexData.dc,
+                            ...this.loginConnectionPayload()
+                        }, {timeout: 45000});
+                        if (revision !== this.authRevision) return;
+                        if (!data.success) throw new Error(data.error || 'Session import failed');
+                        this.hexData = {key: '', dc: null}; this.showQrModal = false;
+                        this.showToast('Account verified and added'); this.loadAccounts();
+                    } catch (e) {
+                        if (revision === this.authRevision) this.hexError = e.response?.data?.detail || e.message || 'Session could not be verified';
+                    } finally {
+                        this.hexLoading = false;
+                    }
+                },
+
                 // QR Login Methods
                 async generateQr() {
+                    if (this.qrLoading) return;
+                    this.qrLoading = true;
+                    const revision = this.authRevision;
                     try {
                         const payload = { account_id: this.qrAccountId }
-                        // If a proxy is selected, add proxyID
-                        if (this.loginProxyMode === 'select' && this.loginProxyId) {
-                            payload.proxy_id = this.loginProxyId
-                        }
-                        const res = await _api.post('/api/accounts/generate-qr', payload)
+                        Object.assign(payload, this.loginConnectionPayload())
+                        const res = await _api.post('/api/accounts/generate-qr', payload, {timeout: 65000})
+                        if (revision !== this.authRevision || !this.showQrModal) return;
                         if (res.data.success) {
                             this.qrCode = res.data.qr_code
                             this.qrStatus = 'waiting'
-                            this.qrRemaining = 30
+                            this.qrRemaining = res.data.expires_in || 120
                             this.startQrPolling()
                             this.addLog('GenerateQR code', this.qrAccountId + (this.loginProxyId ? ` (Proxy: ${this.loginProxyId})` : ''))
                         } else {
@@ -2639,15 +2852,17 @@
                         }
                     } catch (e) {
                         this.qrStatus = 'error'
-                        this.qrError = e.response?.data?.detail || e.response?.data?.error || 'Connection failed. Check network or proxy.'
-                    }
+                        this.qrError = e.response?.data?.detail || e.response?.data?.error || e.message || 'Connection failed. Check network or proxy.'
+                    } finally { this.qrLoading = false; }
                 },
 
                 startQrPolling() {
+                    const accountId = this.qrAccountId, revision = this.authRevision;
                     this.qrPolling = setInterval(async () => {
                         this.qrRemaining -= 1
                         try {
-                            const res = await _api.get(`/api/accounts/${this.qrAccountId}/qr-status`)
+                            const res = await _api.get(`/api/accounts/${accountId}/qr-status`)
+                            if (revision !== this.authRevision || accountId !== this.qrAccountId || !this.showQrModal) return;
                             if (res.data.status === 'success') {
                                 this.qrStatus = 'success'
                                 this.stopQrPolling()
@@ -2681,23 +2896,32 @@
                 },
 
                 async refreshQr() {
+                    if (this.qrLoading || this.qrRefreshing) return;
+                    this.qrRefreshing = true;
+                    try {
+                        if (this.qrAccountId) await _api.delete(`/api/accounts/${this.qrAccountId}/qr-login`)
+                    } catch (e) {
+                        this.qrError = 'Could not cancel the previous QR login. Try again.';
+                        this.qrRefreshing = false;
+                        return;
+                    };
                     this.stopQrPolling()
                     this.qrCode = ''
                     this.qrStatus = ''
                     this.twoFaPassword = ''
                     this.twoFaError = ''
                     this.qrAccountId = 'account_' + Date.now()
-                    await this.generateQr()
+                    try { await this.generateQr() } finally { this.qrRefreshing = false; }
                 },
 
                 async submit2FA() {
-                    if (!this.twoFaPassword) return
+                    if (this.twoFaLoading || !this.twoFaPassword) return
                     this.twoFaLoading = true
                     this.twoFaError = ''
                     try {
                         const res = await _api.post(`/api/accounts/${this.qrAccountId}/2fa-password`, {
                             password: this.twoFaPassword
-                        })
+                        }, {timeout: 65000})
                         if (res.data.success) {
                             this.qrStatus = 'success'
                             this.showToast('Login successful！')
@@ -2715,21 +2939,22 @@
 
                 // Phone Login Methods
                 async sendPhoneCode() {
-                    if (!this.phoneData.countryCode || !this.phoneData.phone) return
+                    if (this.phoneLoading || !this.phoneData.countryCode || !this.phoneData.phone) return
                     this.phoneLoading = true
                     this.phoneError = ''
+                    const revision = this.authRevision;
                     try {
                         // Build full phone number (country code+Phone）
-                        const fullPhone = '+' + this.phoneData.countryCode + this.phoneData.phone
+                        const entered = this.phoneData.phone.replace(/[\s()-]/g, '')
+                        const fullPhone = entered.startsWith('+') ? entered : '+' + this.phoneData.countryCode + entered
+                        if (!/^\+[1-9][0-9]{6,14}$/.test(fullPhone)) throw new Error('Enter a valid international phone number.')
                         const payload = {
                             account_id: this.phoneAccountId,
                             phone: fullPhone
                         }
-                        // If a proxy is selected, add proxyID
-                        if (this.loginProxyMode === 'select' && this.loginProxyId) {
-                            payload.proxy_id = this.loginProxyId
-                        }
-                        const res = await _api.post('/api/accounts/send-code', payload)
+                        Object.assign(payload, this.loginConnectionPayload())
+                        const res = await _api.post('/api/accounts/send-code', payload, {timeout: 65000})
+                        if (revision !== this.authRevision || !this.showQrModal) return;
                         if (res.data.success) {
                             this.phoneStep = 'code'
                             this.addLog('Send code', fullPhone + (this.loginProxyId ? ` (Proxy: ${this.loginProxyId})` : ''))
@@ -2737,20 +2962,19 @@
                             this.phoneError = res.data.error || 'SendFailed'
                         }
                     } catch (e) {
-                        this.phoneError = e.response?.data?.detail || e.response?.data?.error || 'Connection failed. Check network or proxy.'
-                    }
-                    this.phoneLoading = false
+                        this.phoneError = e.response?.data?.detail || e.response?.data?.error || (e.code === 'ECONNABORTED' ? 'Login request timed out. Check Telegram for a code before retrying.' : e.message) || 'Connection failed. Test the selected proxy or choose Direct connection.'
+                    } finally { this.phoneLoading = false; }
                 },
 
                 async verifyPhoneCode() {
-                    if (!this.phoneData.code) return
+                    if (this.phoneLoading || !this.phoneData.code) return
                     this.phoneLoading = true
                     this.phoneError = ''
                     try {
                         const res = await _api.post('/api/accounts/verify-code', {
                             account_id: this.phoneAccountId,
                             code: this.phoneData.code
-                        })
+                        }, {timeout: 45000})
                         if (res.data.success) {
                             this.phoneStep = 'success'
                             this.showToast('Login successful！')
@@ -2769,13 +2993,13 @@
                 },
 
                 async submitPhone2FA() {
-                    if (!this.phoneData.password) return
+                    if (this.phoneLoading || !this.phoneData.password) return
                     this.phoneLoading = true
                     this.phoneError = ''
                     try {
                         const res = await _api.post(`/api/accounts/${this.phoneAccountId}/phone-2fa`, {
                             password: this.phoneData.password
-                        })
+                        }, {timeout: 45000})
                         if (res.data.success) {
                             this.phoneStep = 'success'
                             this.showToast('Login successful！')
@@ -2822,6 +3046,29 @@
                 },
 
                 // Account
+                accountConnectionChoice(account) {
+                    const settings = account.proxy_settings;
+                    if (settings) return settings.mode === 'selected' ? 'proxy:' + settings.proxy_id : settings.mode;
+                    const proxy = this.proxies.find(p => p.assigned_to?.includes(account.account_id));
+                    return proxy ? 'proxy:' + proxy.proxy_id : 'default';
+                },
+                async updateAccountConnection(account, choice) {
+                    const id = account.account_id;
+                    if (this.checkingAccounts[id]) return;
+                    const revision = this.authRevision;
+                    this.checkingAccounts[id] = true;
+                    try {
+                        const payload = choice.startsWith('proxy:') ? {proxy_mode: 'selected', proxy_id: choice.slice(6)} : {proxy_mode: choice};
+                        const {data} = await _api.put(`/api/accounts/${encodeURIComponent(id)}/connection`, payload, {timeout: 45000});
+                        if (revision !== this.authRevision) return;
+                        account.proxy_settings = data.proxy_settings;
+                        this.showToast('Connection saved. Use Check connection to verify it.');
+                    } catch (e) {
+                        if (revision === this.authRevision) this.showToast(e.response?.data?.detail || 'Could not save connection settings.', true);
+                    } finally {
+                        if (revision === this.authRevision) { this.checkingAccounts[id] = false; await this.loadAccounts(); }
+                    }
+                },
                 async checkAccountConnection(id) {
                     if (this.checkingAccounts[id]) return;
                     this.checkingAccounts[id] = true;
@@ -2895,8 +3142,8 @@
                     try {
                         await _api.post('/api/accounts/add-session', {
                             account_id: this.importData.id,
-                            session_string: this.importData.session
-                        })
+                            session_string: this.importData.session, proxy_mode: 'default'
+                        }, {timeout: 45000})
                         this.showToast('ImportSuccess')
                         this.addLog('Import session', this.importData.id)
                         this.showImportModal = false
@@ -2908,6 +3155,12 @@
                 },
 
                 // Proxy
+                async useProxyAsGlobal(proxy) {
+                    try {
+                        await _api.post('/api/proxies/set-global', {protocol: proxy.protocol, host: proxy.host, port: proxy.port, username: proxy.username, password: proxy.password});
+                        await this.loadProxies(); this.showToast('Global proxy updated. New connections will use it.');
+                    } catch (e) { this.showToast(e.response?.data?.detail || 'Unable to set global proxy', true); }
+                },
                 async setGlobalProxy() {
                     try {
                         await _api.post('/api/proxies/set-global', this.newGlobal)
@@ -2934,8 +3187,8 @@
                 async testGlobalProxy() {
                     this.testing = true
                     try {
-                        const res = await _api.post('/api/proxies/test')
-                        const result = res.data.results?.global
+                        const res = await _api.post('/api/proxies/test', null, {params: {proxy_id: 'global'}, timeout: 40000})
+                        const result = res.data.result
                         if (result?.success) {
                             this.showToast(`Connected! Response: ${result.response_time.toFixed(0)}ms`)
                         } else {
@@ -2980,7 +3233,7 @@
 
                 async testProxy(id) {
                     try {
-                        const res = await _api.post('/api/proxies/test', null, { params: { proxy_id: id } })
+                        const res = await _api.post('/api/proxies/test', null, { params: { proxy_id: id }, timeout: 40000 })
                         const result = res.data.result
                         if (result?.success) {
                             this.showToast(`Connected! Response: ${result.response_time.toFixed(0)}ms`)
@@ -3270,6 +3523,7 @@
             },
             mounted() {
                 this.initAuth()
+                this.jobsPoll = setInterval(() => this.loadOutreachJobs(), 2000)
                 this.dashboardPoll = setInterval(() => {
                     if (this.accessReady) { this.loadAccounts(); this.loadHealth() }
                 }, 30000)
@@ -3278,6 +3532,7 @@
                 this.authRevision++
                 this.disconnectStatusSocket()
                 clearInterval(this.dashboardPoll)
+                clearInterval(this.jobsPoll)
                 this.authSubscription?.unsubscribe()
                 if (this.apiResponseInterceptor !== null) _api.interceptors.response.eject(this.apiResponseInterceptor)
             }

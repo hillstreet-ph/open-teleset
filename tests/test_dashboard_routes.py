@@ -24,7 +24,7 @@ with TestClient(dashboard.app, base_url="https://open-teleset.site") as http:
         assert response.status_code == 200
         assert response.headers["content-type"].startswith("text/html")
     assert 'src="/config.js"' in http.get("/dashboard").text
-    assert 'src="/static/csv.js"' in http.get("/dashboard").text
+    assert 'src="/static/csv.js?v=' in http.get("/dashboard").text
     assert http.get('/static/csv.js').status_code == 200
     assert http.post('/api/proxies/free-global').status_code == 401
     for invalid in ["", "sb_secret_synthetic", "eyJ.synthetic.service-role", 'sb_publishable_\\";alert(1)//']:
@@ -106,6 +106,49 @@ async def run():
         await dashboard.websocket_endpoint(socket)
         assert socket not in dashboard.manager.active_connections
         dashboard.manager.disconnect(socket)
+asyncio.run(run())
+'''
+    env = dict(os.environ, PYTHONPATH=f'{root}:{root / "src"}', APP_ENV='development')
+    result = subprocess.run([sys.executable, '-c', script], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+
+
+def test_account_proxy_routes_and_hex_import(tmp_path):
+    (tmp_path / 'static').mkdir()
+    root = Path(__file__).resolve().parents[1]
+    script = '''
+import asyncio
+from unittest.mock import AsyncMock, Mock
+from starlette.routing import Match
+from fastapi import HTTPException
+import dashboard as d
+
+async def run():
+    d.proxy_manager.proxies = {'one': {'protocol': 'socks5', 'host': '127.0.0.1', 'port': 1080}}
+    d.proxy_manager.global_proxy = {'protocol': 'http', 'host': '127.0.0.2', 'port': 8080}
+    d.proxy_manager._save_proxies = Mock()
+    d.account_manager.accounts = {'a': {'proxy_settings': {'mode': 'direct'}}}
+    d.account_manager._save_config = Mock()
+    assert d.login_connection({'proxy_mode': 'direct'}, 'a')[0] is None
+    assert d.login_connection({'proxy_id': 'one'}, 'a')[1] == {'mode': 'selected', 'proxy_id': 'one'}
+    try: d.login_connection({'proxy_mode': 'selected', 'proxy_id': 'absent'}, 'a')
+    except HTTPException as e: assert e.status_code == 400
+    else: raise AssertionError('missing proxy accepted')
+    await d.assign_proxy(d.AssignProxyRequest(account_id='a', proxy_id='one'))
+    assert d.account_manager.accounts['a']['proxy_settings'] == {'mode': 'selected', 'proxy_id': 'one'}
+    await d.unassign_proxy('one', 'a')
+    assert d.account_manager.accounts['a']['proxy_settings'] == {'mode': 'default'}
+    scope = {'type': 'http', 'path': '/api/proxies/global', 'method': 'DELETE'}
+    route = next(r for r in d.app.routes if r.matches(scope)[0] == Match.FULL)
+    assert route.path == '/api/proxies/global'
+    d.proxy_manager.test_proxy = AsyncMock(return_value={'success': True})
+    await d.test_proxies('global')
+    d.proxy_manager.test_proxy.assert_awaited_once_with(d.proxy_manager.global_proxy)
+    d.account_manager.import_hex_session = AsyncMock(return_value={'success': True, 'account_id': 'new'})
+    route = next(r for r in d.app.routes if getattr(r, 'path', '') == '/api/accounts/add-hex-session')
+    result = await route.endpoint({'account_id': 'new', 'hex_key': 'synthetic', 'dc_id': 5, 'proxy_mode': 'direct'})
+    assert result['success']
+    assert d.account_manager.import_hex_session.await_args.kwargs['proxy_settings'] == {'mode': 'direct'}
 asyncio.run(run())
 '''
     env = dict(os.environ, PYTHONPATH=f'{root}:{root / "src"}', APP_ENV='development')

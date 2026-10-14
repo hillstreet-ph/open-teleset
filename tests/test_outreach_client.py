@@ -213,3 +213,16 @@ async def test_request_recipient_cannot_change_during_rate_wait(guarded, monkeyp
     with context(), pytest.raises(policy_module.OutreachDenied, match="outreach_recipient_mismatch"):
         await guarded.client._call(None, request)
     assert guarded.native.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_deferred_outer_dispatch_reserves_only_one_native_slot(guarded):
+    async def deliver():
+        return await guarded.client._call(None, message())
+    for _ in range(2):
+        await policy_module.dispatch_outreach(action='personal_send', subject=111,
+            account_id='account', approval_id='personal_send', delay=35,
+            send=deliver, defer_attempt=True)
+    assert guarded.native.await_count == 2
+    assert guarded.sleeps == [35]
+    assert guarded.clock[0] == 1035

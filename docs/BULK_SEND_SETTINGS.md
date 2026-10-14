@@ -1,5 +1,17 @@
 # BulkSend settings
 
+Durable BulkSend jobs skip missing/invalid usernames, deleted accounts and targets
+that resolve to groups or channels, then continue automatically to the next
+recipient. Telegram recipient privacy/blocking and definitive destination write
+rejections are also skipped. Each result remains in recipient history and the
+Skipped total; rejected delivery attempts retain the configured delay.
+
+Missing/expired consent still pauses the job. Resume does not create or renew
+consent. Verify current consent and use a new submission containing only remaining
+eligible recipients, checking history first to avoid contacting anyone twice.
+Opt-outs, sender/account restrictions and uncertain delivery still require review.
+Telegram FloodWait resumes automatically only after its countdown expires.
+
 The Bulk Personal Sender no longer requires a manual approval reference. Its recipient list and selected-account list have no application count cap. Set the per-account cap to **0** for unlimited, or a positive integer to limit this run. Delay accepts any finite nonnegative number, including **0**. Telegram restrictions still stop the batch and persist cooldowns; another account is never used to retry a restricted recipient.
 
 For recipients who have consented, select **I confirm these recipients consented to messages from the selected accounts**. The authenticated project administrator's declaration is recorded in the existing mounted outreach policy store, using hashed identifiers and a 30-day expiry. The store is created on the first confirmed run. Existing opt-outs are preserved and enforced; a damaged policy store is never overwritten. Without confirmation, existing current consent records are required. No approval is manufactured and no message is sent merely by importing a CSV.

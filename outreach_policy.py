@@ -19,6 +19,9 @@ import sqlite3
 import time
 import fcntl
 import tempfile
+from contextvars import ContextVar
+from contextlib import contextmanager
+from uuid import uuid4
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -27,6 +30,9 @@ from typing import Iterable, Optional
 
 DEFAULT_POLICY_FILE = "./accounts/outreach_policy.json"
 ACTIONS = {"personal_send", "member_add", "batch_send", "scheduled_send"}
+# Optional job cancellation fence, propagated through ConsentTelegramClient's
+# nested dispatch so Stop/Pause also apply after its final pacing wait.
+dispatch_guard = ContextVar("outreach_dispatch_guard", default=None)
 
 
 def valid_bounds(count, maximum, delay, minimum):
@@ -117,6 +123,116 @@ class OutreachPolicy:
         except OSError:
             raise OutreachDenied("policy_write_failed") from None
 
+    @contextmanager
+    def _member_document(self, create=False):
+        """Serialize member grants and identity binding with existing policy writers."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.with_suffix(".lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            data = self._load() if self.path.exists() or not create else {
+                "version": 1, "approvals": {}, "consents": [], "suppressions": []}
+            if data is None:
+                raise OutreachDenied("policy_unavailable")
+            yield data
+            temporary = None
+            try:
+                with tempfile.NamedTemporaryFile(mode="w", dir=self.path.parent, delete=False) as handle:
+                    temporary = handle.name
+                    json.dump(data, handle)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temporary, self.path)
+            finally:
+                if temporary and os.path.exists(temporary):
+                    os.unlink(temporary)
+
+    def record_member_job_consents(self, subjects, account_id, operator_id):
+        """An authenticated admin explicitly authorizes one new recipient list."""
+        if not operator_id:
+            raise OutreachDenied("authenticated_operator_required")
+        subject_hashes = list(dict.fromkeys(hash_identifier(value) for value in subjects))
+        if not subject_hashes:
+            raise OutreachDenied("explicit_recipients_required")
+        with self._member_document(create=True) as data:
+            if any(r["active"] and r["subject_hash"] in subject_hashes for r in data["suppressions"]):
+                raise OutreachDenied("suppressed")
+            now = datetime.now(timezone.utc)
+            expires = (now + timedelta(days=30)).isoformat()
+            account_hash = hash_identifier(account_id)
+            approval_id = "member_job_" + uuid4().hex
+            data["approvals"][approval_id] = {
+                "action": "member_add", "account_hashes": [account_hash],
+                "subject_hashes": subject_hashes, "expires_at": expires,
+                "operator_hash": hash_identifier(operator_id), "recorded_via": "member_add_form"}
+            for subject_hash in subject_hashes:
+                data["consents"].append({
+                    "subject_hash": subject_hash, "account_hashes": [account_hash],
+                    "actions": ["member_add"], "source": "explicit",
+                    "granted_at": now.isoformat(), "expires_at": expires,
+                    "approval_id": approval_id, "recorded_via": "member_add_form",
+                    "operator_hash": hash_identifier(operator_id)})
+        return approval_id
+
+    def bind_personal_peer(self, subject, peer, account_id, operator_id):
+        """Bind a resolved alias without renewing the submitting consent window."""
+        if not operator_id:
+            raise OutreachDenied("authenticated_operator_required")
+        with self._member_document() as data:
+            decision = self.authorize(action="personal_send", subject=subject,
+                                      account_id=account_id, approval_id=None, _data=data)
+            if not decision.allowed:
+                raise OutreachDenied(decision.reason)
+            peer_hash = hash_identifier(peer)
+            if any(r["active"] and r["subject_hash"] == peer_hash for r in data["suppressions"]):
+                raise OutreachDenied("suppressed")
+            account_hash = hash_identifier(account_id)
+            operator_hash = hash_identifier(operator_id)
+            source = next((r for r in data["consents"] if
+                           r["subject_hash"] == hash_identifier(subject)
+                           and "personal_send" in r["actions"]
+                           and self._account_matches(r, account_hash)
+                           and r.get("recorded_via") == "bulk_send_form"
+                           and r.get("operator_hash") == operator_hash
+                           and self._record_is_current(r, datetime.now(timezone.utc))), None)
+            if source is None:
+                raise OutreachDenied("consent_missing_or_invalid")
+            if not any(r["subject_hash"] == peer_hash
+                       and r.get("recorded_via") == "bulk_send_form"
+                       and r.get("operator_hash") == operator_hash
+                       and self._account_matches(r, account_hash)
+                       and r.get("granted_at") == source.get("granted_at")
+                       and r.get("expires_at") == source.get("expires_at")
+                       for r in data["consents"]):
+                data["consents"].append(dict(source, subject_hash=peer_hash))
+
+    def bind_member_peer(self, subject, peer, account_id, approval_id):
+        """Bind the resolved user once without extending consent or authorization."""
+        with self._member_document() as data:
+            decision = self.authorize(action="member_add", subject=subject, account_id=account_id,
+                                      approval_id=approval_id, _data=data)
+            if not decision.allowed:
+                raise OutreachDenied(decision.reason)
+            peer_hash = hash_identifier(peer)
+            if any(r["active"] and r["subject_hash"] == peer_hash for r in data["suppressions"]):
+                raise OutreachDenied("suppressed")
+            approval = data["approvals"][approval_id]
+            # Only grants created by the member form can enroll resolved aliases.
+            if approval.get("recorded_via") != "member_add_form":
+                raise OutreachDenied("member_grant_invalid")
+            source = next((r for r in data["consents"] if
+                           r["subject_hash"] == hash_identifier(subject)
+                           and r.get("approval_id") == approval_id
+                           and "member_add" in r["actions"]
+                           and self._account_matches(r, hash_identifier(account_id))
+                           and self._record_is_current(r, datetime.now(timezone.utc))), None)
+            if source is None:
+                raise OutreachDenied("consent_missing_or_invalid")
+            if peer_hash not in approval["subject_hashes"]:
+                approval["subject_hashes"].append(peer_hash)
+            if not any(r["subject_hash"] == peer_hash and r.get("approval_id") == approval_id
+                       for r in data["consents"]):
+                data["consents"].append(dict(source, subject_hash=peer_hash))
+
     def _load(self) -> Optional[dict]:
         try:
             with self.path.open("r", encoding="utf-8") as handle:
@@ -137,6 +253,9 @@ class OutreachPolicy:
                     or _parse_time(record.get("expires_at")) is None
                     or not _hashes(record.get("account_hashes"))):
                 return None
+        if any("subject_hashes" in r and not _hashes(r["subject_hashes"])
+               for r in data["approvals"].values()):
+            return None
         for record in data["consents"]:
             if (not isinstance(record, dict) or not _hashes([record.get("subject_hash")])
                     or not _hashes(record.get("account_hashes"))
@@ -204,10 +323,15 @@ class OutreachPolicy:
             if denied:
                 return denied
 
+        approval = data["approvals"].get(approval_id, {})
+        if "subject_hashes" in approval and subject_hash not in approval["subject_hashes"]:
+            return PolicyDecision(False, "approval_subject_mismatch", action, subject_ref)
         for consent in data["consents"]:
             if (consent.get("subject_hash") == subject_hash
                     and action in consent.get("actions", [])
                     and consent.get("source") == "explicit"
+                    and (consent.get("approval_id") == approval_id
+                         or (approval.get("recorded_via") != "member_add_form" and not consent.get("approval_id")))
                     and self._account_matches(consent, account_ref)
                     and self._record_is_current(consent, current_time)):
                 return PolicyDecision(True, "consent_current", action, subject_ref)
@@ -229,6 +353,28 @@ class OutreachPolicy:
             return PolicyDecision(False, "approval_account_mismatch", action, subject_ref)
 
         return None
+
+    def validate_new_member_approval(self, approval_id):
+        """Job-specific form grants cannot authorize a second submission."""
+        data = self._load()
+        if data is None:
+            raise OutreachDenied("policy_unavailable")
+        if data["approvals"].get(approval_id, {}).get("recorded_via") == "member_add_form":
+            raise OutreachDenied("member_authorization_job_mismatch")
+
+    def select_member_approval(self, account_id: object) -> str:
+        """Select an existing authorization; never create or renew one."""
+        data = self._load()
+        if data is None:
+            raise OutreachDenied("policy_unavailable")
+        current_time = datetime.now(timezone.utc)
+        account_ref = hash_identifier(account_id)
+        for approval_id in sorted(data["approvals"]):
+            if data["approvals"][approval_id].get("recorded_via") == "member_add_form":
+                continue
+            if self._check_approval(data, approval_id, "member_add", account_ref, current_time, "") is None:
+                return approval_id
+        raise OutreachDenied("member_authorization_unavailable")
 
     def authorize_many(
         self,
@@ -310,6 +456,22 @@ def account_cooldown_remaining(account_id):
         raise OutreachDenied("rate_store_unavailable") from None
 
 
+def account_pacing_remaining(account_id):
+    """Read a reserved dispatch slot so queue workers can yield without sleeping."""
+    path = _rate_path()
+    if not path.exists():
+        return 0
+    try:
+        with sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=1) as db:
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='attempts'").fetchone():
+                return 0
+            row = db.execute("SELECT until FROM attempts WHERE account=?",
+                             (hash_identifier(account_id),)).fetchone()
+        return max(0, row[0] - time.time()) if row else 0
+    except (OSError, sqlite3.Error):
+        raise OutreachDenied("rate_store_unavailable") from None
+
+
 def record_provider_restriction(account_id, exc):
     from telethon import errors
     if isinstance(exc, errors.FloodWaitError):
@@ -319,7 +481,7 @@ def record_provider_restriction(account_id, exc):
         account_cooldown(account_id, 86400)
 
 
-async def dispatch_outreach(*, action, subject, account_id, approval_id, send, delay=None):
+async def dispatch_outreach(*, action, subject, account_id, approval_id, send, delay=None, defer_attempt=False):
     """Pace every attempt across processes, then revalidate immediately before sending.
 
     All workers for an account must share the mounted rate database. Failure to
@@ -331,9 +493,20 @@ async def dispatch_outreach(*, action, subject, account_id, approval_id, send, d
                    and (action == "personal_send" or delay <= 3600))
     if not valid_delay:
         raise OutreachDenied("invalid_rate_bounds")
+    if defer_attempt:
+        # The real client gates and paces its native RPC after resolution/uploads.
+        # Reserving here too would charge two slots for one delivery.
+        from outreach_client import outreach_context
+        if dispatch_guard.get():
+            await dispatch_guard.get()(False)
+        with outreach_context(action=action, subject=subject, account_id=account_id,
+                              approval_id=approval_id, delay=delay):
+            return await send()
     key = hash_identifier(account_id)
     rate_path = _rate_path()
     while True:
+        if dispatch_guard.get():
+            await dispatch_guard.get()(False)
         decision = outreach_policy.authorize(action=action, subject=subject,
                                              account_id=account_id, approval_id=approval_id)
         if not decision.allowed:
@@ -363,6 +536,18 @@ async def dispatch_outreach(*, action, subject, account_id, approval_id, send, d
             _check_cooldown(db, key)
     except (OSError, sqlite3.Error):
         raise OutreachDenied("rate_store_unavailable") from None
+    if dispatch_guard.get():
+        await dispatch_guard.get()(not defer_attempt)
+        # The async owner check may have waited; consent must still be current.
+        decision = outreach_policy.authorize(action=action, subject=subject,
+                                             account_id=account_id, approval_id=approval_id)
+        if not decision.allowed:
+            raise OutreachDenied(decision.reason)
+        try:
+            with sqlite3.connect(rate_path, timeout=1) as db:
+                _check_cooldown(db, key)
+        except (OSError, sqlite3.Error):
+            raise OutreachDenied("rate_store_unavailable") from None
     try:
         from outreach_client import outreach_context
         with outreach_context(action=action, subject=subject, account_id=account_id,

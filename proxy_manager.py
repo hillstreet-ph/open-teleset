@@ -113,7 +113,8 @@ class ProxyManager:
         Returns:
             是否成功
         """
-        if protocol.lower() not in ["socks5", "http", "https", "socks4"]:
+        if (protocol.lower() not in ["socks5", "http", "socks4"] or not host.strip()
+                or not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535):
             return False
 
         self.proxies[proxy_id] = {
@@ -180,7 +181,8 @@ class ProxyManager:
         Returns:
             是否成功
         """
-        if protocol.lower() not in ["socks5", "http", "https", "socks4"]:
+        if (protocol.lower() not in ["socks5", "http", "socks4"] or not host.strip()
+                or not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535):
             return False
 
         self.global_proxy = {
@@ -272,6 +274,8 @@ class ProxyManager:
             Telethon 格式的代理配置
         """
         protocol = proxy_config.get("protocol", "socks5")
+        if protocol not in {"socks5", "socks4", "http"}:
+            raise ValueError("Telegram supports SOCKS5, SOCKS4 and HTTP CONNECT proxies. Choose a supported proxy.")
         host = proxy_config.get('host')
         port = proxy_config.get('port')
         username = proxy_config.get('username')
@@ -356,6 +360,19 @@ class ProxyManager:
 
         # 3. 无代理
         return None
+
+    def resolve_login_proxy(self, mode="default", proxy_id=None, account_id=None):
+        """Resolve an explicit route. Never silently replace a selected proxy."""
+        if mode == "direct":
+            return None
+        if mode == "default":
+            return self.get_proxy_for_account(account_id) if account_id else self.get_global_proxy()
+        if mode == "selected" and isinstance(proxy_id, str) and proxy_id:
+            proxy = self.get_proxy(proxy_id)
+            if proxy:
+                return proxy
+            raise ValueError("Selected proxy is unavailable. Choose another saved proxy.")
+        raise ValueError("Choose Global default, Direct connection, or a saved proxy.")
 
     @staticmethod
     def free_candidates(text):
