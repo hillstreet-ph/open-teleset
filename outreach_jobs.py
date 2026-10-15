@@ -399,21 +399,51 @@ class JobWorker:
 
     async def process(self, job):
         job_id = job["id"]
+        config = self.store.unpack(job["payload"])
         with self.store.db() as db:
             if db.execute("SELECT 1 FROM items WHERE job=? AND state IN ('sending','uncertain')", (job_id,)).fetchone():
                 db.execute("UPDATE jobs SET state='needs_review',reason='delivery_uncertain' WHERE id=?", (job_id,))
                 db.execute("UPDATE items SET state='uncertain' WHERE job=? AND state='sending'", (job_id,))
                 return
-            item = db.execute("SELECT * FROM items WHERE job=? AND state='pending' ORDER BY seq LIMIT 1", (job_id,)).fetchone()
-            if not item:
+            pending = db.execute("SELECT * FROM items WHERE job=? AND state='pending' ORDER BY seq", (job_id,)).fetchall()
+            if not pending:
                 db.execute("UPDATE jobs SET state='completed',reason='' WHERE id=? "
                            "AND state IN ('queued','running','waiting')", (job_id,))
                 return
             current = db.execute("SELECT state FROM jobs WHERE id=?", (job_id,)).fetchone()
             if current[0] not in ACTIVE:
                 return
+            # Rotation is assignment-only: a recipient is never moved to an account
+            # it has no consent for. But one account's timed cooldown must not stall
+            # recipients already assigned to other, available accounts. Send the
+            # earliest pending recipient whose account is ready now, and wait the
+            # whole job only when every pending recipient's account is cooling down.
+            ready, soonest, soonest_reason = set(), None, "telegram_cooldown"
+            try:
+                for sender in (config.get("sender_identities") or {}):
+                    cooldown = account_cooldown_remaining(sender)
+                    pacing = account_pacing_remaining(sender)
+                    hold = max(cooldown, pacing)
+                    if hold <= 0:
+                        ready.add(sender)
+                    elif soonest is None or hold < soonest:
+                        soonest, soonest_reason = hold, ("telegram_cooldown" if cooldown >= pacing else "account_pacing")
+            except OutreachDenied as exc:
+                # The shared rate store must be readable to schedule safely; fail
+                # closed by pausing for review rather than sending blind.
+                db.execute("UPDATE jobs SET state='paused',reason=? WHERE id=? "
+                           "AND state IN ('queued','running','waiting')", (str(exc), job_id))
+                return
+            item = None
+            if ready:
+                for row in pending:
+                    if self.store.unpack(row["payload"])["account"] in ready:
+                        item = row
+                        break
+            if item is None:
+                self.store.waiting(job_id, soonest_reason, max(1, soonest or 30))
+                return
             db.execute("UPDATE jobs SET state='running',reason='' WHERE id=?", (job_id,))
-        config = self.store.unpack(job["payload"])
         recipient = self.store.unpack(item["payload"])
         seq, account, target = item["seq"], recipient["account"], recipient["target"]
         attempted = False
@@ -549,8 +579,12 @@ class JobWorker:
         except errors.UserAlreadyParticipantError:
             self.store.outcome(job_id, seq, "skipped", "already_member")
         except errors.FloodWaitError as exc:
+            # Record the account-level cooldown and return the recipient to the queue
+            # pinned to its consented account. The job keeps running so recipients on
+            # other available accounts continue sending; process() waits the whole job
+            # only once every pending recipient's account is cooling down.
             record_provider_restriction(account, exc)
-            self.store.outcome(job_id, seq, "pending", "telegram_cooldown", max(1, exc.seconds), "waiting")
+            self.store.outcome(job_id, seq, "pending", "telegram_cooldown")
         except (errors.PeerFloodError, errors.UserDeactivatedBanError,
                 errors.AuthKeyUnregisteredError, errors.FrozenMethodInvalidError) as exc:
             record_provider_restriction(account, exc)
@@ -559,8 +593,9 @@ class JobWorker:
             if job["kind"] == "member_add" and str(exc) == "invitation_not_completed":
                 self.store.outcome(job_id, seq, "skipped", "invitation_not_completed", delay=config["delay"])
             elif str(exc) == "account_cooldown":
-                self.store.outcome(job_id, seq, "pending", "telegram_cooldown",
-                                   max(1, account_cooldown_remaining(account)), "waiting")
+                # A concurrent worker cooled this account between selection and send;
+                # requeue so process() reschedules across the other available accounts.
+                self.store.outcome(job_id, seq, "pending", "telegram_cooldown")
             elif str(exc) == "rate_store_unavailable":
                 self.store.outcome(job_id, seq, "pending", "rate_store_unavailable", job_state="paused")
             else:

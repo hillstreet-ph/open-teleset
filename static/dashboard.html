@@ -223,6 +223,12 @@
         .proxy-info h4 { margin-bottom: 4px; font-size: 15px; }
         .proxy-info p { font-size: 13px; color: #999; }
         .proxy-actions { display: flex; gap: 8px; }
+        /* Account row actions: a tidy stacked group that stays within the column
+           instead of spilling past the right edge on narrow screens. */
+        .row-actions { display: flex; flex-direction: column; gap: 6px; align-items: stretch; min-width: 150px; max-width: 210px; margin-left: auto; }
+        .row-actions > * { width: 100%; box-sizing: border-box; }
+        .row-actions .btn { white-space: nowrap; }
+        td.actions-cell { vertical-align: top; text-align: right; }
 
         /* Toast */
         .toast {
@@ -684,16 +690,18 @@
                                 </td>
                                 <td>{{ formatTime(acc.last_online) }}</td>
                                 <td>{{ acc.use_count || 0 }}</td>
-                                <td>
-                                    <select class="form-control" aria-label="Account connection" :value="accountConnectionChoice(acc)" @change="updateAccountConnection(acc, $event.target.value)" :disabled="checkingAccounts[acc.account_id]">
-                                        <option value="default">Global default</option>
-                                        <option value="direct">Direct connection</option>
-                                        <option v-for="proxy in proxies" :key="proxy.proxy_id" :value="'proxy:' + proxy.proxy_id">{{ proxy.proxy_id }} · {{ proxy.host }}:{{ proxy.port }}</option>
-                                        <option v-if="acc.proxy_settings?.mode === 'selected' && !proxies.some(p => p.proxy_id === acc.proxy_settings.proxy_id)" :value="'proxy:' + acc.proxy_settings.proxy_id" disabled>Missing proxy — choose another</option>
-                                    </select>
-                                    <button class="btn btn-sm btn-outline" :disabled="checkingAccounts[acc.account_id]" @click="checkAccountConnection(acc.account_id)">{{ checkingAccounts[acc.account_id] ? 'Checking...' : 'Check connection' }}</button>
-                                    <button class="btn btn-sm btn-outline" @click="exportSession(acc.account_id)">Export</button>
-                                    <button class="btn btn-sm btn-danger" @click="deleteAccount(acc.account_id)">Delete</button>
+                                <td class="actions-cell">
+                                    <div class="row-actions">
+                                        <select class="form-control" aria-label="Account connection" :value="accountConnectionChoice(acc)" @change="updateAccountConnection(acc, $event.target.value)" :disabled="checkingAccounts[acc.account_id]">
+                                            <option value="default">Global default</option>
+                                            <option value="direct">Direct connection</option>
+                                            <option v-for="proxy in proxies" :key="proxy.proxy_id" :value="'proxy:' + proxy.proxy_id">{{ proxy.proxy_id }} · {{ proxy.host }}:{{ proxy.port }}</option>
+                                            <option v-if="acc.proxy_settings?.mode === 'selected' && !proxies.some(p => p.proxy_id === acc.proxy_settings.proxy_id)" :value="'proxy:' + acc.proxy_settings.proxy_id" disabled>Missing proxy — choose another</option>
+                                        </select>
+                                        <button class="btn btn-sm btn-outline" :disabled="checkingAccounts[acc.account_id]" @click="checkAccountConnection(acc.account_id)">{{ checkingAccounts[acc.account_id] ? 'Checking...' : 'Check connection' }}</button>
+                                        <button class="btn btn-sm btn-outline" @click="exportSession(acc.account_id)">Export</button>
+                                        <button class="btn btn-sm btn-danger" @click="deleteAccount(acc.account_id)">Delete</button>
+                                    </div>
                                 </td>
                             </tr>
                         </tbody>
@@ -1230,7 +1238,7 @@
                             </label>
                         </div>
                         <small>{{ bulksend.accountIds.length }} selected. One or more accounts supported.</small>
-                        <small>Recipient consent must cover the selected sender. Each recipient keeps their assigned sender. Timed waits resume after cooldown; other restrictions pause for review. No restricted recipient is retried through another account.</small>
+                        <small>Recipient consent must cover the selected sender, and each recipient keeps their assigned sender. If an account hits a timed Telegram limit, recipients on the other available accounts keep sending automatically — the job only waits when every selected account is cooling down. Other restrictions (not timed waits) pause the job for review; no restricted recipient is retried through another account.</small>
                     </div>
                     <div class="form-group" v-else>
                         <label>Account</label>
@@ -1307,7 +1315,8 @@
                     <p aria-live="polite">Total {{ job.total }} · {{ job.kind === 'member_add' ? 'Added' : 'Sent' }} {{ job.completed }} · Pending {{ job.pending }} · In flight {{ job.in_flight }} · Skipped {{ job.skipped }} · Failed {{ job.failed }} · Uncertain {{ job.uncertain }}</p>
                     <p v-if="job.next_account_id && ['queued','running','waiting','paused'].includes(job.state)">Assigned account: {{ job.next_account_id }}</p>
                     <p v-if="job.retry_after > 0 && ['queued','running','waiting'].includes(job.state)">Next eligible attempt in {{ outreachDuration(job.retry_after) }}<span v-if="job.retry_at"> · {{ outreachRetryTime(job.retry_at) }} (your local time)</span>. Updates every 2 seconds.</p>
-                    <p v-if="job.reason === 'telegram_cooldown' && ['queued','running','waiting'].includes(job.state)">Telegram has temporarily limited this account. The job waits automatically and retries after the cooldown; no click is needed. Pause, Resume, or a new job cannot shorten Telegram's wait.</p>
+                    <p v-if="job.reason === 'telegram_cooldown' && job.state === 'running'">A selected account is in a Telegram cooldown. Recipients on the other available accounts keep sending automatically; recipients pinned to the limited account resume once its cooldown ends. No click is needed.</p>
+                    <p v-if="job.reason === 'telegram_cooldown' && ['queued','waiting'].includes(job.state)">Every selected account is in a Telegram cooldown, so the job waits automatically and resumes after the soonest one clears; no click is needed. Pause, Resume, or a new job cannot shorten Telegram's wait.</p>
                     <p v-if="job.state === 'paused'">Paused. Resume is required to continue; any remaining Telegram cooldown still applies.</p>
                     <div style="display:flex;flex-wrap:wrap;gap:8px;margin:10px 0;">
                         <button v-if="['queued','running','waiting'].includes(job.state)" class="btn btn-outline" @click="controlOutreachJob(job, 'pause')" :disabled="!!outreachJobBusy">Pause</button>
