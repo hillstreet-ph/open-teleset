@@ -1238,7 +1238,7 @@
                             </label>
                         </div>
                         <small>{{ bulksend.accountIds.length }} selected. One or more accounts supported.</small>
-                        <small>Recipient consent must cover the selected sender, and each recipient keeps their assigned sender. If an account hits a timed Telegram limit, recipients on the other available accounts keep sending automatically — the job only waits when every selected account is cooling down. Other restrictions (not timed waits) pause the job for review; no restricted recipient is retried through another account.</small>
+                        <small>Consent must cover every selected sender (confirm it below). Each recipient is then sent through whichever selected account is available, cycling across them. If an account hits a timed Telegram limit it rotates out automatically and its share is carried by the others — the job only waits when every selected account is cooling down, then resumes when the soonest one clears. A recipient who restricts a send (privacy, blocked, opted out) is skipped, never retried through another account.</small>
                     </div>
                     <div class="form-group" v-else>
                         <label>Account</label>

@@ -95,16 +95,20 @@ class OutreachPolicy:
                 if data is None:
                     raise OutreachDenied("policy_unavailable")
                 now = datetime.now(timezone.utc)
-                account_hash = hash_identifier(account_id)
+                # account_id may be a single account or the full selected set (rotation):
+                # the operator's declaration covers every selected sender, so one record
+                # lists them all and consent matches whichever account is used.
+                account_ids = [account_id] if isinstance(account_id, str) else list(account_id)
+                account_hashes = sorted({hash_identifier(a) for a in account_ids})
                 for subject in subjects:
                     subject_hash = hash_identifier(subject)
                     if any(r["subject_hash"] == subject_hash and r["active"] for r in data["suppressions"]):
                         continue
                     data["consents"] = [r for r in data["consents"] if not (
                         r.get("recorded_via") == "bulk_send_form" and r["subject_hash"] == subject_hash
-                        and r["account_hashes"] == [account_hash])]
+                        and r["account_hashes"] == account_hashes)]
                     data["consents"].append({
-                        "subject_hash": subject_hash, "account_hashes": [account_hash],
+                        "subject_hash": subject_hash, "account_hashes": account_hashes,
                         "actions": ["personal_send"], "source": "explicit",
                         "granted_at": now.isoformat(), "expires_at": (now + timedelta(days=30)).isoformat(),
                         "recorded_via": "bulk_send_form", "operator_hash": hash_identifier(operator_id),

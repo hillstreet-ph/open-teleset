@@ -217,8 +217,15 @@ class JobStore:
             payload["sender_identities"] = identities
             # Submission records declarations only once. Resume never renews consent.
             if kind == "personal_send" and request.consent_confirmed:
-                for i, account in enumerate(accounts):
-                    outreach_policy.record_personal_consents(targets[i::len(accounts)], account, operator)
+                if len(accounts) > 1 and getattr(request, "rotation_mode", "single") == "round_robin":
+                    # The operator confirmed consent for the whole selected set, so record
+                    # each recipient's consent for every selected account and let the worker
+                    # send through whichever account is available (true rotation).
+                    outreach_policy.record_personal_consents(targets, accounts, operator)
+                    payload["rotate_any_account"] = True
+                else:
+                    for i, account in enumerate(accounts):
+                        outreach_policy.record_personal_consents(targets[i::len(accounts)], account, operator)
             for account in accounts:
                 _enforce_outreach(kind, policy_targets, account, payload["approval_id"])
             job = str(uuid4())
@@ -417,14 +424,13 @@ class JobWorker:
             current = db.execute("SELECT state FROM jobs WHERE id=?", (job_id,)).fetchone()
             if current[0] not in ACTIVE:
                 return
-            # Rotation is assignment-only: a recipient is never moved to an account
-            # it has no consent for. But one account's timed cooldown must not stall
-            # recipients already assigned to other, available accounts. Send the
-            # earliest pending recipient whose account is ready now, and wait the
-            # whole job only when every pending recipient's account is cooling down.
+            # Determine which selected accounts are ready to send right now. One
+            # account's timed cooldown must not stall the whole job; wait only when
+            # every selected account is cooling down.
+            senders = list(config.get("sender_identities") or {})
             ready, soonest, soonest_reason = set(), None, "telegram_cooldown"
             try:
-                for sender in (config.get("sender_identities") or {}):
+                for sender in senders:
                     cooldown = account_cooldown_remaining(sender)
                     pacing = account_pacing_remaining(sender)
                     hold = max(cooldown, pacing)
@@ -438,16 +444,34 @@ class JobWorker:
                 db.execute("UPDATE jobs SET state='paused',reason=? WHERE id=? "
                            "AND state IN ('queued','running','waiting')", (str(exc), job_id))
                 return
-            item = None
+            item, rotated_account = None, None
             if ready:
-                for row in pending:
-                    if self.store.unpack(row["payload"])["account"] in ready:
-                        item = row
-                        break
+                if config.get("rotate_any_account"):
+                    # True rotation: the operator consented to the whole selected set,
+                    # so send the earliest pending recipient through whichever account
+                    # is ready, cycling across them to spread load. The recipient is
+                    # re-pinned to that account for this attempt.
+                    ready_order = [a for a in senders if a in ready]
+                    item = pending[0]
+                    rotated_account = ready_order[item["seq"] % len(ready_order)]
+                else:
+                    # Assignment-only: a recipient keeps its consented account; send the
+                    # earliest pending one whose assigned account is ready.
+                    for row in pending:
+                        if self.store.unpack(row["payload"])["account"] in ready:
+                            item = row
+                            break
             if item is None:
                 self.store.waiting(job_id, soonest_reason, max(1, soonest or 30))
                 return
             db.execute("UPDATE jobs SET state='running',reason='' WHERE id=?", (job_id,))
+            if rotated_account is not None:
+                rotated = self.store.unpack(item["payload"])
+                if rotated.get("account") != rotated_account:
+                    rotated["account"] = rotated_account
+                    db.execute("UPDATE items SET payload=? WHERE job=? AND seq=?",
+                               (self.store.pack(rotated), job_id, item["seq"]))
+                    item = db.execute("SELECT * FROM items WHERE job=? AND seq=?", (job_id, item["seq"])).fetchone()
         recipient = self.store.unpack(item["payload"])
         seq, account, target = item["seq"], recipient["account"], recipient["target"]
         attempted = False
