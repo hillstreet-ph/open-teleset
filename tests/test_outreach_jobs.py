@@ -94,10 +94,11 @@ async def test_stop_and_pause_survive_restart(env):
 
 
 @pytest.mark.asyncio
-async def test_flood_wait_pins_recipient_and_pauses_entire_job(env):
+async def test_flood_wait_pins_recipient_and_waits_when_no_other_account(env):
     job = env.submit()
     env.client.send_message.side_effect = [errors.FloodWaitError(None, capture=60), None, None]
-    await env.worker.tick()
+    await env.worker.tick()      # 111 floods: account is cooled and the recipient requeued
+    await env.worker.tick()      # no other account is available, so the whole job waits
     result = env.store.snapshot(job, 'owner')
     assert result['state'] == 'waiting' and result['pending'] == 2 and result['retry_after'] == 60
     await env.worker.tick()
@@ -111,6 +112,32 @@ async def test_flood_wait_pins_recipient_and_pauses_entire_job(env):
     assert env.client.send_message.call_args_list[0].args[0].id == env.client.send_message.call_args_list[1].args[0].id == 111
     await env.worker.tick()
     assert env.store.snapshot(job, 'owner')['completed'] == 2
+
+
+@pytest.mark.asyncio
+async def test_flood_on_one_account_keeps_sending_from_available_account(env, monkeypatch):
+    # Both selected senders share consent, so round-robin may assign across them,
+    # and both resolve to the same verified identity the mock client reports.
+    monkeypatch.setattr(jobs.account_manager, 'accounts', {'a': {'user_id': 999}, 'b': {'user_id': 999}})
+    for consent in env.doc['consents']:
+        consent['account_hashes'] = [policy.hash_identifier('a'), policy.hash_identifier('b')]
+    env.evaluator.path.write_text(json.dumps(env.doc))
+    req = jobs.BulkJobRequest(account_id='a', message='private message',
+                              targets=['111', '222'], request_id='multi_account_submission_key')
+    job = env.store.submit('personal_send', 'owner', req, req.targets, ['a', 'b'])
+    # 111 is assigned to 'a' (floods for an hour); 222 is assigned to 'b' (available).
+    env.client.send_message.side_effect = [errors.FloodWaitError(None, capture=3600), None]
+    await env.worker.tick()      # 111 via 'a' floods -> 'a' cooled, 111 requeued, job keeps running
+    await env.worker.tick()      # 'a' still cooling, 'b' is ready -> 222 sends via 'b'
+    result = env.store.snapshot(job, 'owner')
+    assert env.client.send_message.await_count == 2
+    assert [c.args[0].id for c in env.client.send_message.call_args_list] == [111, 222]
+    assert result['completed'] == 1 and result['pending'] == 1    # 111 stays pinned to 'a'
+    # Only 111 (on the cooling 'a') remains, so now the job waits for that cooldown.
+    await env.worker.tick()
+    waited = env.store.snapshot(job, 'owner')
+    assert waited['state'] == 'waiting' and waited['reason'] == 'telegram_cooldown'
+    assert 0 < waited['retry_after'] <= 3600
 
 
 @pytest.mark.asyncio
