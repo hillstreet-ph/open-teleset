@@ -39,24 +39,32 @@ def _service_headers(write: bool = False) -> dict[str, str]:
 
 
 def _pepper() -> bytes:
-    """Server-side pepper for the key MAC.
+    """Server-side pepper used as the KDF salt.
 
-    Using the service-role secret as an HMAC key means a database-only compromise
-    cannot verify or forge keys without also holding this server secret. It is
-    available server-side only and is never sent to clients.
+    Deriving the stored digest with the service-role secret as the salt means a
+    database-only compromise cannot verify or forge keys without also holding this
+    server secret. It is available server-side only and is never sent to clients.
     """
     return _settings()["SUPABASE_SERVICE_ROLE_KEY"].encode("utf-8")
 
 
-def _hash(token: str) -> str:
-    """Keyed HMAC-SHA256 of an API token.
+_KDF_ITERATIONS = 200_000
 
-    API keys are 256-bit random tokens, so a keyed message authentication code is
-    the correct, brute-force-infeasible primitive for verifying them; a slow
-    password-hashing KDF is unnecessary for high-entropy secrets and would only
-    tax the per-request authentication path.
+
+def _hash(token: str) -> str:
+    """Derive the stored digest of an API token with PBKDF2-HMAC-SHA256.
+
+    The server-side service-role secret is used as the salt/pepper, so a
+    database-only compromise cannot verify or forge keys without also holding the
+    server secret. A single global pepper (rather than a per-row salt) is
+    sufficient here because each token is itself a 256-bit cryptographically
+    random value, so tokens never collide and rainbow tables do not apply; the
+    key-stretching KDF is defense-in-depth. Verification stays deterministic:
+    look up by prefix, recompute, and compare in constant time.
     """
-    return hmac.new(_pepper(), token.encode("utf-8"), hashlib.sha256).hexdigest()
+    return hashlib.pbkdf2_hmac(
+        "sha256", token.encode("utf-8"), _pepper(), _KDF_ITERATIONS
+    ).hex()
 
 
 def _generate() -> tuple[str, str, str]:

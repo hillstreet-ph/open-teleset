@@ -1,6 +1,5 @@
 """API key generation, hashing, and authentication (no live database)."""
 import hashlib
-import hmac
 
 import pytest
 
@@ -57,8 +56,11 @@ def test_generate_format():
     token, prefix, key_hash = api_keys._generate()
     assert token.startswith("ott_")
     assert len(prefix) == 16 and all(c in "0123456789abcdef" for c in prefix)
-    # Keyed HMAC-SHA256 under the fake service-role pepper, not a bare SHA-256.
-    assert key_hash == hmac.new(b"svc", token.encode(), hashlib.sha256).hexdigest()
+    # PBKDF2-HMAC-SHA256 salted with the fake service-role pepper, not a bare hash.
+    expected = hashlib.pbkdf2_hmac(
+        "sha256", token.encode(), b"svc", api_keys._KDF_ITERATIONS
+    ).hex()
+    assert key_hash == expected
     assert key_hash != hashlib.sha256(token.encode()).hexdigest()
 
 
