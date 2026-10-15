@@ -210,21 +210,39 @@ def test_resume_preserves_scheduled_delay_and_stop_has_no_auto_resume(env):
 
 
 @pytest.mark.asyncio
-async def test_peer_flood_rotates_without_cross_account_retry(env, monkeypatch):
-    # Both selected senders resolve to the identity the mock client reports.
+async def test_rotation_sends_through_the_available_account_when_one_is_limited(env, monkeypatch):
+    # Both selected senders resolve to the identity the mock client reports, and the
+    # operator consented to the whole set, so a recipient may go through either.
     monkeypatch.setattr(jobs.account_manager, 'accounts', {'a': {'user_id': 999}, 'b': {'user_id': 999}})
     req = jobs.BulkJobRequest(account_ids=['a', 'b'], rotation_mode='round_robin', message='private',
-        targets=['111', '222'], consent_confirmed=True, request_id='two_accounts_12345')
+        targets=['111', '222', '333'], consent_confirmed=True, request_id='rotate_available_key')
     job = env.store.submit('personal_send', 'owner', req, req.targets, req.account_ids)
-    env.client.send_message.side_effect = errors.PeerFloodError(None)
-    await env.worker.tick()   # 111 via 'a' is spam-limited -> 'a' cooled, 111 requeued
-    await env.worker.tick()   # 'a' cooling -> 222 sends via its own account 'b' (also limited)
-    # Each account is used only for its own recipient: 111 is never retried through 'b'.
-    assert jobs.account_manager.get_client.call_args_list == [(('a',),), (('b',),)]
-    assert [c.args[0].id for c in env.client.send_message.call_args_list] == [111, 222]
-    assert env.client.send_message.await_count == 2
+    # The first attempt (account 'a') is spam-limited; every later send succeeds.
+    env.client.send_message.side_effect = [errors.PeerFloodError(None), None, None, None]
+    for _ in range(6):
+        await env.worker.tick()
     result = env.store.snapshot(job, 'owner')
-    assert result['state'] in ('running', 'waiting') and result['pending'] == 2 and result['failed'] == 0
+    # 'a' is limited on its first send, then delivery continues through 'b' for every
+    # recipient instead of stalling for 'a' to cool down.
+    assert result['state'] == 'completed' and result['completed'] == 3 and result['failed'] == 0
+    assert env.client.send_message.await_count == 4   # one flood on 'a' + three deliveries on 'b'
+    assert jobs.account_manager.get_client.call_args_list[0] == (('a',),)
+    assert all(call == (('b',),) for call in jobs.account_manager.get_client.call_args_list[1:])
+
+
+@pytest.mark.asyncio
+async def test_rotation_waits_only_when_every_account_is_limited(env, monkeypatch):
+    monkeypatch.setattr(jobs.account_manager, 'accounts', {'a': {'user_id': 999}, 'b': {'user_id': 999}})
+    req = jobs.BulkJobRequest(account_ids=['a', 'b'], rotation_mode='round_robin', message='private',
+        targets=['111', '222'], consent_confirmed=True, request_id='rotate_all_limited_key')
+    job = env.store.submit('personal_send', 'owner', req, req.targets, req.account_ids)
+    env.client.send_message.side_effect = errors.PeerFloodError(None)   # both accounts get limited
+    for _ in range(4):
+        await env.worker.tick()
+    result = env.store.snapshot(job, 'owner')
+    # With every selected account cooling, the job waits (never pauses, never fails).
+    assert result['state'] == 'waiting' and result['reason'] == 'telegram_cooldown'
+    assert result['pending'] == 2 and result['failed'] == 0 and result['retry_after'] > 0
 
 
 @pytest.mark.asyncio
