@@ -210,16 +210,21 @@ def test_resume_preserves_scheduled_delay_and_stop_has_no_auto_resume(env):
 
 
 @pytest.mark.asyncio
-async def test_restriction_never_retries_with_another_account(env):
+async def test_peer_flood_rotates_without_cross_account_retry(env, monkeypatch):
+    # Both selected senders resolve to the identity the mock client reports.
+    monkeypatch.setattr(jobs.account_manager, 'accounts', {'a': {'user_id': 999}, 'b': {'user_id': 999}})
     req = jobs.BulkJobRequest(account_ids=['a', 'b'], rotation_mode='round_robin', message='private',
         targets=['111', '222'], consent_confirmed=True, request_id='two_accounts_12345')
     job = env.store.submit('personal_send', 'owner', req, req.targets, req.account_ids)
     env.client.send_message.side_effect = errors.PeerFloodError(None)
-    await env.worker.tick()
-    await env.worker.tick()
-    assert env.store.snapshot(job, 'owner')['state'] == 'paused'
-    assert jobs.account_manager.get_client.call_args_list == [(('a',),)]
-    assert env.client.send_message.await_count == 1
+    await env.worker.tick()   # 111 via 'a' is spam-limited -> 'a' cooled, 111 requeued
+    await env.worker.tick()   # 'a' cooling -> 222 sends via its own account 'b' (also limited)
+    # Each account is used only for its own recipient: 111 is never retried through 'b'.
+    assert jobs.account_manager.get_client.call_args_list == [(('a',),), (('b',),)]
+    assert [c.args[0].id for c in env.client.send_message.call_args_list] == [111, 222]
+    assert env.client.send_message.await_count == 2
+    result = env.store.snapshot(job, 'owner')
+    assert result['state'] in ('running', 'waiting') and result['pending'] == 2 and result['failed'] == 0
 
 
 @pytest.mark.asyncio
@@ -259,14 +264,18 @@ async def test_duplicate_aliases_are_removed_from_pending(env):
 
 
 @pytest.mark.asyncio
-async def test_optout_after_submission_still_blocks_dispatch(env):
+async def test_optout_after_submission_skips_recipient_without_dispatch(env):
     job = env.submit(consent_confirmed=True)
     doc = env.evaluator._load()
     doc['suppressions'] = [{'subject_hash': policy.hash_identifier('111'), 'active': True}]
     env.evaluator.path.write_text(json.dumps(doc))
-    await env.worker.tick()
-    env.client.send_message.assert_not_called()
-    assert env.store.snapshot(job, 'owner')['reason'] == 'suppressed'
+    await env.worker.tick()   # 111 is opted out -> skipped, never dispatched
+    result = env.store.snapshot(job, 'owner')
+    skipped = next(r for r in result['results'] if r['target'] == '111')
+    assert skipped['state'] == 'skipped' and skipped['reason'] == 'suppressed'
+    # The opted-out recipient is never messaged; the job is not paused by it.
+    assert all(c.args[0].id != 111 for c in env.client.send_message.call_args_list)
+    assert result['state'] != 'paused'
 
 
 @pytest.mark.asyncio
@@ -918,15 +927,19 @@ async def test_personal_unavailable_recipient_skips_then_delivers_next(env, bad)
 
 
 @pytest.mark.asyncio
-async def test_personal_missing_consent_still_prevents_delivery(env):
+async def test_personal_missing_consent_skips_recipient_and_continues(env):
     job = env.submit()
     env.doc['consents'] = []
     env.evaluator.path.write_text(json.dumps(env.doc))
-    await env.worker.tick()
+    await env.worker.tick()   # 111: no consent -> skipped, never sent
+    await env.worker.tick()   # 222: no consent -> skipped, never sent
+    await env.worker.tick()   # no pending left -> job completes without pausing
     result = env.store.snapshot(job, 'owner')
-    assert result['state'] == 'paused'
-    assert result['reason'] == 'consent_missing_or_invalid'
+    assert result['state'] == 'completed'
+    assert (result['completed'], result['skipped'], result['pending']) == (0, 2, 0)
+    # Delivery is still prevented for non-consenting recipients; they are only skipped.
     env.client.send_message.assert_not_called()
+    assert all(r['reason'] == 'consent_missing_or_invalid' for r in result['results'])
 
 
 def test_member_setup_preserves_suppression_and_rejects_corrupt_policy(env):

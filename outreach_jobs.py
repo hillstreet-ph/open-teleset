@@ -45,6 +45,10 @@ from telegram_ops import (
 
 router = APIRouter()
 ACTIVE = ("queued", "running", "waiting")
+# Per-recipient authorization failures for a personal send: skipping the recipient
+# means we never message someone who hasn't consented or has opted out, so the job
+# continues safely instead of pausing the whole list for one recipient.
+RECIPIENT_SKIP_REASONS = frozenset({"consent_missing_or_invalid", "suppressed", "approval_subject_mismatch"})
 TELEGRAM_READ_TIMEOUT = 30
 TELEGRAM_SEND_TIMEOUT = 60
 log = logging.getLogger(__name__)
@@ -585,21 +589,34 @@ class JobWorker:
             # only once every pending recipient's account is cooling down.
             record_provider_restriction(account, exc)
             self.store.outcome(job_id, seq, "pending", "telegram_cooldown")
-        except (errors.PeerFloodError, errors.UserDeactivatedBanError,
-                errors.AuthKeyUnregisteredError, errors.FrozenMethodInvalidError) as exc:
+        except errors.PeerFloodError as exc:
+            # Telegram spam-limited this account (not this recipient). Cool the
+            # account and requeue so other available accounts keep sending and the
+            # job auto-resumes when the limit clears, instead of pausing the list.
+            record_provider_restriction(account, exc)
+            self.store.outcome(job_id, seq, "pending", "telegram_cooldown")
+        except (errors.UserDeactivatedBanError, errors.AuthKeyUnregisteredError,
+                errors.FrozenMethodInvalidError) as exc:
+            # The account itself is banned/frozen — retrying cannot help and a human
+            # must swap it, so pause for review rather than loop.
             record_provider_restriction(account, exc)
             self.store.outcome(job_id, seq, "pending", type(exc).__name__, 86400, "paused")
         except OutreachDenied as exc:
-            if job["kind"] == "member_add" and str(exc) == "invitation_not_completed":
+            reason = str(exc)
+            if job["kind"] == "member_add" and reason == "invitation_not_completed":
                 self.store.outcome(job_id, seq, "skipped", "invitation_not_completed", delay=config["delay"])
-            elif str(exc) == "account_cooldown":
+            elif reason == "account_cooldown":
                 # A concurrent worker cooled this account between selection and send;
                 # requeue so process() reschedules across the other available accounts.
                 self.store.outcome(job_id, seq, "pending", "telegram_cooldown")
-            elif str(exc) == "rate_store_unavailable":
+            elif reason in RECIPIENT_SKIP_REASONS and job["kind"] == "personal_send":
+                # This recipient hasn't consented / has opted out; skip just this
+                # recipient and keep the queue moving — we never message them.
+                self.store.outcome(job_id, seq, "skipped", reason, delay=config["delay"])
+            elif reason == "rate_store_unavailable":
                 self.store.outcome(job_id, seq, "pending", "rate_store_unavailable", job_state="paused")
             else:
-                self.store.outcome(job_id, seq, "failed", str(exc), job_state="paused")
+                self.store.outcome(job_id, seq, "failed", reason, job_state="paused")
         except (errors.UserPrivacyRestrictedError, errors.UserNotMutualContactError,
                 errors.UserChannelsTooMuchError, errors.InputUserDeactivatedError,
                 errors.UserIsBlockedError, errors.YouBlockedUserError) as exc:
@@ -607,10 +624,11 @@ class JobWorker:
                                type(exc).__name__, delay=config["delay"])
         except (errors.ChatAdminRequiredError, errors.ChannelPrivateError,
                 errors.ChannelInvalidError, errors.ChatWriteForbiddenError) as exc:
-            # For member jobs these are destination-wide permission failures.
-            # Personal jobs have already resolved a User, so rejection belongs
-            # to this recipient and must not strand unrelated pending users.
-            if job["kind"] == "personal_send" and attempted:
+            # For member jobs these are destination-wide permission failures, so
+            # pause for review. Personal jobs have resolved a specific User, so the
+            # rejection is this recipient's alone — skip them and keep the queue
+            # moving instead of stranding the rest of the list.
+            if job["kind"] == "personal_send":
                 self.store.outcome(job_id, seq, "skipped", "recipient_unreachable", delay=config["delay"])
             else:
                 self.store.outcome(job_id, seq, "pending", type(exc).__name__, job_state="paused")

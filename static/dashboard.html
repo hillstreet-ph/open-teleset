@@ -1273,7 +1273,7 @@
                     <div class="form-group">
                         <label><input type="checkbox" v-model="bulksend.filterBots"> Exclude bots</label>
                         <label><input type="checkbox" v-model="bulksend.consentConfirmed"> I confirm these recipients consented to messages from the selected accounts.</label>
-                        <small>This records your consent declaration. Existing opt-outs still apply.</small>
+                        <small>This records your consent declaration. Existing opt-outs still apply. The run keeps going on its own: recipients who haven't consented, have opted out, or are unreachable are skipped (never messaged), and a spam-limited account rotates out automatically — only pressing Stop halts the job.</small>
                     </div>
                     <div class="form-group">
                         <label>Maximum recipients per account in this run</label>
@@ -2398,8 +2398,8 @@
                         delivery_timeout: 'Telegram did not confirm delivery. Check Telegram before retrying',
                         operator_resume: 'Resumed; waiting for the worker',
                         account_unavailable: 'Waiting for the selected account to reconnect',
-                        consent_missing_or_invalid: 'Paused: current recipient consent is missing or expired. Verify consent before submitting a new job; Resume does not renew consent',
-                        suppressed: 'Paused: this recipient has opted out. Do not contact them',
+                        consent_missing_or_invalid: 'Recipient has not consented, or consent expired — skipped',
+                        suppressed: 'Recipient has opted out — skipped',
                     };
                     return labels[reason] || (reason || '').replaceAll('_', ' ');
                 },
