@@ -329,6 +329,9 @@ async def bulk_send_personal(request: BulkSendRequest, http_request: Request = N
         if not all(targets):
             raise HTTPException(status_code=400, detail="Recipient cannot be empty")
         account_ids = request.selected_accounts()
+        # Rotation: a recipient may be sent through whichever selected account is
+        # available, so one account hitting a Telegram limit never stops the run.
+        rotate = request.rotation_mode == "round_robin" and len(account_ids) > 1
         if request.per_account_limit and len(targets) > len(account_ids) * request.per_account_limit:
             raise HTTPException(status_code=400, detail="Per-account run limit exceeded")
         operator = getattr(getattr(http_request, "state", None), "user", None)
@@ -336,8 +339,13 @@ async def bulk_send_personal(request: BulkSendRequest, http_request: Request = N
             if not operator or not operator.id:
                 raise HTTPException(status_code=403, detail="Authenticated operator required")
             try:
-                for index, account_id in enumerate(account_ids):
-                    outreach_policy.record_personal_consents(targets[index::len(account_ids)], account_id, operator.id)
+                if rotate:
+                    # The operator confirmed consent for the whole selected set, so each
+                    # recipient may be sent through any of the selected accounts.
+                    outreach_policy.record_personal_consents(targets, account_ids, operator.id)
+                else:
+                    for index, account_id in enumerate(account_ids):
+                        outreach_policy.record_personal_consents(targets[index::len(account_ids)], account_id, operator.id)
             except OutreachDenied as error:
                 raise HTTPException(status_code=403, detail=str(error)) from None
         for account_id in account_ids:
@@ -374,51 +382,86 @@ async def bulk_send_personal(request: BulkSendRequest, http_request: Request = N
         skipped = len(request.targets) - len(targets)
         peers_seen = set()
         stopped_reason = None
+        limited = set()  # accounts dropped from the pool after a provider limit this run
+        account_limit_errors = (errors.FloodWaitError, errors.PeerFloodError,
+                                errors.UserDeactivatedBanError, errors.AuthKeyUnregisteredError,
+                                errors.FrozenMethodInvalidError)
 
         for i, target in enumerate(targets):
-            account_id = account_ids[i % len(account_ids)]
-            client = clients[account_id]
-            try:
-                entity = await client.get_entity(int(target) if target.isdigit() else target)
-                peer_id = utils.get_peer_id(entity)
-                if peer_id in peers_seen:
-                    results.append({"target": target, "account_id": account_id, "success": False, "skipped": "duplicate_recipient"})
-                    skipped += 1
-                    continue
-                peers_seen.add(peer_id)
-                if request.filter_bots and getattr(entity, "bot", False):
-                    results.append({"target": target, "account_id": account_id, "success": False, "skipped": "bot_excluded"})
-                    skipped += 1
-                    continue
-                if not matches_activity(entity, request.activity_filter):
-                    results.append({"target": target, "account_id": account_id, "success": False, "skipped": "activity_not_matched"})
-                    skipped += 1
-                    continue
-                if request.consent_confirmed:
-                    outreach_policy.record_personal_consents([peer_id], account_id, operator.id)
-                await dispatch_outreach(action="personal_send", subject=peer_id,
-                    account_id=account_id, approval_id=request.approval_id, delay=request.delay,
-                    send=lambda: client.send_message(entity, request.messages.get(target, message_text)))
+            if rotate:
+                # Try the round-robin account first, then the other selected accounts,
+                # skipping any already limited this run.
+                ordered = [account_ids[(i + k) % len(account_ids)] for k in range(len(account_ids))]
+                candidates = [a for a in ordered if a not in limited]
+                if not candidates:
+                    stopped_reason = "all_accounts_limited"
+                    break
+            else:
+                candidates = [account_ids[i % len(account_ids)]]
+            outcome = None
+            resolved_peer = None
+            for account_id in candidates:
+                client = clients[account_id]
+                try:
+                    entity = await client.get_entity(int(target) if target.isdigit() else target)
+                    resolved_peer = utils.get_peer_id(entity)
+                    if resolved_peer in peers_seen:
+                        outcome = ("skipped", "duplicate_recipient", account_id)
+                        break
+                    if request.filter_bots and getattr(entity, "bot", False):
+                        outcome = ("skipped", "bot_excluded", account_id)
+                        break
+                    if not matches_activity(entity, request.activity_filter):
+                        outcome = ("skipped", "activity_not_matched", account_id)
+                        break
+                    if request.consent_confirmed:
+                        outreach_policy.record_personal_consents([resolved_peer], account_id, operator.id)
+                    await dispatch_outreach(action="personal_send", subject=resolved_peer,
+                        account_id=account_id, approval_id=request.approval_id, delay=request.delay,
+                        send=lambda c=client, e=entity: c.send_message(e, request.messages.get(target, message_text)))
+                    outcome = ("sent", "", account_id)
+                    break
+                except account_limit_errors as exc:
+                    # Account-wide limit: drop it from the pool and switch to the next
+                    # available account for this recipient.
+                    record_provider_restriction(account_id, exc)
+                    if rotate:
+                        limited.add(account_id)
+                        continue
+                    outcome = ("stop", type(exc).__name__, account_id)
+                    break
+                except OutreachDenied as exc:
+                    record_provider_restriction(account_id, exc)
+                    if str(exc) == "account_cooldown" and rotate:
+                        limited.add(account_id)
+                        continue
+                    outcome = ("stop", str(exc), account_id)
+                    break
+                except Exception as exc:
+                    record_provider_restriction(account_id, exc)
+                    outcome = ("failed", type(exc).__name__, account_id)
+                    break
+            if outcome is None:
+                # Every remaining account was limited while trying this recipient.
+                stopped_reason = "all_accounts_limited"
+                break
+            kind, detail, account_id = outcome
+            if resolved_peer is not None and detail != "duplicate_recipient":
+                peers_seen.add(resolved_peer)
+            if kind == "sent":
                 results.append({"target": target, "account_id": account_id, "success": True})
                 sent += 1
                 stats_tracker.record_message_sent(account_id)
-                log_manager.add_log(
-                    "BulkSend", account_id,
-                    "Personal message sent", "success",
-                )
-            except Exception as e:
-                error_msg = str(e) if isinstance(e, OutreachDenied) else type(e).__name__
-                record_provider_restriction(account_id, e)
-                results.append({"target": target, "account_id": account_id, "success": False, "error": error_msg})
+                log_manager.add_log("BulkSend", account_id, "Personal message sent", "success")
+            elif kind == "skipped":
+                results.append({"target": target, "account_id": account_id, "success": False, "skipped": detail})
+                skipped += 1
+            else:  # failed or stop
+                results.append({"target": target, "account_id": account_id, "success": False, "error": detail})
                 failed += 1
-                log_manager.add_log(
-                    "BulkSend", account_id,
-                    f"Personal send failed: {type(e).__name__}", "error",
-                )
-                if isinstance(e, (errors.FloodWaitError, errors.PeerFloodError,
-                                  errors.UserDeactivatedBanError, errors.AuthKeyUnregisteredError,
-                                  errors.FrozenMethodInvalidError, OutreachDenied)):
-                    stopped_reason = error_msg
+                log_manager.add_log("BulkSend", account_id, f"Personal send failed: {detail}", "error")
+                if kind == "stop":
+                    stopped_reason = detail
                     break
 
             # Delay between sends (except last)

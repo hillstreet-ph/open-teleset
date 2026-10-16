@@ -161,7 +161,7 @@ async def test_rotation_does_not_fallback_when_recipient_lacks_sender_consent(po
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure", [errors.FloodWaitError(None, 120), errors.PeerFloodError(None)])
 @pytest.mark.parametrize("during_lookup", [True, False])
-async def test_provider_restriction_stops_pool_and_survives_new_batch(policy, monkeypatch, failure, during_lookup):
+async def test_provider_restriction_rotates_to_available_account(policy, monkeypatch, failure, during_lookup):
     allow_second_account(policy)
     first, second = fake_client(), fake_client()
     if during_lookup:
@@ -171,8 +171,10 @@ async def test_provider_restriction_stops_pool_and_survives_new_batch(policy, mo
     monkeypatch.setattr(ops.account_manager, "get_client", AsyncMock(side_effect=[first, second, first]))
     result = await ops.bulk_send_personal(ops.BulkSendRequest(message="synthetic", targets=["111", "222"],
         rotation_mode="round_robin", account_ids=["account", "second"], approval_id="personal_send"))
-    assert result["failed"] == 1 and result["pending"] == 1 and result["stopped_reason"]
-    second.send_message.assert_not_called()
+    # 'account' is limited, so both recipients are delivered through 'second' instead of stopping.
+    assert result["sent"] == 2 and result["failed"] == 0 and result["stopped_reason"] is None
+    assert second.send_message.await_count == 2
+    # The limit on 'account' persists, so a later single-account batch on it still stops.
     first.get_entity.side_effect = lambda value: types.User(id=int(value))
     first.send_message.reset_mock(side_effect=True)
     result = await ops.bulk_send_personal(ops.BulkSendRequest(account_id="account", message="synthetic",
