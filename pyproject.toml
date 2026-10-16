@@ -8,7 +8,7 @@ version = "1.0.0"
 description = "Complete Telegram MCP Server with QR Code Login"
 authors = [{name = "User"}]
 license = {text = "MIT"}
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "mcp[cli]>=1.30.0,<2",
     "telethon>=1.39.0",
@@ -28,6 +28,18 @@ py-modules = ["main", "web_login", "session_manager"]
 [tool.black]
 line-length = 99
 target-version = ['py311']
+
+[tool.ruff]
+line-length = 99
+target-version = "py311"
+
+[tool.ruff.lint]
+# Deterministic, non-opinionated selection. CI lints `src scripts` only.
+# E/F = pycodestyle+pyflakes, I = import sorting, UP = pyupgrade modernization,
+# RUF = ruff-specific, EXE = shebang/executable hygiene.
+select = ["E", "F", "I", "UP", "RUF", "EXE"]
+# Line length is enforced by black (line-length = 99); don't double-report it.
+ignore = ["E501"]
 
 [tool.pytest.ini_options]
 pythonpath = [".", "src"]

@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 from open_teleset.crypto import decrypt_session, encrypt_session
 from open_teleset.db import add_log, delete_account, get_account, list_accounts, upsert_account
 
 
 class AccountStore:
-    async def list(self, status: Optional[str] = None) -> list[dict[str, Any]]:
+    async def list(self, status: str | None = None) -> list[dict[str, Any]]:
         rows = await list_accounts(status=status)
         out = []
         for r in rows:
@@ -19,7 +19,7 @@ class AccountStore:
             out.append(item)
         return out
 
-    async def get(self, account_id: str) -> Optional[dict[str, Any]]:
+    async def get(self, account_id: str) -> dict[str, Any] | None:
         row = await get_account(account_id)
         if not row:
             return None
@@ -28,7 +28,7 @@ class AccountStore:
         item["has_session"] = bool(row.get("session_encrypted"))
         return item
 
-    async def get_session_string(self, account_id: str) -> Optional[str]:
+    async def get_session_string(self, account_id: str) -> str | None:
         row = await get_account(account_id)
         if not row or not row.get("session_encrypted"):
             return None
@@ -37,12 +37,12 @@ class AccountStore:
     async def save_session(
         self,
         *,
-        account_id: Optional[str] = None,
+        account_id: str | None = None,
         session_string: str,
-        name: Optional[str] = None,
-        phone: Optional[str] = None,
-        username: Optional[str] = None,
-        proxy_id: Optional[str] = None,
+        name: str | None = None,
+        phone: str | None = None,
+        username: str | None = None,
+        proxy_id: str | None = None,
         status: str = "active",
     ) -> dict[str, Any]:
         encrypted = encrypt_session(session_string)

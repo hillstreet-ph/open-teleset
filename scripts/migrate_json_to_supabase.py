@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
 """Migrate accounts/config.json sessions into Supabase (encrypted)."""
 from __future__ import annotations
+
 import asyncio
 import json
 import sys
 from pathlib import Path
+
 from dotenv import load_dotenv
+
 ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT / ".env")
 sys.path.insert(0, str(ROOT / "src"))
 from open_teleset.account_store import AccountStore  # noqa: E402
 from open_teleset.db import close_pool, init_pool  # noqa: E402
+
 
 async def main() -> int:
     config_path = ROOT / "accounts" / "config.json"

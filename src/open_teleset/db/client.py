@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import os
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, Optional
+from typing import Any
 
 import asyncpg
+
 from supabase import Client, create_client
 
-_pool: Optional[asyncpg.Pool] = None
-_supabase: Optional[Client] = None
+_pool: asyncpg.Pool | None = None
+_supabase: Client | None = None
 
 
 def get_supabase() -> Client:
@@ -62,7 +64,7 @@ async def acquire() -> AsyncIterator[asyncpg.Connection]:
         yield conn
 
 
-async def list_accounts(status: Optional[str] = None) -> list[dict[str, Any]]:
+async def list_accounts(status: str | None = None) -> list[dict[str, Any]]:
     async with acquire() as conn:
         if status:
             rows = await conn.fetch(
@@ -74,7 +76,7 @@ async def list_accounts(status: Optional[str] = None) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
-async def get_account(account_id: str) -> Optional[dict[str, Any]]:
+async def get_account(account_id: str) -> dict[str, Any] | None:
     async with acquire() as conn:
         row = await conn.fetchrow("select * from accounts where id = $1::uuid", account_id)
     return dict(row) if row else None
@@ -82,14 +84,14 @@ async def get_account(account_id: str) -> Optional[dict[str, Any]]:
 
 async def upsert_account(
     *,
-    account_id: Optional[str] = None,
-    name: Optional[str] = None,
-    phone: Optional[str] = None,
-    username: Optional[str] = None,
-    session_encrypted: Optional[str] = None,
+    account_id: str | None = None,
+    name: str | None = None,
+    phone: str | None = None,
+    username: str | None = None,
+    session_encrypted: str | None = None,
     status: str = "active",
-    proxy_id: Optional[str] = None,
-    metadata: Optional[dict] = None,
+    proxy_id: str | None = None,
+    metadata: dict | None = None,
 ) -> dict[str, Any]:
     async with acquire() as conn:
         if account_id:
@@ -131,8 +133,8 @@ async def add_log(
     action: str,
     *,
     level: str = "info",
-    account_id: Optional[str] = None,
-    details: Optional[dict] = None,
+    account_id: str | None = None,
+    details: dict | None = None,
 ) -> None:
     async with acquire() as conn:
         await conn.execute(
@@ -147,8 +149,8 @@ async def add_log(
 async def record_health(
     account_id: str,
     is_healthy: bool,
-    latency_ms: Optional[int] = None,
-    error_message: Optional[str] = None,
+    latency_ms: int | None = None,
+    error_message: str | None = None,
 ) -> None:
     async with acquire() as conn:
         await conn.execute(
