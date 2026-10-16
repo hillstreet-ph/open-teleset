@@ -3,6 +3,7 @@ import json
 import time
 import urllib.error
 import urllib.request
+from datetime import UTC
 
 ORIGIN = "https://open-teleset-prod.zeabur.app"
 
@@ -26,10 +27,10 @@ def verify(probe=status):
     code, body = probe("/health")
     if code != 200 or not isinstance(body, dict) or body.get("service") != "open-teleset" or body.get("status") != "ok":
         raise RuntimeError("Origin liveness contract failed")
-    from datetime import datetime, timezone
+    from datetime import datetime
     try:
         timestamp = datetime.fromisoformat(body["ts"].replace("Z", "+00:00"))
-        age = abs((datetime.now(timezone.utc) - timestamp).total_seconds())
+        age = abs((datetime.now(UTC) - timestamp).total_seconds())
     except (KeyError, TypeError, ValueError):
         raise RuntimeError("Origin liveness timestamp is invalid") from None
     if age > 120:

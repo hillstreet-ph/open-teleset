@@ -9,7 +9,7 @@ import json
 import os
 from pathlib import Path
 
-from open_teleset.crypto import encrypt_session, decrypt_session
+from open_teleset.crypto import decrypt_session, encrypt_session
 
 
 def convert(source, destination):

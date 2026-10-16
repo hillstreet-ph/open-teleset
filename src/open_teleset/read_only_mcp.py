@@ -11,7 +11,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 
-from open_teleset.security import ADMIN_ROLES, AuthenticatedUser, PUBLIC_ORIGINS
+from open_teleset.security import ADMIN_ROLES, PUBLIC_ORIGINS, AuthenticatedUser
 
 
 def create_read_only_mcp(

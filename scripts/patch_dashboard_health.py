@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Idempotent: ensure dashboard.py has GET /api/health."""
 from pathlib import Path
+
 MARKER = "open_teleset_prod_health_v1"
 SNIPPET = '''
 # --- open_teleset_prod_health_v1 ---
