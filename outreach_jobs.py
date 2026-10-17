@@ -4,6 +4,7 @@ Never replays uncertain delivery. Provider waits pin the recipient and pause the
 whole job; rotation is assignment only, never a restriction fallback.
 """
 import asyncio
+import errno
 import fcntl
 import hashlib
 import json
@@ -355,6 +356,20 @@ class JobStore:
 store = JobStore()
 
 
+# errno values that mean the state-volume filesystem cannot provide flock at
+# all (seen on some container / network-backed mounts), as opposed to the lock
+# simply being held by another live dispatcher (EAGAIN/EWOULDBLOCK, surfaced as
+# BlockingIOError). On an "unsupported" error we degrade to running without the
+# advisory lock rather than disabling outreach entirely.
+LOCK_UNSUPPORTED_ERRNOS = frozenset(
+    code for code in (
+        getattr(errno, "ENOLCK", None), getattr(errno, "EINVAL", None),
+        getattr(errno, "EOPNOTSUPP", None), getattr(errno, "ENOTSUP", None),
+        getattr(errno, "ENOSYS", None), getattr(errno, "EPERM", None),
+    ) if code is not None
+)
+
+
 class JobWorker:
     def __init__(self, storage):
         self.store = storage
@@ -374,7 +389,7 @@ class JobWorker:
         try:
             self.store.path.parent.mkdir(parents=True, exist_ok=True)
             self.lock = self.store.path.with_suffix(".worker.lock").open("a")
-            fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self._lock_or_degrade()
             self.store.recover()
             self.task = asyncio.create_task(self.run())
             self.error = None
@@ -383,6 +398,28 @@ class JobWorker:
             if self.lock:
                 self.lock.close()
                 self.lock = None
+
+    def _lock_or_degrade(self):
+        """Take the single-dispatcher advisory lock, best effort.
+
+        A held lock (another live dispatcher) must keep us down so sends are
+        never duplicated. But some state-volume filesystems cannot provide
+        flock at all; refusing to run there would disable outreach entirely, so
+        on an "unsupported" error we log and run without the lock. Exactly-once
+        delivery still holds on a single replica via the item state machine and
+        the message_events unique key.
+        """
+        try:
+            fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise  # Another dispatcher holds it — stay unavailable on purpose.
+        except OSError as exc:
+            if exc.errno not in LOCK_UNSUPPORTED_ERRNOS:
+                raise
+            log.warning(
+                "Outreach worker advisory lock unavailable on %s (errno %s); "
+                "running without it on the assumption of a single replica",
+                self.store.path, exc.errno)
 
     def ensure_running(self):
         """Restart a dispatcher that never started or has since exited.
@@ -430,7 +467,20 @@ class JobWorker:
             jobs = db.execute("SELECT * FROM jobs WHERE state IN ('queued','running','waiting') "
                               "AND retry_at<=? ORDER BY created", (time.time(),)).fetchall()
         for job in jobs:
-            await self.process(job)
+            try:
+                await self.process(job)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # One job must never stall the dispatcher or the rest of the
+                # queue. An unexpected error (outside process()'s own handlers)
+                # pauses just this job for operator review; healthy and new
+                # jobs keep running and the worker stays available.
+                log.exception("Outreach job %s processing failed; pausing for review", job["id"])
+                with self.store.db() as db:
+                    db.execute("UPDATE jobs SET state='needs_review',reason=? WHERE id=? "
+                               "AND state IN ('queued','running','waiting')",
+                               (f"job_error:{type(exc).__name__}"[:120], job["id"]))
 
     async def process(self, job):
         job_id = job["id"]
@@ -523,8 +573,12 @@ class JobWorker:
                     raise SenderChanged()
 
             await check_sender()
-            resolution_errors = (ValueError, errors.UsernameInvalidError, errors.UsernameNotOccupiedError,
-                                 errors.UserIdInvalidError, errors.InputUserDeactivatedError)
+            # Telethon raises KeyError from its entity cache for some
+            # unresolvable usernames/IDs; treat it as a resolution failure
+            # (skip this recipient) instead of letting it crash the dispatcher.
+            resolution_errors = (ValueError, KeyError, errors.UsernameInvalidError,
+                                 errors.UsernameNotOccupiedError, errors.UserIdInvalidError,
+                                 errors.InputUserDeactivatedError)
             candidates = []
             durable = recipient.get("input_peer")
             if isinstance(durable, dict) and durable.get("kind") == "user":

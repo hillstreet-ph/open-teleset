@@ -1,4 +1,5 @@
 import asyncio
+import errno
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -402,6 +403,61 @@ async def test_worker_survives_unexpected_tick_error(env, monkeypatch):
         await env.worker.run()
     # The loop kept ticking past the crash and cleared the transient error.
     assert len(ticks) >= 3 and env.worker.error is None
+
+
+@pytest.mark.asyncio
+async def test_worker_runs_when_filesystem_cannot_lock(env, monkeypatch):
+    def unsupported(*_a, **_k):
+        raise OSError(errno.ENOLCK, "no locks available")
+    monkeypatch.setattr(jobs.fcntl, "flock", unsupported)
+    env.worker.start()
+    # A volume that cannot provide flock must degrade to running, not disable
+    # outreach entirely.
+    assert env.worker.task and not env.worker.task.done() and env.worker.error is None
+    await env.worker.stop()
+
+
+@pytest.mark.asyncio
+async def test_worker_stays_down_when_lock_is_held(env, monkeypatch):
+    def held(*_a, **_k):
+        raise BlockingIOError(errno.EWOULDBLOCK, "resource temporarily unavailable")
+    monkeypatch.setattr(jobs.fcntl, "flock", held)
+    env.worker.start()
+    # A genuinely held lock (another live dispatcher) must keep us unavailable
+    # so sends are never duplicated.
+    assert env.worker.task is None and env.worker.error == "worker_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_one_poison_job_does_not_stall_the_queue(env, monkeypatch):
+    good = env.submit()
+    req = jobs.BulkJobRequest(account_id='a', message='private message', targets=['111'],
+                              request_id='poison_request_key_0001', rotation_mode='single')
+    bad = env.store.submit('personal_send', 'owner', req, ['111'], ['a'])
+    real_process = env.worker.process
+    async def flaky(job):
+        if job['id'] == bad:
+            raise KeyError("corrupt payload")
+        return await real_process(job)
+    monkeypatch.setattr(env.worker, 'process', flaky)
+    # The tick must not raise even though one job's processing crashes.
+    await env.worker.tick()
+    assert env.store.snapshot(bad, 'owner')['state'] == 'needs_review'
+    # The healthy job still made progress in the same tick.
+    assert env.store.snapshot(good, 'owner')['completed'] >= 1
+
+
+@pytest.mark.asyncio
+async def test_unresolvable_recipient_keyerror_is_skipped_not_fatal(env):
+    # Telethon raises KeyError from its entity cache for some unresolvable
+    # usernames/IDs; it must skip the recipient and keep the queue moving, not
+    # crash the dispatcher (regression for OPEN-TELESET-5).
+    env.client.get_entity = AsyncMock(side_effect=KeyError("peer"))
+    job = env.submit(['111'])
+    await env.worker.tick()  # must not raise
+    snap = env.store.snapshot(job, 'owner')
+    assert snap['skipped'] == 1 and snap['results'][0]['reason'] == 'recipient_not_found'
+    env.client.send_message.assert_not_called()
 
 
 @pytest.mark.asyncio
