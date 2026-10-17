@@ -365,17 +365,36 @@ class JobWorker:
     def start(self):
         if self.task and not self.task.done():
             return
+        # A prior run may have finished or crashed while still holding the lock
+        # file descriptor. Release it before re-acquiring so a restart in the
+        # same process does not deadlock against its own stale flock.
+        if self.lock:
+            self.lock.close()
+            self.lock = None
         try:
             self.store.path.parent.mkdir(parents=True, exist_ok=True)
             self.lock = self.store.path.with_suffix(".worker.lock").open("a")
             fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             self.store.recover()
             self.task = asyncio.create_task(self.run())
+            self.error = None
         except (OSError, sqlite3.Error):
             self.error = "worker_unavailable"
             if self.lock:
                 self.lock.close()
                 self.lock = None
+
+    def ensure_running(self):
+        """Restart a dispatcher that never started or has since exited.
+
+        Lets a worker that lost its initial flock race (e.g. a prior container
+        had not released it yet during a rolling redeploy) or that exited
+        recover on the next poll or submission, instead of staying unavailable
+        until a full redeploy. Returns True only when it is processing.
+        """
+        if not self.task or self.task.done():
+            self.start()
+        return bool(self.task and not self.task.done() and not self.error)
 
     async def stop(self):
         if self.task:
@@ -395,10 +414,15 @@ class JobWorker:
             try:
                 await self.tick()
                 self.error = None
-            except (OSError, sqlite3.Error, ValueError, RuntimeError, TypeError) as exc:
-                # Fail closed, retain queue, and show failure to the operator.
+            except asyncio.CancelledError:
+                # Graceful shutdown cancels the dispatcher; let it propagate.
+                raise
+            except Exception as exc:
+                # The dispatcher must never die on a single bad tick. Fail
+                # closed, retain the queue, surface the failure to the operator,
+                # and keep looping so the next tick can recover on its own.
                 self.error = type(exc).__name__
-                log.error("Outreach worker unavailable: %s", self.error)
+                log.exception("Outreach worker tick failed: %s", self.error)
             await asyncio.sleep(1)
 
     async def tick(self):
@@ -684,7 +708,7 @@ worker = JobWorker(store)
 
 
 def require_worker():
-    if not worker.task or worker.task.done() or worker.error:
+    if not worker.ensure_running():
         raise HTTPException(503, "Outreach worker unavailable; no new job accepted")
 
 
@@ -730,7 +754,7 @@ async def submit(kind, operator, body, targets, accounts):
 
 @router.get("/api/outreach/jobs")
 async def list_jobs(request: Request):
-    return {"jobs": store.listing(owner(request)), "worker": "ready" if worker.task and not worker.task.done() and not worker.error else "unavailable"}
+    return {"jobs": store.listing(owner(request)), "worker": "ready" if worker.ensure_running() else "unavailable"}
 
 
 @router.get("/api/outreach/jobs/{job_id}")
