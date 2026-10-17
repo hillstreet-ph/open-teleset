@@ -1234,7 +1234,7 @@
                         <div style="display:grid;gap:8px;max-height:220px;overflow:auto;">
                             <label v-for="acc in accounts" :key="acc.account_id" style="display:flex;align-items:center;gap:10px;padding:10px;">
                                 <input type="checkbox" v-model="bulksend.accountIds" :value="acc.account_id">
-                                {{ acc.username || acc.phone || acc.account_id }} · {{ acc.connected ? 'Connected' : 'Check connection' }}
+                                {{ (acc.username && acc.username !== 'N/A') ? acc.username : ((acc.phone && acc.phone !== 'N/A') ? acc.phone : acc.account_id) }} · {{ acc.connected ? 'Connected' : 'Check connection' }}
                             </label>
                         </div>
                         <small>{{ bulksend.accountIds.length }} selected. One or more accounts supported.</small>

@@ -371,6 +371,40 @@ async def test_single_worker_lock_and_shutdown(env):
 
 
 @pytest.mark.asyncio
+async def test_worker_restarts_after_exit(env):
+    env.worker.start()
+    assert env.worker.ensure_running()
+    # The dispatcher exits (e.g. a crash or an interrupted shutdown).
+    await env.worker.stop()
+    assert env.worker.task is None
+    # A poll or submission brings it back without a redeploy; it re-acquires
+    # its own released flock rather than deadlocking on a stale descriptor.
+    assert env.worker.ensure_running()
+    assert env.worker.task and not env.worker.task.done() and env.worker.error is None
+    await env.worker.stop()
+
+
+@pytest.mark.asyncio
+async def test_worker_survives_unexpected_tick_error(env, monkeypatch):
+    ticks = []
+    async def flaky_tick():
+        ticks.append(1)
+        if len(ticks) == 1:
+            # A KeyError is outside the old narrow catch set and used to kill
+            # the dispatcher permanently, bricking the worker until redeploy.
+            raise KeyError("boom")
+    monkeypatch.setattr(env.worker, "tick", flaky_tick)
+    async def sleeper(_):
+        if len(ticks) >= 3:
+            raise asyncio.CancelledError
+    monkeypatch.setattr(jobs.asyncio, "sleep", sleeper)
+    with pytest.raises(asyncio.CancelledError):
+        await env.worker.run()
+    # The loop kept ticking past the crash and cleared the transient error.
+    assert len(ticks) >= 3 and env.worker.error is None
+
+
+@pytest.mark.asyncio
 async def test_shutdown_during_send_preserves_uncertain_record(env):
     job = env.submit()
     entered = asyncio.Event()
