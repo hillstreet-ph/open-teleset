@@ -84,6 +84,63 @@ async def test_scraper_filters_bots_unknown_and_approximate_month(monkeypatch):
     assert result["members"][0]["last_seen"] is None
 
 
+def fake_chat(**kw):
+    base = dict(username=None, id=0, broadcast=False, megagroup=False,
+                title="", participants_count=None, verified=False)
+    base.update(kw)
+    return SimpleNamespace(**base)
+
+
+@pytest.mark.parametrize("values", [{"keywords": []}, {"keywords": ["   "]},
+    {"keywords": ["x"], "limit": 0}, {"keywords": ["x"], "limit": 501},
+    {"keywords": ["x"], "group_type": "supergroup"}])
+def test_channel_scraper_invalid_input(values):
+    with pytest.raises(ValidationError):
+        ops.ChannelScrapeRequest(account_id="a", **values)
+
+
+@pytest.mark.asyncio
+async def test_channel_scraper_returns_urls_dedupes_and_classifies(monkeypatch):
+    chats = [
+        fake_chat(id=1, title="PH Casino Agents", broadcast=True, username="phcasino",
+                  participants_count=1200, verified=True),
+        fake_chat(id=2, title="Manila Traders", megagroup=True, username="manilatraders",
+                  participants_count=50),
+        fake_chat(id=3, title="No URL channel", broadcast=True, username=None),  # no public URL
+        fake_chat(id=1, title="duplicate id", broadcast=True, username="phcasino"),  # deduped
+    ]
+    client = AsyncMock(return_value=SimpleNamespace(chats=chats))
+    monkeypatch.setattr(ops.account_manager, "get_client", AsyncMock(return_value=client))
+    result = await ops.scrape_channels(ops.ChannelScrapeRequest(account_id="a", keywords=["casino"], limit=50))
+    assert [r["url"] for r in result["results"]] == ["https://t.me/phcasino", "https://t.me/manilatraders"]
+    assert result["results"][0]["type"] == "channel" and result["results"][1]["type"] == "group"
+    assert result["results"][0]["verified"] is True and result["total"] == 2
+
+
+@pytest.mark.asyncio
+async def test_channel_scraper_country_type_and_limit_filters(monkeypatch):
+    chats = [fake_chat(id=1, title="Philippines Deals", broadcast=True, username="phdeals"),
+             fake_chat(id=2, title="USA Deals", broadcast=True, username="usadeals"),
+             fake_chat(id=3, title="PH Group", megagroup=True, username="phgroup")]
+    monkeypatch.setattr(ops.account_manager, "get_client",
+                        AsyncMock(return_value=AsyncMock(return_value=SimpleNamespace(chats=chats))))
+    country = await ops.scrape_channels(ops.ChannelScrapeRequest(account_id="a", keywords=["deals"], country="ph"))
+    assert {r["username"] for r in country["results"]} == {"phdeals", "phgroup"}
+    groups = await ops.scrape_channels(ops.ChannelScrapeRequest(account_id="a", keywords=["deals"], group_type="group"))
+    assert [r["username"] for r in groups["results"]] == ["phgroup"]
+    capped = await ops.scrape_channels(ops.ChannelScrapeRequest(account_id="a", keywords=["deals"], limit=1))
+    assert capped["total"] == 1
+
+
+@pytest.mark.asyncio
+async def test_channel_scraper_flood_wait_maps_to_429(monkeypatch):
+    client = AsyncMock(side_effect=errors.FloodWaitError(None, 30))
+    monkeypatch.setattr(ops.account_manager, "get_client", AsyncMock(return_value=client))
+    with pytest.raises(HTTPException) as exc:
+        await ops.scrape_channels(ops.ChannelScrapeRequest(account_id="a", keywords=["x"]))
+    assert exc.value.status_code == 429
+
+
 def allow_second_account(policy):
     second = policy_module.hash_identifier("second")
     for approval in policy.data["approvals"].values():
