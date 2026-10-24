@@ -151,9 +151,15 @@ class OutreachPolicy:
                     os.unlink(temporary)
 
     def record_member_job_consents(self, subjects, account_id, operator_id):
-        """An authenticated admin explicitly authorizes one new recipient list."""
+        """An authenticated admin explicitly authorizes one new recipient list.
+
+        account_id may be a single account or a list of selected accounts; the
+        recorded grant then authorizes any of them to invite the recipients, so
+        the worker can rotate across accounts when one hits a Telegram limit.
+        """
         if not operator_id:
             raise OutreachDenied("authenticated_operator_required")
+        account_ids = [account_id] if isinstance(account_id, str) else list(account_id)
         subject_hashes = list(dict.fromkeys(hash_identifier(value) for value in subjects))
         if not subject_hashes:
             raise OutreachDenied("explicit_recipients_required")
@@ -162,15 +168,15 @@ class OutreachPolicy:
                 raise OutreachDenied("suppressed")
             now = datetime.now(timezone.utc)
             expires = (now + timedelta(days=30)).isoformat()
-            account_hash = hash_identifier(account_id)
+            account_hashes = sorted({hash_identifier(a) for a in account_ids})
             approval_id = "member_job_" + uuid4().hex
             data["approvals"][approval_id] = {
-                "action": "member_add", "account_hashes": [account_hash],
+                "action": "member_add", "account_hashes": account_hashes,
                 "subject_hashes": subject_hashes, "expires_at": expires,
                 "operator_hash": hash_identifier(operator_id), "recorded_via": "member_add_form"}
             for subject_hash in subject_hashes:
                 data["consents"].append({
-                    "subject_hash": subject_hash, "account_hashes": [account_hash],
+                    "subject_hash": subject_hash, "account_hashes": account_hashes,
                     "actions": ["member_add"], "source": "explicit",
                     "granted_at": now.isoformat(), "expires_at": expires,
                     "approval_id": approval_id, "recorded_via": "member_add_form",

@@ -100,7 +100,7 @@ class ChannelScrapeRequest(BaseModel):
 
 
 class AddMembersRequest(BaseModel):
-    account_id: str
+    account_id: str = ""
     source_target: Optional[str] = None   # source channel/group (if scraping first)
     dest_target: str                       # destination channel/group
     usernames: Optional[List[str]] = None  # explicit list of usernames/IDs
@@ -109,6 +109,21 @@ class AddMembersRequest(BaseModel):
     limit: int = Field(default=10, ge=1, le=10)                        # max members to add per run
     delay: float = Field(default=35.0, ge=35, le=3600, allow_inf_nan=False)                    # seconds between each add (Telegram rate limit)
     approval_id: Optional[str] = None      # server-side approval reference
+    rotation_mode: Literal["single", "round_robin"] = "single"
+    account_ids: List[str] = Field(default_factory=list)  # selected accounts for rotation
+
+    @model_validator(mode="after")
+    def _validate_member_accounts(self):
+        if self.rotation_mode == "single":
+            if not self.account_id.strip() or self.account_ids:
+                raise ValueError("Single mode requires one account_id and no rotation accounts")
+        elif (not self.account_ids or any(not a.strip() for a in self.account_ids)
+              or len(set(self.account_ids)) != len(self.account_ids) or self.account_id):
+            raise ValueError("Rotation requires unique account_ids and no account_id")
+        return self
+
+    def selected_accounts(self):
+        return self.account_ids if self.rotation_mode == "round_robin" else [self.account_id]
 
 
 class BulkSendRequest(BaseModel):
