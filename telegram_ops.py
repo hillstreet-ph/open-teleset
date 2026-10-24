@@ -8,9 +8,12 @@ FastAPI APIRouter providing REST endpoints for:
 3. POST /api/bulk/send-personal   — send personal messages to many users
 """
 import asyncio
+import re as _re
 from datetime import datetime, timedelta, timezone
+from html import unescape
 from typing import List, Optional, Literal
 
+import aiohttp
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, model_validator
 from telethon import errors, functions, types, utils
@@ -71,7 +74,7 @@ class ScrapeRequest(BaseModel):
 
 
 class ChannelScrapeRequest(BaseModel):
-    account_id: str
+    account_id: str = ""   # optional: empty = account-free public discovery
     keywords: List[str] = Field(default_factory=list)      # directory search terms
     country: str = Field(default="", max_length=64)        # optional title/username filter
     group_type: Literal["all", "group", "channel"] = "all"
@@ -223,17 +226,152 @@ async def scrape_members(request: ScrapeRequest):
         raise HTTPException(status_code=500, detail=type(e).__name__)
 
 
+# Public t.me/web discovery (used when no Telegram account is selected).
+_TME_USERNAME_RE = _re.compile(r"(?:https?://)?t\.me/(?:s/)?([A-Za-z]\w{3,31})\b", _re.I)
+_TME_RESERVED = {"s", "share", "joinchat", "addstickers", "addtheme", "addemoji", "addlist",
+                 "proxy", "socks", "bg", "login", "iv", "setlanguage", "confirmphone", "c", "contact"}
+_OG_TITLE_RE = _re.compile(r'<meta property="og:title" content="([^"]*)"', _re.I)
+_EXTRA_RE = _re.compile(r'<div class="tgme_page_extra">([^<]*)</div>', _re.I)
+_BROWSER_HEADERS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"}
+
+
+def _parse_tme_preview(html: str, username: str):
+    """Parse a public t.me/<username> preview page.
+
+    Returns {username,title,type,members} for a public channel/supergroup, or
+    None for a user, bot, private, or invalid page (no subscribers/members).
+    """
+    extra_m = _EXTRA_RE.search(html)
+    extra = (extra_m.group(1) if extra_m else "").lower()
+    if "subscriber" in extra:
+        kind = "channel"
+    elif "member" in extra:
+        kind = "group"
+    else:
+        return None
+    title_m = _OG_TITLE_RE.search(html)
+    title = unescape(title_m.group(1)) if title_m else username
+    members = None
+    head = extra.split("subscriber")[0].split("member")[0]
+    digits = _re.sub(r"[^\d]", "", head)
+    if digits:
+        try:
+            members = int(digits)
+        except ValueError:
+            members = None
+    return {"username": username, "title": title, "type": kind, "members": members}
+
+
+async def _ddg_usernames(session, keyword, want):
+    """Find candidate t.me usernames via a credential-free web search."""
+    usernames: list = []
+    try:
+        async with session.post("https://lite.duckduckgo.com/lite/",
+                                data={"q": f"site:t.me {keyword}"},
+                                timeout=aiohttp.ClientTimeout(total=12)) as resp:
+            html = await resp.text()
+    except (aiohttp.ClientError, asyncio.TimeoutError):
+        return usernames
+    for match in _TME_USERNAME_RE.finditer(html):
+        candidate = match.group(1)
+        if candidate.lower() in _TME_RESERVED or candidate in usernames:
+            continue
+        usernames.append(candidate)
+        if len(usernames) >= want:
+            break
+    return usernames
+
+
+async def _tme_preview(session, username):
+    try:
+        async with session.get(f"https://t.me/{username}",
+                               timeout=aiohttp.ClientTimeout(total=12)) as resp:
+            if resp.status != 200:
+                return None
+            html = await resp.text()
+    except (aiohttp.ClientError, asyncio.TimeoutError):
+        return None
+    return _parse_tme_preview(html, username)
+
+
+async def _scrape_channels_public(request: ChannelScrapeRequest):
+    """Account-free discovery: public web search + public t.me preview pages.
+
+    No Telegram account, no credentials. Results depend on the public sources
+    being reachable and not rate-limiting the server.
+    """
+    country = request.country.lower()
+    want_candidates = min(request.limit * 3, 180)
+    seen: set = set()
+    candidates: list = []
+    async with aiohttp.ClientSession(headers=_BROWSER_HEADERS) as session:
+        for keyword in request.keywords:
+            if len(candidates) >= want_candidates:
+                break
+            for username in await _ddg_usernames(session, keyword, want_candidates):
+                key = username.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                candidates.append((username, keyword))
+                if len(candidates) >= want_candidates:
+                    break
+        semaphore = asyncio.Semaphore(8)
+
+        async def enrich(username, keyword):
+            async with semaphore:
+                info = await _tme_preview(session, username)
+                if info:
+                    info["matched_keyword"] = keyword
+                return info
+
+        enriched = await asyncio.gather(*[enrich(u, k) for u, k in candidates])
+
+    results: list = []
+    for info in enriched:
+        if not info:
+            continue
+        if request.group_type != "all" and info["type"] != request.group_type:
+            continue
+        if country and country not in info["title"].lower() and country not in info["username"].lower():
+            continue
+        results.append({
+            "id": info["username"],
+            "title": info["title"],
+            "username": info["username"],
+            "url": f"https://t.me/{info['username']}",
+            "type": info["type"],
+            "members": info["members"],
+            "verified": False,
+            "matched_keyword": info["matched_keyword"],
+        })
+        if len(results) >= request.limit:
+            break
+
+    log_manager.add_log(
+        "ChannelScraper", "public",
+        f"Found {len(results)} channels/groups (account-free) for {len(request.keywords)} keyword(s)", "success",
+    )
+    return {"success": True, "total": len(results), "results": results, "mode": "public"}
+
+
 @telegram_ops_router.post("/api/scraper/channels")
 async def scrape_channels(request: ChannelScrapeRequest):
     """Discover public Telegram channels/groups by keyword.
 
-    Read-only directory search (contacts.SearchRequest). Returns only public
-    channels/supergroups that expose a t.me URL, de-duplicated across keywords.
-    Telegram exposes no channel country, so `country` is an optional
-    case-insensitive filter on the title/username, not a geographic lookup.
-    No messages are sent and no groups are joined.
+    With a selected account, uses Telegram's authenticated directory search
+    (contacts.SearchRequest). With no account, falls back to account-free public
+    discovery (web search + public t.me preview pages). Either way returns only
+    public channels/supergroups with a t.me URL, de-duplicated. Telegram exposes
+    no channel country, so `country` is a case-insensitive filter on the
+    title/username, not a geographic lookup. Read-only: no messages, no joins.
     """
-    client = await account_manager.get_client(request.account_id)
+    account_id = request.account_id.strip()
+    if not account_id:
+        return await _scrape_channels_public(request)
+
+    client = await account_manager.get_client(account_id)
     if not client:
         raise HTTPException(status_code=400, detail="Client unavailable — account not connected")
 
@@ -282,10 +420,10 @@ async def scrape_channels(request: ChannelScrapeRequest):
                 break
 
     log_manager.add_log(
-        "ChannelScraper", request.account_id,
+        "ChannelScraper", account_id,
         f"Found {len(results)} channels/groups for {len(request.keywords)} keyword(s)", "success",
     )
-    return {"success": True, "total": len(results), "results": results}
+    return {"success": True, "total": len(results), "results": results, "mode": "account"}
 
 
 # ============ 2. Member Adder ============

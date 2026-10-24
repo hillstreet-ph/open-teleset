@@ -141,6 +141,46 @@ async def test_channel_scraper_flood_wait_maps_to_429(monkeypatch):
     assert exc.value.status_code == 429
 
 
+def test_parse_tme_preview_channel_group_and_user():
+    channel = '<meta property="og:title" content="PH Casino &amp; Agents"><div class="tgme_page_extra">12 345 subscribers</div>'
+    assert ops._parse_tme_preview(channel, "phcasino") == {
+        "username": "phcasino", "title": "PH Casino & Agents", "type": "channel", "members": 12345}
+    group = '<meta property="og:title" content="Traders"><div class="tgme_page_extra">250 members, 10 online</div>'
+    parsed = ops._parse_tme_preview(group, "traders")
+    assert parsed["type"] == "group" and parsed["members"] == 250
+    # A user/bot/private page has no subscribers/members line and is dropped.
+    user = '<meta property="og:title" content="John"><div class="tgme_page_extra">last seen recently</div>'
+    assert ops._parse_tme_preview(user, "john") is None
+
+
+@pytest.mark.asyncio
+async def test_public_channel_scraper_enriches_dedupes_filters_limits(monkeypatch):
+    # Account-free path: no account_id -> web discovery + t.me preview enrichment.
+    async def fake_ddg(session, keyword, want):
+        return ["phcasino", "usadeals", "phgroup", "phcasino"]  # includes a duplicate
+    previews = {
+        "phcasino": {"username": "phcasino", "title": "PH Casino", "type": "channel", "members": 1200},
+        "usadeals": {"username": "usadeals", "title": "USA Deals", "type": "channel", "members": 5},
+        "phgroup": {"username": "phgroup", "title": "PH Group", "type": "group", "members": 30},
+    }
+    async def fake_preview(session, username):
+        info = previews.get(username)
+        return dict(info) if info else None
+    monkeypatch.setattr(ops, "_ddg_usernames", fake_ddg)
+    monkeypatch.setattr(ops, "_tme_preview", fake_preview)
+
+    country = await ops.scrape_channels(ops.ChannelScrapeRequest(keywords=["casino"], country="ph"))
+    assert country["mode"] == "public"
+    assert {r["username"] for r in country["results"]} == {"phcasino", "phgroup"}
+    assert all(r["url"] == f"https://t.me/{r['username']}" for r in country["results"])
+
+    groups = await ops.scrape_channels(ops.ChannelScrapeRequest(keywords=["x"], group_type="group"))
+    assert [r["username"] for r in groups["results"]] == ["phgroup"]
+
+    capped = await ops.scrape_channels(ops.ChannelScrapeRequest(keywords=["x"], limit=1))
+    assert capped["total"] == 1
+
+
 def allow_second_account(policy):
     second = policy_module.hash_identifier("second")
     for approval in policy.data["approvals"].values():
