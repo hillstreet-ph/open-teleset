@@ -70,6 +70,32 @@ class ScrapeRequest(BaseModel):
     activity_filter: ActivityFilter = "all"
 
 
+class ChannelScrapeRequest(BaseModel):
+    account_id: str
+    keywords: List[str] = Field(default_factory=list)      # directory search terms
+    country: str = Field(default="", max_length=64)        # optional title/username filter
+    group_type: Literal["all", "group", "channel"] = "all"
+    limit: int = Field(default=100, ge=1, le=500, strict=True)  # max results after filtering
+
+    @model_validator(mode="after")
+    def _normalise(self):
+        cleaned = []
+        for raw in self.keywords:
+            term = raw.strip()
+            if not term:
+                continue
+            if len(term) > 64:
+                raise ValueError("Each keyword must be at most 64 characters")
+            cleaned.append(term)
+        if not cleaned:
+            raise ValueError("Provide at least one search keyword")
+        if len(cleaned) > 20:
+            raise ValueError("Provide at most 20 keywords")
+        self.keywords = cleaned
+        self.country = self.country.strip()
+        return self
+
+
 class AddMembersRequest(BaseModel):
     account_id: str
     source_target: Optional[str] = None   # source channel/group (if scraping first)
@@ -195,6 +221,71 @@ async def scrape_members(request: ScrapeRequest):
             f"Scrape failed for {request.target}: {type(e).__name__}", "error",
         )
         raise HTTPException(status_code=500, detail=type(e).__name__)
+
+
+@telegram_ops_router.post("/api/scraper/channels")
+async def scrape_channels(request: ChannelScrapeRequest):
+    """Discover public Telegram channels/groups by keyword.
+
+    Read-only directory search (contacts.SearchRequest). Returns only public
+    channels/supergroups that expose a t.me URL, de-duplicated across keywords.
+    Telegram exposes no channel country, so `country` is an optional
+    case-insensitive filter on the title/username, not a geographic lookup.
+    No messages are sent and no groups are joined.
+    """
+    client = await account_manager.get_client(request.account_id)
+    if not client:
+        raise HTTPException(status_code=400, detail="Client unavailable — account not connected")
+
+    country = request.country.lower()
+    seen: set = set()
+    results: list = []
+    for keyword in request.keywords:
+        if len(results) >= request.limit:
+            break
+        try:
+            found = await client(functions.contacts.SearchRequest(q=keyword, limit=min(request.limit, 100)))
+        except errors.FloodWaitError as exc:
+            raise HTTPException(status_code=429,
+                                detail=f"Telegram rate limit reached — retry in {exc.seconds}s") from None
+        except errors.RPCError:
+            # A single bad/blocked query must not fail the whole search.
+            continue
+        for chat in getattr(found, "chats", []):
+            username = getattr(chat, "username", None)
+            chat_id = getattr(chat, "id", None)
+            if not username or chat_id in seen:
+                continue  # only public, shareable, de-duplicated entries
+            if getattr(chat, "broadcast", False):
+                kind = "channel"
+            elif getattr(chat, "megagroup", False) or isinstance(chat, types.Chat):
+                kind = "group"
+            else:
+                continue
+            if request.group_type != "all" and kind != request.group_type:
+                continue
+            title = getattr(chat, "title", "") or ""
+            if country and country not in title.lower() and country not in username.lower():
+                continue
+            seen.add(chat_id)
+            results.append({
+                "id": chat_id,
+                "title": title,
+                "username": username,
+                "url": f"https://t.me/{username}",
+                "type": kind,
+                "members": getattr(chat, "participants_count", None),
+                "verified": bool(getattr(chat, "verified", False)),
+                "matched_keyword": keyword,
+            })
+            if len(results) >= request.limit:
+                break
+
+    log_manager.add_log(
+        "ChannelScraper", request.account_id,
+        f"Found {len(results)} channels/groups for {len(request.keywords)} keyword(s)", "success",
+    )
+    return {"success": True, "total": len(results), "results": results}
 
 
 # ============ 2. Member Adder ============

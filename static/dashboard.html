@@ -1146,6 +1146,81 @@
                         </div>
                     </div>
                 </div>
+
+                <div class="card" style="margin-top: 20px;">
+                    <div class="card-header">
+                        <h3>🔎 Channel &amp; Group Finder</h3>
+                    </div>
+                    <p style="color: #999; margin-bottom: 20px;">Discover public Telegram channels and groups by keyword and export their t.me URLs. Read-only — no messages are sent and nothing is joined. Telegram exposes no channel country, so the country field filters titles/usernames.</p>
+
+                    <div class="form-group">
+                        <label>Account</label>
+                        <select class="form-control" v-model="channelScraper.accountId">
+                            <option value="">-- Select account --</option>
+                            <option v-for="acc in accounts" :key="acc.account_id" :value="acc.account_id">
+                                {{ acc.phone || acc.account_id }} {{ acc.username ? '(@' + acc.username + ')' : '' }}
+                            </option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Keywords (one per line or comma-separated)</label>
+                        <textarea class="form-control" rows="3" v-model="channelScraper.keywords" placeholder="casino&#10;crypto trading&#10;forex signals"></textarea>
+                    </div>
+                    <div style="display: flex; gap: 15px; flex-wrap: wrap;">
+                        <div class="form-group" style="flex: 1; min-width: 150px;">
+                            <label>Country / language keyword (optional)</label>
+                            <input class="form-control" v-model="channelScraper.country" placeholder="e.g. Philippines, PH, indonesia">
+                        </div>
+                        <div class="form-group" style="flex: 1; min-width: 120px;">
+                            <label>Type</label>
+                            <select class="form-control" v-model="channelScraper.groupType">
+                                <option value="all">All</option>
+                                <option value="channel">Channels</option>
+                                <option value="group">Groups</option>
+                            </select>
+                        </div>
+                        <div class="form-group" style="flex: 1; min-width: 100px;">
+                            <label>Limit</label>
+                            <input class="form-control" type="number" v-model.number="channelScraper.limit" min="1" max="500">
+                        </div>
+                    </div>
+                    <button class="btn btn-primary" @click="runChannelScraper" :disabled="channelScraper.loading || !channelScraper.accountId || !channelScraper.keywords.trim()">
+                        {{ channelScraper.loading ? '⏳ Searching...' : '🔎 Find Channels &amp; Groups' }}
+                    </button>
+                    <p v-if="channelScraper.summary" style="margin-top: 12px;">{{ channelScraper.summary }}</p>
+
+                    <div v-if="channelScraper.results.length" style="margin-top: 20px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; gap: 10px; flex-wrap: wrap;">
+                            <h4 style="margin:0;">Found: {{ channelScraper.results.length }}</h4>
+                            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                                <button class="btn btn-outline" @click="exportChannelCSV">⬇ Export CSV</button>
+                                <button class="btn btn-outline" @click="copyChannelUrls" style="font-size: 0.85em;">📋 Copy URLs</button>
+                            </div>
+                        </div>
+                        <div style="max-height: 400px; overflow-y: auto; border: 1px solid rgba(255,255,255,0.1); border-radius: 8px;">
+                            <table style="width: 100%; border-collapse: collapse;">
+                                <thead>
+                                    <tr style="background: rgba(255,255,255,0.05); position: sticky; top: 0;">
+                                        <th style="padding: 8px 12px; text-align: left;">#</th>
+                                        <th style="padding: 8px 12px; text-align: left;">Title</th>
+                                        <th style="padding: 8px 12px; text-align: left;">URL</th>
+                                        <th style="padding: 8px 12px; text-align: left;">Type</th>
+                                        <th style="padding: 8px 12px; text-align: left;">Members</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr v-for="(c, idx) in channelScraper.results" :key="c.id" style="border-top: 1px solid rgba(255,255,255,0.05);">
+                                        <td style="padding: 6px 12px; color: #888;">{{ idx + 1 }}</td>
+                                        <td style="padding: 6px 12px;">{{ c.title }} <span v-if="c.verified" title="verified">✅</span></td>
+                                        <td style="padding: 6px 12px;"><a :href="c.url" target="_blank" rel="noopener noreferrer" style="color: #667eea;">{{ c.url }}</a></td>
+                                        <td style="padding: 6px 12px;">{{ c.type }}</td>
+                                        <td style="padding: 6px 12px;">{{ c.members == null ? '—' : c.members }}</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
             </div>
 
             <!-- ============ Adder Tab ============ -->
@@ -2168,6 +2243,16 @@
                         loading: false,
                         results: [],
                     },
+                    channelScraper: {
+                        accountId: '',
+                        keywords: '',
+                        country: '',
+                        groupType: 'all',
+                        limit: 100,
+                        summary: '',
+                        loading: false,
+                        results: [],
+                    },
                     outreachJobs: [], outreachJobsLoading: false, outreachJobError: '', outreachWorker: '',
                     outreachJobBusy: '', jobsPoll: null,
                     // Adder
@@ -2309,6 +2394,35 @@
                 exportScraperCSV() {
                     const fields = ['username', 'id', 'first_name', 'last_name', 'is_bot', 'activity', 'last_seen'];
                     this.downloadCSV('telegram-members.csv', [fields, ...this.scraper.results.map(member => fields.map(field => member[field]))]);
+                },
+                async runChannelScraper() {
+                    this.channelScraper.loading = true;
+                    this.channelScraper.results = [];
+                    this.channelScraper.summary = '';
+                    try {
+                        const keywords = this.channelScraper.keywords.split(/[\n,]/).map(k => k.trim()).filter(Boolean);
+                        const res = await _api.post('/api/scraper/channels', {
+                            account_id: this.channelScraper.accountId,
+                            keywords,
+                            country: this.channelScraper.country,
+                            group_type: this.channelScraper.groupType,
+                            limit: this.channelScraper.limit,
+                        });
+                        this.channelScraper.results = res.data.results || [];
+                        this.channelScraper.summary = `Found ${res.data.total || 0} public channels/groups.`;
+                    } catch (e) {
+                        alert('Search failed: ' + (e.response?.data?.detail || e.message));
+                    } finally {
+                        this.channelScraper.loading = false;
+                    }
+                },
+                exportChannelCSV() {
+                    const fields = ['title', 'username', 'url', 'type', 'members', 'verified', 'id', 'matched_keyword'];
+                    this.downloadCSV('telegram-channels.csv', [fields, ...this.channelScraper.results.map(c => fields.map(f => c[f]))]);
+                },
+                copyChannelUrls() {
+                    const urls = this.channelScraper.results.map(c => c.url).join('\n');
+                    navigator.clipboard.writeText(urls).then(() => this.showToast('URLs copied')).catch(() => this.showToast('Copy failed', true));
                 },
                 async importRecipientCSV(event, destination) {
                     const file = event.target.files?.[0];
