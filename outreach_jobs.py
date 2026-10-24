@@ -207,12 +207,22 @@ class JobStore:
             # Resolve only for new jobs and freeze the selected authorization.
             # Idempotent retries above must not reselect or renew authorization.
             policy_targets = [t for t in targets if re.fullmatch(r"(?:[a-z][a-z0-9_]{3,31}|[1-9][0-9]{0,19})", t)] if kind == "member_add" else targets
+            member_rotation = (kind == "member_add" and len(accounts) > 1
+                               and getattr(request, "rotation_mode", "single") == "round_robin")
             if kind == "member_add" and request.approval_id is not None:
                 outreach_policy.validate_new_member_approval(request.approval_id)
             if kind == "member_add" and request.approval_id is None:
                 if request.consent_confirmed:
-                    payload["approval_id"] = outreach_policy.record_member_job_consents(policy_targets, accounts[0], operator)
+                    # Record the join consent for the whole selected set so any selected
+                    # account may invite; the worker then rotates to an available account
+                    # when one hits a limit (mirrors personal_send rotation).
+                    grant_accounts = accounts if member_rotation else accounts[0]
+                    payload["approval_id"] = outreach_policy.record_member_job_consents(policy_targets, grant_accounts, operator)
                     payload["member_form_grant"] = True
+                    if member_rotation:
+                        payload["rotate_any_account"] = True
+                elif member_rotation:
+                    raise HTTPException(400, "Rotation requires confirming recipient consent for the selected accounts")
                 else:
                     payload["approval_id"] = outreach_policy.select_member_approval(accounts[0])
             payload["sender_identities"] = identities
@@ -790,7 +800,7 @@ async def submit_members(body: MemberJobRequest, request: Request):
     valid = [t for t in targets if re.fullmatch(r"(?:[a-z][a-z0-9_]{3,31}|[1-9][0-9]{0,19})", t)]
     if not valid:
         raise HTTPException(400, "No valid recipient remains after skipping invalid entries")
-    return await submit("member_add", owner(request), body, targets, [body.account_id])
+    return await submit("member_add", owner(request), body, targets, body.selected_accounts())
 
 
 async def submit(kind, operator, body, targets, accounts):

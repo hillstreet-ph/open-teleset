@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
+from pydantic import ValidationError
 from telethon import errors, types
 
 import outreach_jobs as jobs
@@ -355,6 +356,77 @@ async def test_existing_member_is_skipped_without_invitation(env, monkeypatch):
     assert result['skipped'] == 1 and result['results'][0]['reason'] == 'already_member'
     assert client.await_count == 1
     assert isinstance(client.call_args.args[0], jobs.functions.channels.GetParticipantRequest)
+
+
+def _job_payload(env, job):
+    with env.store.db() as db:
+        return env.store.unpack(db.execute("SELECT payload FROM jobs WHERE id=?", (job,)).fetchone()[0])
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"rotation_mode": "round_robin"},                                   # no account_ids
+    {"rotation_mode": "round_robin", "account_ids": ["a", "a"]},        # duplicate
+    {"rotation_mode": "round_robin", "account_ids": ["a", "b"], "account_id": "a"},  # both set
+    {"rotation_mode": "single", "account_id": "a", "account_ids": ["b"]},            # single + rotation
+])
+def test_member_add_invalid_rotation_input(kwargs):
+    with pytest.raises(ValidationError):
+        jobs.MemberJobRequest(dest_target='999', usernames=['111'], request_id='member_key_00000001', **kwargs)
+
+
+def test_member_rotation_records_consent_for_every_selected_account(env):
+    req = jobs.MemberJobRequest(dest_target='999', usernames=['111', '222'],
+        rotation_mode='round_robin', account_ids=['a', 'b'], consent_confirmed=True,
+        request_id='member_rotation_key_1')
+    job = env.store.submit('member_add', 'owner', req, ['111', '222'], req.selected_accounts())
+    payload = _job_payload(env, job)
+    assert payload['rotate_any_account'] is True and payload['member_form_grant'] is True
+    data = env.evaluator._load()
+    expected = sorted({policy.hash_identifier('a'), policy.hash_identifier('b')})
+    assert data['approvals'][payload['approval_id']]['account_hashes'] == expected
+    rows = [c for c in data['consents'] if c.get('approval_id') == payload['approval_id']]
+    assert rows and all(c['account_hashes'] == expected and 'member_add' in c['actions'] for c in rows)
+
+
+def test_member_rotation_requires_confirmed_consent(env):
+    req = jobs.MemberJobRequest(dest_target='999', usernames=['111'],
+        rotation_mode='round_robin', account_ids=['a', 'b'], consent_confirmed=False,
+        request_id='member_rotation_key_2')
+    with pytest.raises(HTTPException) as exc:
+        env.store.submit('member_add', 'owner', req, ['111'], req.selected_accounts())
+    assert exc.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_member_rotation_invites_through_available_account(env, monkeypatch):
+    req = jobs.MemberJobRequest(dest_target='999', usernames=['111', '222'],
+        rotation_mode='round_robin', account_ids=['a', 'b'], consent_confirmed=True,
+        request_id='member_rotation_key_3')
+    job = env.store.submit('member_add', 'owner', req, ['111', '222'], req.selected_accounts())
+
+    def make_client(identity, flood):
+        client = AsyncMock()
+        client.get_me.return_value = types.User(id=identity)
+        client.get_entity.side_effect = lambda value: types.User(id=int(value))
+        async def call(request_obj):
+            if isinstance(request_obj, jobs.functions.channels.GetParticipantRequest):
+                raise errors.UserNotParticipantError(None)
+            if isinstance(request_obj, jobs.functions.channels.InviteToChannelRequest):
+                if flood:
+                    raise errors.PeerFloodError(None)
+                return SimpleNamespace(missing_invitees=[])
+            return SimpleNamespace()
+        client.side_effect = call
+        return client
+    clients = {'a': make_client(999, flood=True), 'b': make_client(998, flood=False)}
+    monkeypatch.setattr(jobs.account_manager, 'get_client', AsyncMock(side_effect=lambda acc: clients[acc]))
+    for _ in range(6):
+        await env.worker.tick()
+        env.clock[0] += 40   # advance past the per-add delay; 'a' stays spam-cooled
+    snap = env.store.snapshot(job, 'owner')
+    # 'a' is spam-limited, so both recipients are invited through 'b' instead of stalling.
+    assert snap['completed'] == 2 and snap['failed'] == 0
+    clients['b'].get_me.assert_awaited()
 
 
 @pytest.mark.asyncio

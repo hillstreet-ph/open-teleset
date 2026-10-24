@@ -1233,6 +1233,23 @@
                     <p style="color: #999; margin-bottom: 20px;">Add members to a Telegram channel or group</p>
 
                     <div class="form-group">
+                        <label>Sender mode</label>
+                        <select class="form-control" v-model="adder.rotationMode">
+                            <option value="single">Single account</option>
+                            <option value="round_robin">Automatic rotation (round robin)</option>
+                        </select>
+                    </div>
+                    <div class="form-group" v-if="adder.rotationMode === 'round_robin'">
+                        <label>Rotation accounts</label>
+                        <div style="display:grid;gap:8px;max-height:200px;overflow:auto;">
+                            <label v-for="acc in accounts" :key="acc.account_id" style="display:flex;align-items:center;gap:10px;padding:8px;">
+                                <input type="checkbox" v-model="adder.accountIds" :value="acc.account_id">
+                                {{ (acc.username && acc.username !== 'N/A') ? acc.username : ((acc.phone && acc.phone !== 'N/A') ? acc.phone : acc.account_id) }} · {{ acc.connected ? 'Connected' : 'Check connection' }}
+                            </label>
+                        </div>
+                        <small>{{ adder.accountIds.length }} selected. Each recipient is invited by whichever selected account is available; when one hits a Telegram limit it rotates out automatically and the others carry on. Your consent confirmation below covers every selected account.</small>
+                    </div>
+                    <div class="form-group" v-else>
                         <label>Account</label>
                         <select class="form-control" v-model="adder.accountId">
                             <option value="">-- Select account --</option>
@@ -1279,7 +1296,7 @@
                         <label><input type="checkbox" v-model="adder.consentConfirmed"> I confirm these recipients agreed to join this destination, and I authorize this job using the selected account.</label>
                         <small>Only confirmed recipients are processed. Telegram permissions and cooldowns still apply. Missing users are skipped; account or destination problems pause the job.</small>
                     </div>
-                    <button class="btn btn-primary" @click="runAdder" :disabled="adder.loading || !adder.accountId || !adder.destTarget || !adder.usernames.trim()">
+                    <button class="btn btn-primary" @click="runAdder" :disabled="adder.loading || (adder.rotationMode === 'single' ? !adder.accountId : !adder.accountIds.length) || !adder.destTarget || !adder.usernames.trim()">
                         {{ adder.loading ? 'Submitting...' : 'Start Member Adder' }}
                     </button>
 
@@ -2545,8 +2562,13 @@
                         if (!Number.isFinite(this.adder.delay) || this.adder.delay < 35 || this.adder.delay > 3600) {
                             throw new Error('Delay Between Adds must be a number from 35 to 3600 seconds.');
                         }
+                        const rotating = this.adder.rotationMode === 'round_robin';
+                        if (rotating ? !this.adder.accountIds.length : !this.adder.accountId) {
+                            throw new Error('Select at least one account for the chosen sender mode.');
+                        }
                         const payload = {
-                            account_id: this.adder.accountId,
+                            rotation_mode: this.adder.rotationMode,
+                            ...(rotating ? { account_ids: this.adder.accountIds } : { account_id: this.adder.accountId }),
                             dest_target: this.adder.destTarget,
                             delay: this.adder.delay,
                             filter_bots: this.adder.filterBots,
