@@ -8,6 +8,7 @@ FastAPI APIRouter providing REST endpoints for:
 3. POST /api/bulk/send-personal   — send personal messages to many users
 """
 import asyncio
+import os
 import re as _re
 from datetime import datetime, timedelta, timezone
 from html import unescape
@@ -310,11 +311,117 @@ async def _tme_preview(session, username):
     return _parse_tme_preview(html, username)
 
 
-async def _scrape_channels_public(request: ChannelScrapeRequest):
-    """Account-free discovery: public web search + public t.me preview pages.
+# TGStat directory API — reliable account-free search (keyword over title and
+# description, native country filter). Requires a free TGSTAT_TOKEN.
+_TGSTAT_SEARCH_URL = "https://api.tgstat.ru/channels/search"
 
-    No Telegram account, no credentials. Results depend on the public sources
-    being reachable and not rate-limiting the server.
+
+def _tgstat_peer_type(group_type):
+    return {"channel": "channel", "group": "chat"}.get(group_type, "all")
+
+
+def _parse_tgstat_item(item, fallback_type):
+    """Normalise one TGStat search item to our result shape (defensive)."""
+    if not isinstance(item, dict):
+        return None
+    username = str(item.get("username") or "").lstrip("@").strip()
+    if not username:
+        match = _TME_USERNAME_RE.search(str(item.get("link") or item.get("url") or ""))
+        username = match.group(1) if match else ""
+    if not username or username.lower() in _TME_RESERVED:
+        return None
+    raw_type = str(item.get("type") or item.get("peer_type") or fallback_type or "").lower()
+    kind = "group" if raw_type in ("chat", "group", "supergroup", "megagroup") else "channel"
+    members = item.get("participants_count")
+    if not isinstance(members, int) or isinstance(members, bool):
+        members = None
+    return {
+        "id": username,
+        "title": str(item.get("title") or username),
+        "username": username,
+        "url": f"https://t.me/{username}",
+        "type": kind,
+        "members": members,
+        "verified": bool(item.get("verified") or item.get("is_verified")),
+        "about": str(item.get("about") or ""),
+    }
+
+
+async def _tgstat_search(session, token, keyword, peer_type, country_code, limit):
+    params = {"token": token, "q": keyword, "search_by_description": "1",
+              "peer_type": peer_type, "limit": str(min(max(limit, 1), 100))}
+    if country_code:
+        params["country"] = country_code
+    try:
+        async with session.get(_TGSTAT_SEARCH_URL, params=params,
+                               timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            data = await resp.json(content_type=None)
+    except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
+        return []
+    if not isinstance(data, dict) or data.get("status") != "ok":
+        return []
+    response = data.get("response")
+    items = response.get("items") if isinstance(response, dict) else None
+    if not isinstance(items, list):
+        return []
+    return [info for info in (_parse_tgstat_item(it, peer_type) for it in items) if info]
+
+
+async def _scrape_channels_tgstat(request: ChannelScrapeRequest, token):
+    """Account-free discovery via the TGStat directory API.
+
+    Matches the keyword over channel/chat titles AND descriptions, with TGStat's
+    native country filter when a 2-letter country code is given; a free-text
+    country narrows client-side on title/description/username.
+    """
+    peer_type = _tgstat_peer_type(request.group_type)
+    country = request.country.strip()
+    country_code = country if len(country) == 2 and country.isalpha() else ""
+    text_filter = "" if country_code else country.lower()
+    seen: set = set()
+    results: list = []
+    async with aiohttp.ClientSession(headers=_BROWSER_HEADERS) as session:
+        for keyword in request.keywords:
+            if len(results) >= request.limit:
+                break
+            for info in await _tgstat_search(session, token, keyword, peer_type, country_code, request.limit):
+                key = info["username"].lower()
+                if key in seen:
+                    continue
+                if request.group_type != "all" and info["type"] != request.group_type:
+                    continue
+                if text_filter and text_filter not in (
+                        info["title"] + " " + info["about"] + " " + info["username"]).lower():
+                    continue
+                seen.add(key)
+                info["matched_keyword"] = keyword
+                info.pop("about", None)
+                results.append(info)
+                if len(results) >= request.limit:
+                    break
+    log_manager.add_log(
+        "ChannelScraper", "tgstat",
+        f"Found {len(results)} channels/groups (TGStat) for {len(request.keywords)} keyword(s)", "success",
+    )
+    return {"success": True, "total": len(results), "results": results, "mode": "tgstat"}
+
+
+async def _scrape_channels_public(request: ChannelScrapeRequest):
+    """Account-free discovery. Uses the TGStat directory API when TGSTAT_TOKEN is
+    configured (reliable, searches title + description, native country filter);
+    otherwise falls back to best-effort public web discovery."""
+    token = os.getenv("TGSTAT_TOKEN", "").strip()
+    if token:
+        return await _scrape_channels_tgstat(request, token)
+    return await _scrape_channels_web(request)
+
+
+async def _scrape_channels_web(request: ChannelScrapeRequest):
+    """Account-free fallback: public web search + public t.me preview pages.
+
+    No credentials. Results depend on the public sources being reachable and not
+    rate-limiting the server, so this can legitimately return nothing; configure
+    TGSTAT_TOKEN for reliable account-free search.
     """
     country = request.country.lower()
     want_candidates = min(request.limit * 3, 180)

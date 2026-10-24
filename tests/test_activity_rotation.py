@@ -181,6 +181,45 @@ async def test_public_channel_scraper_enriches_dedupes_filters_limits(monkeypatc
     assert capped["total"] == 1
 
 
+def test_parse_tgstat_item_variants():
+    channel = {"username": "@phcasino", "title": "PH Casino", "participants_count": 1200,
+               "about": "best casino agents", "type": "channel", "is_verified": True}
+    assert ops._parse_tgstat_item(channel, "all") == {
+        "id": "phcasino", "title": "PH Casino", "username": "phcasino",
+        "url": "https://t.me/phcasino", "type": "channel", "members": 1200,
+        "verified": True, "about": "best casino agents"}
+    chat = {"link": "https://t.me/manilatraders", "title": "Manila Traders", "type": "chat"}
+    got = ops._parse_tgstat_item(chat, "all")
+    assert got["type"] == "group" and got["username"] == "manilatraders" and got["members"] is None
+    assert ops._parse_tgstat_item({"title": "no username or link"}, "channel") is None
+    assert ops._parse_tgstat_item({"username": "s"}, "channel") is None  # reserved word
+
+
+@pytest.mark.asyncio
+async def test_tgstat_scraper_used_when_token_set(monkeypatch):
+    monkeypatch.setenv("TGSTAT_TOKEN", "secret-token")
+    calls = []
+    async def fake_search(session, token, keyword, peer_type, country_code, limit):
+        calls.append((token, keyword, peer_type, country_code))
+        return [
+            {"id": "phcasino", "title": "PH Casino", "username": "phcasino",
+             "url": "https://t.me/phcasino", "type": "channel", "members": 1200,
+             "verified": True, "about": "casino agents in the philippines"},
+            {"id": "usadeals", "title": "USA Deals", "username": "usadeals",
+             "url": "https://t.me/usadeals", "type": "channel", "members": 5,
+             "verified": False, "about": "deals in the usa"},
+        ]
+    monkeypatch.setattr(ops, "_tgstat_search", fake_search)
+    res = await ops.scrape_channels(ops.ChannelScrapeRequest(keywords=["casino"], country="philippines"))
+    assert res["mode"] == "tgstat"
+    # Free-text country narrows on title/description/username; only phcasino matches.
+    assert [r["username"] for r in res["results"]] == ["phcasino"]
+    assert "about" not in res["results"][0] and calls[0][0] == "secret-token" and calls[0][3] == ""
+    # A 2-letter country code is passed to TGStat server-side instead of text-filtering.
+    await ops.scrape_channels(ops.ChannelScrapeRequest(keywords=["casino"], country="ph"))
+    assert calls[-1][3] == "ph"
+
+
 def allow_second_account(policy):
     second = policy_module.hash_identifier("second")
     for approval in policy.data["approvals"].values():
