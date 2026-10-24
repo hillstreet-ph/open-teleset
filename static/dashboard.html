@@ -1151,7 +1151,7 @@
                     <div class="card-header">
                         <h3>🔎 Channel &amp; Group Finder</h3>
                     </div>
-                    <p style="color: #999; margin-bottom: 20px;">Discover public Telegram channels and groups by keyword and export their t.me URLs. <strong>No Telegram account required</strong> — leave the account blank to search public sources. Read-only: no messages are sent and nothing is joined. Telegram exposes no channel country, so the country field filters titles/usernames.</p>
+                    <p style="color: #999; margin-bottom: 20px;">Discover public Telegram channels and groups by keyword and export their t.me URLs. <strong>No Telegram account required</strong> — leave the account blank. Account-free search uses the TGStat directory (matches channel names <em>and</em> descriptions, with a country filter) when a <code>TGSTAT_TOKEN</code> is configured; without it, it falls back to public web discovery, which a server is often rate-limited out of (may return 0 — ask an admin to set the free token). A connected account instead uses Telegram's own search. Read-only: no messages are sent and nothing is joined.</p>
 
                     <div class="form-group">
                         <label>Account (optional)</label>
