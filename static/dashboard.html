@@ -5,15 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>open-teleset · Telegram Multi-Account Manager</title>
     <script src="/config.js"></script>
-    <!-- Vendor libs with a second-CDN fallback so one CDN hiccup (common on mobile)
-         never leaves a silent blank page. If the primary fails to define the
-         global, document.write pulls the same library from the backup CDN. -->
+    <!-- Vendor libs load from a primary CDN here. If one fails to define its
+         global (a CDN hiccup, common on mobile), the boot loader at the end of
+         the page pulls the same library from a backup CDN before starting the
+         app, so one CDN outage never leaves a silent blank page. -->
     <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
-    <script>typeof document==='undefined'||window.Vue||document.write('<script src="https://cdn.jsdelivr.net/npm/vue@3/dist/vue.global.js"><\/script>')</script>
     <script src="https://unpkg.com/axios@1/dist/axios.min.js"></script>
-    <script>typeof document==='undefined'||window.axios||document.write('<script src="https://cdn.jsdelivr.net/npm/axios@1/dist/axios.min.js"><\/script>')</script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-    <script>typeof document==='undefined'||window.supabase||document.write('<script src="https://unpkg.com/@supabase/supabase-js@2/dist/umd/supabase.min.js"><\/script>')</script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -1929,22 +1927,10 @@
 
     <script src="/static/csv.js?v=0ce96ee8749902b2"></script>
     <script>
-        // Fail loudly, not blankly: if a vendor CDN did not load (both the
-        // primary and the fallback), show a reload prompt instead of a blank page.
-        // Checked as bare globals so the browser (CDN scripts define globals)
-        // and the headless test harness both resolve them the same way.
-        if (typeof Vue === 'undefined' || typeof axios === 'undefined' || typeof supabase === 'undefined') {
-            document.body.innerHTML = '<div style="min-height:100vh;display:flex;flex-direction:column;align-items:center;'
-                + 'justify-content:center;gap:1rem;color:#e5e7eb;font-family:system-ui,-apple-system,sans-serif;'
-                + 'text-align:center;padding:2rem;background:#0f1424;">'
-                + '<div style="font-size:2.4rem;">⚠️</div>'
-                + '<div style="max-width:28rem;">The dashboard could not load required libraries. '
-                + 'This is usually a temporary network issue — please reconnect and try again.</div>'
-                + '<button onclick="location.reload()" style="padding:.7rem 1.4rem;border:none;border-radius:8px;'
-                + 'background:#7c3aed;color:#fff;font-size:1rem;cursor:pointer;">Reload</button></div>';
-            throw new Error('open-teleset: vendor libraries failed to load');
-        }
-
+        // The whole dashboard boots from startApp(), invoked by the vendor
+        // loader at the end of this script once Vue, axios and supabase are
+        // present (the loader recovers a missing one from a backup CDN first).
+        function startApp() {
         // Supabase client
         const _supabase = supabase.createClient(
             window.OPEN_TELESET_CONFIG?.supabaseUrl || 'https://hoseohvgoiarxluxqwqv.supabase.co',
@@ -3953,6 +3939,41 @@
                 if (this.apiResponseInterceptor !== null) _api.interceptors.response.eject(this.apiResponseInterceptor)
             }
         }).mount('#app')
+        } // end startApp
+
+        // Vendor boot loader. Each vendor library is loaded from a primary CDN
+        // (tags in <head>); if one did not define its global, recover it from a
+        // backup CDN via an appended script element (no eval-like string
+        // execution) and boot once every global resolves. If one is still missing,
+        // show a visible reload prompt instead of a silent blank page.
+        (function bootDashboard() {
+            const vendors = [
+                [() => typeof Vue !== 'undefined', 'https://cdn.jsdelivr.net/npm/vue@3/dist/vue.global.js'],
+                [() => typeof axios !== 'undefined', 'https://cdn.jsdelivr.net/npm/axios@1/dist/axios.min.js'],
+                [() => typeof supabase !== 'undefined', 'https://unpkg.com/@supabase/supabase-js@2/dist/umd/supabase.min.js'],
+            ]
+            function finish() {
+                if (vendors.every(([present]) => present())) { startApp(); return }
+                document.body.innerHTML = '<div style="min-height:100vh;display:flex;flex-direction:column;align-items:center;'
+                    + 'justify-content:center;gap:1rem;color:#e5e7eb;font-family:system-ui,-apple-system,sans-serif;'
+                    + 'text-align:center;padding:2rem;background:#0f1424;">'
+                    + '<div style="font-size:2.4rem;">⚠️</div>'
+                    + '<div style="max-width:28rem;">The dashboard could not load required libraries. '
+                    + 'This is usually a temporary network issue — please reconnect and try again.</div>'
+                    + '<button onclick="location.reload()" style="padding:.7rem 1.4rem;border:none;border-radius:8px;'
+                    + 'background:#7c3aed;color:#fff;font-size:1rem;cursor:pointer;">Reload</button></div>'
+                throw new Error('open-teleset: vendor libraries failed to load')
+            }
+            const missing = vendors.filter(([present]) => !present())
+            if (!missing.length) { finish(); return }
+            let remaining = missing.length
+            for (const [, src] of missing) {
+                const script = document.createElement('script')
+                script.src = src
+                script.onload = script.onerror = () => { if (--remaining === 0) finish() }
+                document.head.appendChild(script)
+            }
+        })()
     </script>
 </body>
 </html>
