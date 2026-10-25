@@ -155,7 +155,10 @@ def test_parse_tme_preview_channel_group_and_user():
 
 @pytest.mark.asyncio
 async def test_public_channel_scraper_enriches_dedupes_filters_limits(monkeypatch):
-    # Account-free path: no account_id -> web discovery + t.me preview enrichment.
+    # Account-free path: no account_id and no TGStat token -> web discovery.
+    async def no_token(*_a, **_k):
+        return ""
+    monkeypatch.setattr(ops, "get_setting", no_token)
     async def fake_ddg(session, keyword, want):
         return ["phcasino", "usadeals", "phgroup", "phcasino"]  # includes a duplicate
     previews = {
