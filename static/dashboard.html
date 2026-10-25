@@ -5,13 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>open-teleset · Telegram Multi-Account Manager</title>
     <script src="/config.js"></script>
-    <!-- Vendor libs load from a primary CDN here. If one fails to define its
-         global (a CDN hiccup, common on mobile), the boot loader at the end of
-         the page pulls the same library from a backup CDN before starting the
-         app, so one CDN outage never leaves a silent blank page. -->
-    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
-    <script src="https://unpkg.com/axios@1/dist/axios.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+    <!-- Vendor libs are self-hosted on this same origin so they load as
+         reliably as the page itself. Third-party CDNs (unpkg/jsdelivr) are
+         blocked on some mobile networks and in some regions, which previously
+         left a silent blank page. The boot loader at the end of the page falls
+         back to a CDN only if a same-origin file is somehow unavailable. -->
+    <script src="/static/vendor/vue.global.prod.js"></script>
+    <script src="/static/vendor/axios.min.js"></script>
+    <script src="/static/vendor/supabase.umd.js"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -3941,11 +3942,11 @@
         }).mount('#app')
         } // end startApp
 
-        // Vendor boot loader. Each vendor library is loaded from a primary CDN
-        // (tags in <head>); if one did not define its global, recover it from a
-        // backup CDN via an appended script element (no eval-like string
-        // execution) and boot once every global resolves. If one is still missing,
-        // show a visible reload prompt instead of a silent blank page.
+        // Vendor boot loader. Each vendor library is loaded same-origin from
+        // /static/vendor (tags in <head>); if one did not define its global,
+        // recover it from a CDN via an appended script element (no eval-like
+        // string execution) and boot once every global resolves. If one is still
+        // missing, show a visible reload prompt instead of a silent blank page.
         (function bootDashboard() {
             const vendors = [
                 [() => typeof Vue !== 'undefined', 'https://cdn.jsdelivr.net/npm/vue@3/dist/vue.global.js'],
