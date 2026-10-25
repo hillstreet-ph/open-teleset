@@ -8,7 +8,6 @@ FastAPI APIRouter providing REST endpoints for:
 3. POST /api/bulk/send-personal   — send personal messages to many users
 """
 import asyncio
-import os
 import re as _re
 from datetime import datetime, timedelta, timezone
 from html import unescape
@@ -18,6 +17,8 @@ import aiohttp
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, model_validator
 from telethon import errors, functions, types, utils
+
+from open_teleset.app_settings import get_setting
 
 from account_manager import account_manager
 from log_manager import log_manager
@@ -409,8 +410,9 @@ async def _scrape_channels_tgstat(request: ChannelScrapeRequest, token):
 async def _scrape_channels_public(request: ChannelScrapeRequest):
     """Account-free discovery. Uses the TGStat directory API when TGSTAT_TOKEN is
     configured (reliable, searches title + description, native country filter);
-    otherwise falls back to best-effort public web discovery."""
-    token = os.getenv("TGSTAT_TOKEN", "").strip()
+    otherwise falls back to best-effort public web discovery. The token comes
+    from the TGSTAT_TOKEN env var or the operations_shared.app_settings store."""
+    token = await get_setting("tgstat_token", "TGSTAT_TOKEN")
     if token:
         return await _scrape_channels_tgstat(request, token)
     return await _scrape_channels_web(request)
