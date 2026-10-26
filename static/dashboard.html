@@ -620,6 +620,7 @@
                 <div class="tab" :class="{ active: tab === 'schedule' }" @click="tab = 'schedule'">📅 Schedule</div>
                 <div class="tab" :class="{ active: tab === 'scraper' }" @click="tab = 'scraper'">🔍 Scraper</div>
                 <div class="tab" :class="{ active: tab === 'adder' }" @click="tab = 'adder'">➕ Adder</div>
+                <div class="tab" :class="{ active: tab === 'autojoin' }" @click="tab = 'autojoin'">🔗 Auto Join</div>
                 <div class="tab" :class="{ active: tab === 'bulksend' }" @click="tab = 'bulksend'">📨 BulkSend</div>
             </div>
 
@@ -1396,6 +1397,78 @@
                     <ul v-if="bulksend.results.length" style="margin-top: 12px; padding-left: 20px;">
                         <li v-for="(result, index) in bulksend.results" :key="index">
                             {{ result.target }} · {{ result.account_id }} · {{ result.success ? 'Sent' : (result.skipped || result.error || 'Failed') }}
+                        </li>
+                    </ul>
+                </div>
+            </div>
+
+            <!-- ============ Auto Join Tab ============ -->
+            <div v-show="tab === 'autojoin'">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>🔗 Auto Join</h3>
+                    </div>
+                    <p style="color: #999; margin-bottom: 20px;">Automatically join channels and groups from their links — public links (<code>t.me/name</code>, <code>@name</code>) and private invite links (<code>t.me/+hash</code>). One account or automatic rotation.</p>
+
+                    <div class="form-group">
+                        <label>Join mode</label>
+                        <select class="form-control" v-model="autojoin.rotationMode">
+                            <option value="single">Single account</option>
+                            <option value="round_robin">Automatic rotation (round robin)</option>
+                        </select>
+                    </div>
+                    <div class="form-group" v-if="autojoin.rotationMode === 'round_robin'">
+                        <label>Rotation accounts</label>
+                        <div style="display:grid;gap:8px;max-height:200px;overflow:auto;">
+                            <label v-for="acc in accounts" :key="acc.account_id" style="display:flex;align-items:center;gap:10px;padding:8px;">
+                                <input type="checkbox" v-model="autojoin.accountIds" :value="acc.account_id">
+                                {{ (acc.username && acc.username !== 'N/A') ? acc.username : ((acc.phone && acc.phone !== 'N/A') ? acc.phone : acc.account_id) }} · {{ acc.connected ? 'Connected' : 'Check connection' }}
+                            </label>
+                        </div>
+                        <small>{{ autojoin.accountIds.length }} selected. Each link is joined by whichever selected account is available; when one hits a Telegram join limit it rotates out automatically and the others carry on.</small>
+                    </div>
+                    <div class="form-group" v-else>
+                        <label>Account</label>
+                        <select class="form-control" v-model="autojoin.accountId">
+                            <option value="">-- Select account --</option>
+                            <option v-for="acc in accounts" :key="acc.account_id" :value="acc.account_id">
+                                {{ acc.phone || acc.account_id }} {{ acc.username ? '(@' + acc.username + ')' : '' }}
+                            </option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Channel/group links (one per line)</label>
+                        <textarea class="form-control" v-model="autojoin.urls" rows="6" aria-describedby="autojoin-summary" placeholder="https://t.me/examplechannel&#10;@examplegroup&#10;https://t.me/+AbCdEf123456"></textarea>
+                        <small id="autojoin-summary" role="status" aria-live="polite">
+                            {{ autojoinLinks.length }} valid unique links (max {{ autojoin.limit }} joined per run). Invalid links are skipped automatically; blank lines ignored.
+                        </small>
+                    </div>
+                    <div class="form-group">
+                        <label>Import links from CSV</label>
+                        <input type="file" accept=".csv,text/csv" @change="importJoinCSV($event)" :disabled="autojoin.loading">
+                        <small>Use a url, link or recipient header (or a single column of links). Maximum file size: 2 MB.</small>
+                    </div>
+                    <div style="display: flex; gap: 15px;">
+                        <div class="form-group" style="flex:1;">
+                            <label>Delay between joins (sec)</label>
+                            <input class="form-control" type="number" v-model.number="autojoin.delay" min="30" max="3600" step="5">
+                        </div>
+                        <div class="form-group" style="flex:1;">
+                            <label>Max joins this run</label>
+                            <input class="form-control" type="number" v-model.number="autojoin.limit" min="1" max="50" step="1">
+                        </div>
+                    </div>
+                    <button class="btn btn-primary" @click="runAutoJoin" :disabled="autojoin.loading || (autojoin.rotationMode === 'single' ? !autojoin.accountId : !autojoin.accountIds.length) || !autojoinLinks.length">
+                        {{ autojoin.loading ? 'Joining...' : 'Start Auto Join' }}
+                    </button>
+
+                    <!-- Results -->
+                    <div v-if="autojoin.resultMsg" style="margin-top: 15px; padding: 12px; border-radius: 8px; background: rgba(255,255,255,0.05);">
+                        <span>{{ autojoin.resultMsg }}</span>
+                    </div>
+                    <ul v-if="autojoin.results.length" style="margin-top: 12px; padding-left: 20px;">
+                        <li v-for="(result, index) in autojoin.results" :key="index" style="overflow-wrap:anywhere;">
+                            {{ result.url }} · {{ result.account_id || '—' }} · {{ result.success ? (result.already ? 'Already a member' : 'Joined') : (result.skipped || result.error || 'Failed') }}
                         </li>
                     </ul>
                 </div>
@@ -2295,6 +2368,18 @@
                         loading: false,
                         resultMsg: '',
                     },
+                    // Auto Join
+                    autojoin: {
+                        rotationMode: 'single',
+                        accountId: '',
+                        accountIds: [],
+                        urls: '',
+                        delay: 45,
+                        limit: 20,
+                        loading: false,
+                        resultMsg: '',
+                        results: [],
+                    },
                     // BulkSend
                     bulksend: {
                         requestId: '',
@@ -2333,6 +2418,11 @@
             },
             computed: {
                 adderRecipients() { return this.parseAdderRecipients(); },
+                autojoinLinks() {
+                    // Unique, non-blank links; the server does the authoritative
+                    // parsing and skips anything it cannot recognise.
+                    return [...new Set((this.autojoin.urls || '').split(/\r\n|\r|\n/).map(l => l.trim()).filter(Boolean))];
+                },
                 avatarInitials() {
                     const name = this.userProfile.display_name || this.user?.email || '?'
                     const parts = name.replace(/@.*/, '').trim().split(/[\s._-]+/).filter(Boolean)
@@ -2605,6 +2695,69 @@
                         this.adder.resultMsg = '❌ ' + (e.response?.data?.detail || e.message);
                     } finally {
                         if (revision === this.authRevision) this.adder.loading = false;
+                    }
+                },
+                // ---- Auto Join ----
+                async importJoinCSV(event) {
+                    const file = event.target.files?.[0];
+                    if (!file) return;
+                    try {
+                        if (file.size > 2 * 1024 * 1024) throw new Error('CSV must be at most 2 MB.');
+                        const text = await file.text();
+                        // Accept a url/link/recipient header, or a bare single column of links.
+                        const rows = text.split(/\r\n|\r|\n/).map(r => r.trim()).filter(Boolean);
+                        if (!rows.length) throw new Error('CSV is empty.');
+                        const header = rows[0].toLowerCase();
+                        const hasHeader = /\b(url|link|channel|group|recipient)\b/.test(header);
+                        const cell = (row) => row.split(',')[0].trim().replace(/^"|"$/g, '');
+                        const links = (hasHeader ? rows.slice(1) : rows).map(cell).filter(Boolean);
+                        const existing = this.autojoinLinks;
+                        this.autojoin.urls = [...new Set([...existing, ...links])].join('\n');
+                        this.autojoin.resultMsg = `Imported ${links.length} links from CSV.`;
+                    } catch (e) {
+                        this.autojoin.resultMsg = '❌ ' + e.message;
+                    } finally {
+                        event.target.value = '';
+                    }
+                },
+                async runAutoJoin() {
+                    if (!this.accessReady || this.autojoin.loading) return;
+                    const revision = this.authRevision;
+                    this.autojoin.loading = true;
+                    this.autojoin.resultMsg = '';
+                    this.autojoin.results = [];
+                    try {
+                        const urls = this.autojoinLinks;
+                        if (!urls.length) throw new Error('Enter at least one channel or group link.');
+                        if (!Number.isFinite(this.autojoin.delay) || this.autojoin.delay < 30 || this.autojoin.delay > 3600) {
+                            throw new Error('Delay between joins must be a number from 30 to 3600 seconds.');
+                        }
+                        if (!Number.isInteger(this.autojoin.limit) || this.autojoin.limit < 1 || this.autojoin.limit > 50) {
+                            throw new Error('Max joins must be a whole number from 1 to 50.');
+                        }
+                        const rotating = this.autojoin.rotationMode === 'round_robin';
+                        if (rotating ? !this.autojoin.accountIds.length : !this.autojoin.accountId) {
+                            throw new Error('Select at least one account for the chosen join mode.');
+                        }
+                        const payload = {
+                            rotation_mode: this.autojoin.rotationMode,
+                            ...(rotating ? { account_ids: this.autojoin.accountIds } : { account_id: this.autojoin.accountId }),
+                            urls,
+                            delay: this.autojoin.delay,
+                            limit: this.autojoin.limit,
+                        };
+                        const res = await _api.post('/api/channels/join', payload);
+                        if (!this.accessReady || revision !== this.authRevision) return;
+                        const d = res.data;
+                        this.autojoin.results = d.results || [];
+                        const bits = [`Joined ${d.joined}`, `${d.failed} failed`, `${d.skipped} skipped`];
+                        if (d.stopped_reason) bits.push(`stopped: ${d.stopped_reason}`);
+                        this.autojoin.resultMsg = (d.success ? '✅ ' : '⚠️ ') + bits.join(' · ') + ` (of ${d.total}).`;
+                    } catch (e) {
+                        if (!this.accessReady || revision !== this.authRevision) return;
+                        this.autojoin.resultMsg = '❌ ' + (e.response?.data?.detail || e.message);
+                    } finally {
+                        if (revision === this.authRevision) this.autojoin.loading = false;
                     }
                 },
                 // ---- BulkSend ----

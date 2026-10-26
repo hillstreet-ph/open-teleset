@@ -171,6 +171,65 @@ class BulkSendRequest(BaseModel):
         return self.account_ids if self.rotation_mode == "round_robin" else [self.account_id]
 
 
+# ---- Auto Join: parse a channel/group link or username into a join target ----
+# A private invite link (t.me/+HASH or t.me/joinchat/HASH) is joined with an
+# invite hash; a public channel/group (t.me/<username>, @<username> or a bare
+# username) is joined by resolving its entity.
+_TME_INVITE_RE = _re.compile(r"(?:https?://)?t\.me/(?:joinchat/|\+)([A-Za-z0-9_-]{6,})", _re.I)
+_TME_PUBLIC_RE = _re.compile(r"(?:https?://)?t\.me/(?:s/)?([A-Za-z][A-Za-z0-9_]{3,31})/?$", _re.I)
+_BARE_INVITE_RE = _re.compile(r"^\+([A-Za-z0-9_-]{6,})$")
+_BARE_USERNAME_RE = _re.compile(r"^[A-Za-z][A-Za-z0-9_]{3,31}$")
+
+
+def _parse_join_target(raw: str):
+    """Return ("invite", hash) or ("public", username), or None if unparseable."""
+    s = (raw or "").strip()
+    if not s:
+        return None
+    m = _TME_INVITE_RE.match(s) or _BARE_INVITE_RE.match(s)
+    if m:
+        return ("invite", m.group(1))
+    m = _TME_PUBLIC_RE.match(s)
+    if m and m.group(1).lower() not in _TME_RESERVED:
+        return ("public", m.group(1))
+    bare = s.lstrip("@")
+    if _BARE_USERNAME_RE.match(bare) and bare.lower() not in _TME_RESERVED:
+        return ("public", bare)
+    return None
+
+
+class JoinChannelsRequest(BaseModel):
+    """Auto Join: an account joins each provided channel/group link itself.
+
+    Joining is a self-action (no messages, no contact with other users), so it
+    needs rate-limit safety and optional multi-account rotation, but not the
+    recipient-consent gate that member-add and bulk-send require.
+    """
+    account_id: str = ""
+    urls: List[str] = Field(min_length=1)   # channel/group links or usernames
+    delay: float = Field(default=45.0, ge=30, le=3600, allow_inf_nan=False)  # seconds between joins
+    limit: int = Field(default=20, ge=1, le=50)  # max joins per run
+    rotation_mode: Literal["single", "round_robin"] = "single"
+    account_ids: List[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_join(self):
+        cleaned = list(dict.fromkeys(u.strip() for u in self.urls if u.strip()))
+        if not cleaned:
+            raise ValueError("Provide at least one channel or group link")
+        self.urls = cleaned
+        if self.rotation_mode == "single":
+            if not self.account_id.strip() or self.account_ids:
+                raise ValueError("Single mode requires one account_id and no rotation accounts")
+        elif (not self.account_ids or any(not a.strip() for a in self.account_ids)
+              or len(set(self.account_ids)) != len(self.account_ids) or self.account_id):
+            raise ValueError("Rotation requires unique account_ids and no account_id")
+        return self
+
+    def selected_accounts(self):
+        return self.account_ids if self.rotation_mode == "round_robin" else [self.account_id]
+
+
 def _enforce_outreach(action: str, subjects: List[str], account_id: str, approval_id: Optional[str]):
     decisions = outreach_policy.authorize_many(
         action=action,
@@ -842,5 +901,136 @@ async def bulk_send_personal(request: BulkSendRequest, http_request: Request = N
         log_manager.add_log(
             "BulkSend", request.account_id,
             f"Bulk send failed: {type(e).__name__}", "error",
+        )
+        raise HTTPException(status_code=500, detail=type(e).__name__)
+
+
+# ============ 4. Auto Join ============
+
+@telegram_ops_router.post("/api/channels/join")
+async def join_channels(request: JoinChannelsRequest):
+    """
+    Join channels/groups from the provided links using one account or an
+    explicit pool. Rotation rotates an account out when it hits a Telegram
+    join limit; the remaining accounts carry on. Joining is a self-action,
+    so no recipient consent is involved.
+    """
+    try:
+        account_ids = request.selected_accounts()
+        rotate = request.rotation_mode == "round_robin" and len(account_ids) > 1
+
+        clients = {}
+        for account_id in account_ids:
+            clients[account_id] = await account_manager.get_client(account_id)
+            if not clients[account_id]:
+                reason = account_manager.connection_errors.get(account_id, "Check the connection from Accounts.")
+                raise HTTPException(status_code=400, detail=f"Selected account unavailable; no joins performed. {reason}")
+
+        links = request.urls[:request.limit]
+        account_limit_errors = (errors.FloodWaitError, errors.ChannelsTooMuchError,
+                                errors.UserDeactivatedBanError, errors.AuthKeyUnregisteredError,
+                                errors.FrozenMethodInvalidError)
+        # Already-joined / invalid-link errors are per-link, never account-wide.
+        invalid_link_errors = (errors.InviteHashExpiredError, errors.InviteHashInvalidError,
+                               errors.InviteRequestSentError, errors.UsernameInvalidError,
+                               errors.UsernameNotOccupiedError)
+
+        async def _attempt(client, kind, value):
+            if kind == "invite":
+                await client(functions.messages.ImportChatInviteRequest(value))
+            else:
+                entity = await client.get_entity(value)
+                await client(functions.channels.JoinChannelRequest(entity))
+
+        results = []
+        joined = failed = skipped = 0
+        stopped_reason = None
+        limited = set()  # accounts dropped from the pool after a join limit this run
+
+        for i, raw in enumerate(links):
+            parsed = _parse_join_target(raw)
+            if parsed is None:
+                results.append({"url": raw, "success": False, "skipped": "invalid_link"})
+                skipped += 1
+                continue
+            kind, value = parsed
+
+            if rotate:
+                ordered = [account_ids[(i + k) % len(account_ids)] for k in range(len(account_ids))]
+                candidates = [a for a in ordered if a not in limited]
+                if not candidates:
+                    stopped_reason = "all_accounts_limited"
+                    break
+            else:
+                candidates = [account_ids[i % len(account_ids)]]
+
+            outcome = None
+            for account_id in candidates:
+                client = clients[account_id]
+                try:
+                    await _attempt(client, kind, value)
+                    outcome = ("joined", "", account_id)
+                    break
+                except errors.UserAlreadyParticipantError:
+                    outcome = ("already", "", account_id)
+                    break
+                except account_limit_errors as exc:
+                    record_provider_restriction(account_id, exc)
+                    if rotate:
+                        limited.add(account_id)
+                        continue
+                    outcome = ("stop", type(exc).__name__, account_id)
+                    break
+                except invalid_link_errors as exc:
+                    outcome = ("failed", type(exc).__name__, account_id)
+                    break
+                except Exception as exc:
+                    record_provider_restriction(account_id, exc)
+                    outcome = ("failed", type(exc).__name__, account_id)
+                    break
+
+            if outcome is None:
+                stopped_reason = "all_accounts_limited"
+                break
+            state, detail, account_id = outcome
+            if state in ("joined", "already"):
+                results.append({"url": raw, "account_id": account_id, "success": True,
+                                "already": state == "already"})
+                joined += 1
+                log_manager.add_log("AutoJoin", account_id,
+                                    f"Joined {raw}" if state == "joined" else f"Already a member of {raw}",
+                                    "success")
+            else:  # failed or stop
+                results.append({"url": raw, "account_id": account_id, "success": False, "error": detail})
+                failed += 1
+                log_manager.add_log("AutoJoin", account_id, f"Join failed for {raw}: {detail}", "error")
+                if state == "stop":
+                    stopped_reason = detail
+                    break
+
+            # Rate-limit delay between joins (except after the last link)
+            if i < len(links) - 1:
+                await asyncio.sleep(request.delay)
+
+        return {
+            "success": failed == 0 and stopped_reason is None,
+            "account_id": request.account_id,
+            "account_ids": account_ids,
+            "rotation_mode": request.rotation_mode,
+            "joined": joined,
+            "failed": failed,
+            "skipped": skipped,
+            "pending": len(links) - len(results),
+            "stopped_reason": stopped_reason,
+            "total": len(request.urls),
+            "results": results,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_manager.add_log(
+            "AutoJoin", request.account_id,
+            f"Auto join failed: {type(e).__name__}", "error",
         )
         raise HTTPException(status_code=500, detail=type(e).__name__)
