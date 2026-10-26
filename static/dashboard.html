@@ -410,7 +410,23 @@
     <div id="app-loading">
         <div class="spinner"></div>
         <div>Loading dashboard…</div>
+        <div id="app-loading-slow" style="display:none;max-width:22rem;text-align:center;color:#94a3b8;font-size:.9rem;line-height:1.5;">
+            Still loading — your connection may be slow or an old copy is cached.
+            <br>
+            <button onclick="location.reload(true)" style="margin-top:.8rem;padding:.6rem 1.3rem;border:none;border-radius:8px;background:#7c3aed;color:#fff;font-size:.95rem;cursor:pointer;">Reload</button>
+        </div>
     </div>
+    <script>
+        // Safety net: if the app has not mounted (and removed #app-loading) within
+        // 15s — a stalled download or a stale cached shell — reveal a Reload button
+        // instead of an endless spinner. Guarded so the headless test harness,
+        // which has no document, runs it as a no-op.
+        setTimeout(function () {
+            if (typeof document === 'undefined') return;
+            var slow = document.getElementById('app-loading-slow');
+            if (slow) slow.style.display = 'block';
+        }, 15000);
+    </script>
     <div id="app" v-cloak>
         <!-- Auth Loading -->
         <div v-if="authLoading" class="auth-loading">
