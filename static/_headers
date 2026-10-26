@@ -1,10 +1,11 @@
-# Revalidate mutable dashboard assets after each deployment.
+# Never cache the dashboard HTML, so a client can't get stuck on a stale build
+# (a blank page after a fix) — it always fetches the current shell.
 /dashboard
-  Cache-Control: no-cache
+  Cache-Control: no-store
 /dashboard.html
-  Cache-Control: no-cache
+  Cache-Control: no-store
 /static/dashboard.html
-  Cache-Control: no-cache
+  Cache-Control: no-store
 /csv.js
   Cache-Control: no-cache
 /static/csv.js

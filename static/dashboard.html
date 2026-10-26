@@ -5,14 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>open-teleset · Telegram Multi-Account Manager</title>
     <script src="/config.js"></script>
-    <!-- Vendor libs are self-hosted on this same origin so they load as
-         reliably as the page itself. Third-party CDNs (unpkg/jsdelivr) are
-         blocked on some mobile networks and in some regions, which previously
-         left a silent blank page. The boot loader at the end of the page falls
-         back to a CDN only if a same-origin file is somehow unavailable. -->
-    <script src="/static/vendor/vue.global.prod.js"></script>
-    <script src="/static/vendor/axios.min.js"></script>
-    <script src="/static/vendor/supabase.umd.js"></script>
+    <!-- Vendor libs are self-hosted on this same origin (see the boot loader at
+         the end of the body). They load at the END of the page, not here in
+         <head>, so the body can paint an immediate loading screen first instead
+         of leaving a blank page while ~0.4 MB of libraries download on a slow
+         mobile connection. -->
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -383,6 +380,11 @@
         .auth-loading { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f172a 100%); }
         .spinner { width: 40px; height: 40px; border: 3px solid var(--border); border-top-color: #3b82f6; border-radius: 50%; animation: spin 0.8s linear infinite; }
         @keyframes spin { to { transform: rotate(360deg); } }
+        /* Shown immediately (plain HTML) while the vendor libraries download, so a
+           slow connection never shows a blank screen. Removed once Vue mounts. */
+        #app-loading { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1rem; color: #e5e7eb; font-family: system-ui, -apple-system, sans-serif; }
+        /* Hide the Vue template until the app mounts, so the raw {{ }} markup never flashes. */
+        [v-cloak] { display: none !important; }
         .password-reset-link { display: block; text-align: right; font-size: 0.8rem; color: #3b82f6; cursor: pointer; margin-top: 0.25rem; }
         .password-reset-link:hover { text-decoration: underline; }
         @media (max-width: 760px) {
@@ -402,7 +404,14 @@
     </style>
 </head>
 <body>
-    <div id="app">
+    <!-- Immediate loading screen (plain HTML, not Vue). Visible the moment the
+         body parses — before the vendor libraries finish downloading — and
+         removed by startApp() once the app mounts. -->
+    <div id="app-loading">
+        <div class="spinner"></div>
+        <div>Loading dashboard…</div>
+    </div>
+    <div id="app" v-cloak>
         <!-- Auth Loading -->
         <div v-if="authLoading" class="auth-loading">
             <div class="spinner"></div>
@@ -1999,6 +2008,12 @@
         </template>
     </div>
 
+    <!-- Vendor libraries load here at the end of the body (not in <head>) so the
+         loading screen above paints first. They are still render-blocking for the
+         inline boot script below, so Vue/axios/supabase are defined before it runs. -->
+    <script src="/static/vendor/vue.global.prod.js"></script>
+    <script src="/static/vendor/axios.min.js"></script>
+    <script src="/static/vendor/supabase.umd.js"></script>
     <script src="/static/csv.js?v=0ce96ee8749902b2"></script>
     <script>
         // The whole dashboard boots from startApp(), invoked by the vendor
@@ -4093,6 +4108,11 @@
                 if (this.apiResponseInterceptor !== null) _api.interceptors.response.eject(this.apiResponseInterceptor)
             }
         }).mount('#app')
+            // The app has mounted and replaced #app; drop the plain loading screen.
+            if (typeof document !== 'undefined') {
+                const loading = document.getElementById('app-loading')
+                if (loading) loading.remove()
+            }
         } // end startApp
 
         // Vendor boot loader. Each vendor library is loaded same-origin from
