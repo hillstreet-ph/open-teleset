@@ -3373,7 +3373,7 @@
                     this.qrCode = ''
                     this.qrStatus = ''
                     this.qrError = ''
-                    this.qrRemaining = res.data.expires_in || 120
+                    this.qrRemaining = 120 // generateQr() sets the real expiry from the API response
                 },
 
                 startQrLogin() {
