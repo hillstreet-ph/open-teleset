@@ -33,3 +33,12 @@ test('every <form>.accountIds referenced in the template exists in data()', () =
     assert.ok(Array.isArray(state[form].accountIds), `${form}.accountIds is referenced but not initialised`);
   }
 });
+
+test('opening the Add account dialog does not throw', () => {
+  const body = html.slice(html.indexOf('openQrModal() {'), html.indexOf('startQrLogin() {'));
+  const openQrModal = vm.runInNewContext(`({${body}})`).openQrModal;
+  const state = { loadProxies() {} };
+  assert.doesNotThrow(() => openQrModal.call(state));
+  assert.equal(state.showQrModal, true);
+  assert.equal(state.qrRemaining, 120);
+});
