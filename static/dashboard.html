@@ -2939,8 +2939,8 @@
                     if (!session || this.passwordRecovery) { this.accessLoading = false; return }
                     this.accessLoading = true
                     try {
-                        const { data } = await _api.get('/api/auth/me')
-                        if (revision !== this.authRevision) return
+                        const data = await this.probeAccess(revision)
+                        if (data === null || revision !== this.authRevision) return
                         this.verifiedRole = data.role
                         this.accessReady = true
                         this.loadProfile()
@@ -2954,6 +2954,25 @@
                             : 'Your access could not be verified. Retry or sign in again.'
                     } finally {
                         if (revision === this.authRevision) this.accessLoading = false
+                    }
+                },
+                async probeAccess(revision) {
+                    // Verify administrator access. The server's own 401/403 is a
+                    // final answer, but a transient network/5xx failure — common on
+                    // a weak mobile connection where a response can be dropped —
+                    // must not dead-end the whole dashboard, so those are retried a
+                    // few times before giving up.
+                    const maxAttempts = 4
+                    for (let attempt = 1; ; attempt++) {
+                        if (revision !== this.authRevision) return null
+                        try {
+                            const { data } = await _api.get('/api/auth/me')
+                            return data
+                        } catch (error) {
+                            const status = error.response?.status
+                            if (status === 401 || status === 403 || attempt >= maxAttempts) throw error
+                            await new Promise(resolve => setTimeout(resolve, 600 * attempt))
+                        }
                     }
                 },
                 setAxiosAuth(token) {
