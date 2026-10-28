@@ -32,6 +32,7 @@ ACCOUNTS_DIR = "./accounts"
 CONFIG_FILE = os.path.join(ACCOUNTS_DIR, "config.json")
 LOGIN_CONNECT_TIMEOUT = 12
 LOGIN_RPC_TIMEOUT = 15
+LOGIN_PASSWORD_TIMEOUT = 45  # 2FA check = two RPCs; dashboard waits up to 65s
 LOGIN_DISCONNECT_TIMEOUT = 2
 
 
@@ -403,11 +404,13 @@ class AccountManager:
             self._save_config()
             session["status"] = "success"
             return True
-        except Exception:
+        except Exception as exc:
             if inserted:
                 self.accounts.pop(account_id, None)
             session["status"] = "failed"
-            session["error"] = "Unable to save the Telegram session. Try signing in again."
+            # ValueErrors raised above are our own user-facing messages; others may leak paths.
+            session["error"] = (str(exc) if isinstance(exc, ValueError)
+                                else "Unable to save the Telegram session. Try signing in again.")
             return False
         finally:
             with suppress(Exception):
@@ -424,33 +427,45 @@ class AccountManager:
         Returns:
             {"success": True/False, "error": "..."}
         """
-        if account_id not in self.qr_sessions:
-            return {"success": False, "error": "会话不存在"}
-
-        session = self.qr_sessions[account_id]
+        session = self.qr_sessions.get(account_id)
+        if session is None:
+            return {"success": False, "error": "This sign-in has expired. Close this window and scan a new QR code."}
         if session["status"] != "need_password":
-            return {"success": False, "error": "当前状态不需要密码"}
+            return {"success": False, "error": "This sign-in attempt has ended. Close this window and scan a new QR code."}
+
+        lock = session.setdefault("password_lock", asyncio.Lock())
+        if lock.locked():
+            return {"success": False, "error": "Already checking the password. Please wait."}
 
         client = session["client"]
+        async with lock:
+            try:
+                # A transient failure may have dropped the connection; the pending
+                # authorization lives on the auth key, so reconnecting is safe.
+                if not client.is_connected():
+                    await asyncio.wait_for(client.connect(), LOGIN_CONNECT_TIMEOUT)
+                # Telethon fetches the SRP parameters and sends the proof: two
+                # round-trips, so allow more time than a single RPC (slow proxies).
+                await asyncio.wait_for(client.sign_in(password=password), LOGIN_PASSWORD_TIMEOUT)
+                if not await asyncio.wait_for(client.is_user_authorized(), LOGIN_RPC_TIMEOUT):
+                    return {"success": False, "error": "Telegram did not accept the sign-in. Try again."}
+            except PasswordHashInvalidError:
+                return {"success": False, "error": "Incorrect two-step verification password"}
+            except FloodWaitError as exc:
+                return {"success": False, "error": f"Too many attempts. Wait {exc.seconds} seconds, then try again."}
+            except (asyncio.TimeoutError, TimeoutError, ConnectionError, OSError, ServerError):
+                # Keep the session waiting for a password: the password was not rejected.
+                return {"success": False, "error": "Telegram did not respond in time (slow connection or proxy). "
+                                                   "Your password was not rejected - try again, or sign in again "
+                                                   "with Direct connection."}
+            except Exception:
+                session["status"] = "failed"
+                with suppress(Exception):
+                    await asyncio.wait_for(client.disconnect(), LOGIN_DISCONNECT_TIMEOUT)
+                return {"success": False, "error": "Unable to finish sign-in. Close this window and scan a new QR code."}
 
-        try:
-            # 使用密码登录
-            from telethon.errors import PasswordHashInvalidError
-            await asyncio.wait_for(client.sign_in(password=password), LOGIN_RPC_TIMEOUT)
-
-            if await asyncio.wait_for(client.is_user_authorized(), LOGIN_RPC_TIMEOUT):
-                saved = await self._complete_login(account_id, client, session)
-                return {"success": saved, **({} if saved else {"error": session["error"]})}
-            else:
-                return {"success": False, "error": "验证失败"}
-
-        except PasswordHashInvalidError:
-            return {"success": False, "error": "密码错误"}
-        except Exception:
-            session["status"] = "failed"
-            with suppress(Exception):
-                await asyncio.wait_for(client.disconnect(), LOGIN_DISCONNECT_TIMEOUT)
-            return {"success": False, "error": "Unable to finish sign-in. Check the connection and try again."}
+            saved = await self._complete_login(account_id, client, session)
+            return {"success": True} if saved else {"success": False, "error": session["error"]}
 
     def check_qr_status(self, account_id: str) -> Dict:
         """
@@ -955,11 +970,13 @@ class AccountManager:
             self.accounts[account_id]["proxy_settings"] = session.get("proxy_settings", {"mode": "default"})
             self._save_config()
             session["status"] = "success"
-        except Exception:
+        except Exception as exc:
             if inserted:
                 self.accounts.pop(account_id, None)
             session["status"] = "failed"
-            session["error"] = "Unable to save the Telegram session. Try signing in again."
+            # ValueErrors raised above are our own user-facing messages; others may leak paths.
+            session["error"] = (str(exc) if isinstance(exc, ValueError)
+                                else "Unable to save the Telegram session. Try signing in again.")
             raise
         finally:
             # Cleanup must not hide persistence errors or undo a saved login.

@@ -138,7 +138,7 @@ async def test_concurrent_failures_share_one_probe(manager, monkeypatch):
 async def test_qr_background_failure_is_exposed_safely(manager):
     from datetime import datetime
     client = SimpleNamespace(get_me=AsyncMock(return_value=SimpleNamespace(
-        phone='15550001111', username='fixture', id=1, first_name='Fixture', last_name='')),
+        phone='15550001111', username='fixture', id=2, first_name='Fixture', last_name='')),
         is_user_authorized=AsyncMock(return_value=True),
         session=SimpleNamespace(save=lambda: 'synthetic'), disconnect=AsyncMock())
     manager._save_config.side_effect = OSError('private disk path')
