@@ -29,6 +29,7 @@ from template_manager import template_manager
 from scheduler import task_scheduler
 from batch_operations import batch_operations
 from telegram_ops import telegram_ops_router
+from automation import router as automation_router
 from outreach_jobs import router as outreach_jobs_router, worker as outreach_worker
 from open_teleset.security import SupabaseAuthMiddleware
 from open_teleset.observability import initialize_error_monitoring
@@ -104,6 +105,7 @@ app.add_middleware(
 # 挂载静态文件
 app.mount("/static", StaticFiles(directory="static"), name="static")
 app.include_router(telegram_ops_router)
+app.include_router(automation_router)
 app.include_router(outreach_jobs_router)
 
 
