@@ -1596,6 +1596,8 @@
             </div>
 
         </div>
+
+        <!-- QR/Phone Login Modal -->
         <div v-if="showQrModal" class="modal" @click.self="closeQrModal">
             <div class="modal-content" style="min-width: 450px;">
                 <div v-if="loginMode === 'select' || (loginMode === 'phone' && phoneStep === 'input') || loginMode === 'hex'" style="margin-bottom: 18px; text-align: left;">
