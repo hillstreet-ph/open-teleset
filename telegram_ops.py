@@ -114,7 +114,7 @@ class AddMembersRequest(BaseModel):
     usernames: Optional[List[str]] = None  # explicit list of usernames/IDs
     filter_bots: bool = True
     activity_filter: ActivityFilter = "all"
-    limit: int = Field(default=10, ge=1, le=10)                        # max members to add per run
+    limit: int = Field(default=500, ge=1, le=500)                        # max members to add per run
     delay: float = Field(default=35.0, ge=35, le=3600, allow_inf_nan=False)                    # seconds between each add (Telegram rate limit)
     approval_id: Optional[str] = None      # server-side approval reference
     rotation_mode: Literal["single", "round_robin"] = "single"
@@ -140,7 +140,7 @@ class BulkSendRequest(BaseModel):
     messages: dict[str, str] = Field(default_factory=dict)
     filter_bots: bool = True
     targets: List[str] = Field(min_length=1)  # finite, explicit list; no app batch cap
-    delay: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+    delay: float = Field(default=45.0, ge=0, allow_inf_nan=False)
     template_id: Optional[str] = None
     approval_id: Optional[str] = None      # server-side approval reference
     activity_filter: ActivityFilter = "all"
@@ -214,8 +214,8 @@ class JoinChannelsRequest(BaseModel):
     """
     account_id: str = ""
     urls: List[str] = Field(min_length=1)   # channel/group links or usernames
-    delay: float = Field(default=45.0, ge=30, le=3600, allow_inf_nan=False)  # seconds between joins
-    limit: int = Field(default=20, ge=1, le=50)  # max joins per run
+    delay: float = Field(default=38.0, ge=30, le=3600, allow_inf_nan=False)  # seconds between joins
+    limit: int = Field(default=24, ge=1, le=50)  # max joins per run
     rotation_mode: Literal["single", "round_robin"] = "single"
     account_ids: List[str] = Field(default_factory=list)
 
@@ -395,15 +395,24 @@ async def scrape_members(request: ScrapeRequest):
             status_code=429,
             detail=f"Telegram rate limit reached — retry in {e.seconds}s",
         ) from None
+    except errors.RPCError as e:
+        log_manager.add_log(
+            "Scraper", request.account_id,
+            f"Scrape rejected by Telegram for {request.target}: {type(e).__name__}", "warning",
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=f"Telegram rejected the scrape: {type(e).__name__} — check the account connection and target.",
+        ) from None
     except Exception as e:
         log_manager.add_log(
             "Scraper", request.account_id,
             f"Scrape failed for {request.target}: {type(e).__name__}", "error",
         )
+        detail = str(e) or type(e).__name__
         raise HTTPException(
             status_code=500,
-            detail="Scrape failed. Telegram did not complete the request — try again or "
-                   "check the account connection.",
+            detail=f"Scrape failed: {detail} — check the account connection.",
         ) from None
 
 
