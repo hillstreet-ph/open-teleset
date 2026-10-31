@@ -75,7 +75,7 @@ def matches_activity(user, selected: ActivityFilter, now=None):
 class ScrapeRequest(BaseModel):
     account_id: str
     target: str              # channel/group username or ID
-    limit: int = Field(default=200, ge=1, le=10000, strict=True)  # scan cap before filtering
+    limit: int = Field(default=500, ge=1, le=10000, strict=True)  # scan cap before filtering
     filter_bots: bool = True # exclude bots
     activity_filter: ActivityFilter = "all"
     admin_filter: Literal["include", "exclude"] = "include"
@@ -86,7 +86,7 @@ class ChannelScrapeRequest(BaseModel):
     keywords: List[str] = Field(default_factory=list)      # directory search terms
     country: str = Field(default="", max_length=64)        # optional title/username filter
     group_type: Literal["all", "group", "channel"] = "all"
-    limit: int = Field(default=100, ge=1, le=500, strict=True)  # max results after filtering
+    limit: int = Field(default=300, ge=1, le=500, strict=True)  # max results after filtering
 
     @model_validator(mode="after")
     def _normalise(self):
@@ -114,8 +114,8 @@ class AddMembersRequest(BaseModel):
     usernames: Optional[List[str]] = None  # explicit list of usernames/IDs
     filter_bots: bool = True
     activity_filter: ActivityFilter = "all"
-    limit: int = Field(default=500, ge=1, le=500)                        # max members to add per run
-    delay: float = Field(default=35.0, ge=35, le=3600, allow_inf_nan=False)                    # seconds between each add (Telegram rate limit)
+    limit: int = Field(default=10, ge=1, le=10)
+    delay: float = Field(default=35.0, ge=35, le=3600, allow_inf_nan=False)  # seconds between each add (Telegram rate limit)
     approval_id: Optional[str] = None      # server-side approval reference
     rotation_mode: Literal["single", "round_robin"] = "single"
     account_ids: List[str] = Field(default_factory=list)  # selected accounts for rotation
@@ -140,7 +140,7 @@ class BulkSendRequest(BaseModel):
     messages: dict[str, str] = Field(default_factory=dict)
     filter_bots: bool = True
     targets: List[str] = Field(min_length=1)  # finite, explicit list; no app batch cap
-    delay: float = Field(default=45.0, ge=0, allow_inf_nan=False)
+    delay: float = Field(default=0.0, ge=0, allow_inf_nan=False)
     template_id: Optional[str] = None
     approval_id: Optional[str] = None      # server-side approval reference
     activity_filter: ActivityFilter = "all"
@@ -409,10 +409,9 @@ async def scrape_members(request: ScrapeRequest):
             "Scraper", request.account_id,
             f"Scrape failed for {request.target}: {type(e).__name__}", "error",
         )
-        detail = str(e) or type(e).__name__
         raise HTTPException(
             status_code=500,
-            detail=f"Scrape failed: {detail} — check the account connection.",
+            detail="Scrape failed for an unexpected reason. Check the account connection and try again.",
         ) from None
 
 
