@@ -374,7 +374,7 @@ const context = {
     window: { OPEN_TELESET_CONFIG: {apiBase: 'https://api.example.com', supabaseUrl: 'https://test.supabase.co', supabaseAnonKey: 'test'}, location: {origin: 'https://open-teleset.site'} },
     supabase: {createClient() {return provider;}},
     axios: {create(config) { assert.equal(config.baseURL, 'https://api.example.com'); return api; }},
-    Vue: {createApp(value) { options = value; return {mount() {}}; }},
+    Vue: {createApp(value) { options = value; return {component() {}, mount() {}}; }},
     URL, WebSocket: Socket, console, crypto: require('node:crypto').webcrypto,
     setTimeout(fn) { deferred.push(fn); return deferred.length; }, clearTimeout() {},
     setInterval() {return 1;}, clearInterval() {},
