@@ -37,6 +37,7 @@ mcp_errors.log
 accounts/config.json
 accounts/*.json
 accounts/*.sqlite3*
+accounts/*.lock
 accounts/.accounts-*
 .session-*
 !accounts/.gitkeep

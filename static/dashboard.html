@@ -1114,22 +1114,23 @@
                                 <span class="panel-sub">Worker: {{ outreachWorker || 'checking' }}</span>
                             </div>
                             <p v-if="outreachJobError" class="notice bad">{{ outreachJobError }}</p>
-                            <div v-if="!outreachJobs.length" class="empty-inline">No outreach jobs yet. Start one from Adder or BulkSend.</div>
-                            <div v-for="job in outreachJobs" :key="job.id" style="padding:14px 0;border-top:1px solid var(--border);overflow-wrap:anywhere;">
-                                <div style="display:flex;justify-content:space-between;gap:10px;align-items:baseline;flex-wrap:wrap;">
-                                    <strong style="font-size:13px;">{{ job.kind === 'member_add' ? 'Member add' : 'Message send' }} · <span class="mono">{{ job.id.slice(0, 8) }}</span></strong>
-                                    <span class="badge" :class="job.state === 'completed' ? 'badge-success' : (['failed','needs_review'].includes(job.state) ? 'badge-danger' : 'badge-info')">{{ job.state === 'queued' && job.retry_after > 0 ? 'waiting' : job.state }}</span>
-                                </div>
-                                <p class="muted small" style="margin-top:4px;">{{ job.reason === 'operator_resume' && job.retry_after > 0 ? 'Resumed; waiting for the next eligible attempt' : job.reason ? outreachReason(job.reason) : (job.state === 'completed' ? 'Finished processing this list' : 'Processing consenting recipients') }}</p>
+                            <div v-if="!outreachJobs.length" class="empty-inline">No outreach jobs yet. Start one from Adder, Auto Join or BulkSend.</div>
+                            <details v-for="job in outreachJobs" :key="job.id" :open="jobIsActive(job)" style="padding:14px 0;border-top:1px solid var(--border);overflow-wrap:anywhere;">
+                                <summary style="cursor:pointer;display:flex;justify-content:space-between;gap:10px;align-items:baseline;flex-wrap:wrap;">
+                                    <strong style="font-size:13px;">{{ job.kind === 'member_add' ? 'Member add' : (job.kind === 'auto_join' ? 'Auto Join' : 'Message send') }} · <span class="mono">{{ job.id.slice(0, 8) }}</span></strong>
+                                    <span class="badge" :class="job.state === 'completed' ? 'badge-success' : (['failed','needs_review'].includes(job.state) ? 'badge-danger' : 'badge-info')">{{ jobStateLabel(job) }}</span>
+                                </summary>
+                                <p class="muted small" style="margin-top:4px;">{{ job.reason === 'operator_resume' && job.retry_after > 0 ? 'Resumed; waiting for the next eligible attempt' : job.reason ? outreachReason(job.reason) : (job.state === 'completed' ? 'Finished processing this list' : (job.kind === 'auto_join' ? 'Joining links from the selected accounts' : 'Processing consenting recipients')) }}</p>
                                 <progress :value="job.completed + job.skipped + job.failed + job.uncertain" :max="job.total || 1" style="width:100%;margin-top:8px;"></progress>
-                                <p class="muted small" style="margin-top:6px;">Total {{ job.total }} · {{ job.kind === 'member_add' ? 'Added' : 'Sent' }} {{ job.completed }} · Pending {{ job.pending }} · Skipped {{ job.skipped }} · Failed {{ job.failed }}</p>
+                                <p class="muted small" style="margin-top:6px;">Total {{ job.total }} · {{ jobCountLabel(job) }} {{ job.completed }} · Pending {{ job.pending }} · Skipped {{ job.skipped }} · Failed {{ job.failed }}</p>
+                                <p class="muted small" style="margin-top:4px;">Created {{ jobStamp(job.created) }} · Started {{ jobStamp(job.started) }} · Finished {{ jobStamp(job.finished) }}<template v-if="job.started"> · Elapsed {{ outreachDuration(jobElapsed(job)) }}</template></p>
                                 <p v-if="job.retry_after > 0 && ['queued','running','waiting'].includes(job.state)" class="small" style="color:var(--warning);margin-top:4px;">Next eligible attempt in {{ outreachDuration(job.retry_after) }}<span v-if="job.retry_at"> · {{ outreachRetryTime(job.retry_at) }}</span>.</p>
                                 <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;">
                                     <button v-if="['queued','running','waiting'].includes(job.state)" class="btn btn-outline btn-sm" @click="controlOutreachJob(job, 'pause')" :disabled="!!outreachJobBusy">Pause</button>
                                     <button v-if="job.state === 'paused'" class="btn btn-primary btn-sm" @click="controlOutreachJob(job, 'resume')" :disabled="!!outreachJobBusy">Resume</button>
                                     <button v-if="['queued','running','waiting','paused'].includes(job.state)" class="btn btn-danger btn-sm" @click="controlOutreachJob(job, 'stop')" :disabled="!!outreachJobBusy">Stop</button>
                                 </div>
-                            </div>
+                            </details>
                         </section>
 
                         <section class="panel">
@@ -1281,6 +1282,68 @@
                             <div class="status-row"><span class="status-key">Registration service</span><span class="status-val mono">REGISTRATION_SERVICE_URL</span></div>
                             <div class="status-row"><span class="status-key">Open Teleset</span><span class="status-val">Imports the finished session into Accounts</span></div>
                             <div class="status-row"><span class="status-key">Airtable</span><span class="status-val">Records outcomes and token lengths, never session strings</span></div>
+                        </section>
+
+                        <section class="panel" style="margin-top:24px;">
+                            <div class="panel-head">
+                                <h3>Webhooks</h3>
+                                <span class="panel-sub">Signed HTTPS events</span>
+                            </div>
+                            <p class="muted small">Receive signed events when a message, member-add or Auto Join job finishes. Each request carries <code>X-OpenTeleset-Signature: sha256=&lt;hmac&gt;</code> over <code>timestamp.body</code>, plus the event name, delivery id and timestamp headers. Secrets are shown once at creation or rotation and stored encrypted.</p>
+
+                            <div v-if="webhooks.created" class="notice ok" style="margin-bottom:14px;">
+                                <strong>New signing secret — copy it now, it won't be shown again</strong>
+                                <div class="copy-row" style="margin-top:8px;background:#171717;">
+                                    <span class="mono">{{ webhooks.created }}</span>
+                                    <button class="copy-btn" @click="copyText(webhooks.created, 'hooksecret')">{{ settings.copied === 'hooksecret' ? 'Copied' : 'Copy' }}</button>
+                                </div>
+                                <button class="copy-btn" style="margin-top:8px;" @click="webhooks.created = ''">Done</button>
+                            </div>
+
+                            <div class="form-row" style="align-items:flex-end;">
+                                <div class="form-group" style="flex:1;min-width:150px;">
+                                    <label>Name</label>
+                                    <input class="form-control" v-model="webhooks.form.name" maxlength="80" placeholder="e.g. n8n completion">
+                                </div>
+                                <div class="form-group" style="flex:2;min-width:220px;">
+                                    <label>Endpoint URL (https)</label>
+                                    <input class="form-control" v-model="webhooks.form.url" placeholder="https://example.com/hooks/openteleset">
+                                </div>
+                                <div class="form-group" style="flex:0 0 auto;">
+                                    <button class="btn btn-primary" @click="createWebhook" :disabled="!!webhooks.busy">{{ webhooks.busy ? 'Saving…' : 'Add webhook' }}</button>
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label>Events</label>
+                                <div style="display:flex;flex-wrap:wrap;gap:12px;">
+                                    <label v-for="event in webhooks.events" :key="event.name" style="display:flex;align-items:center;gap:6px;" :title="event.description">
+                                        <input type="checkbox" :value="event.name" v-model="webhooks.form.events">
+                                        <span class="mono small">{{ event.name }}</span>
+                                    </label>
+                                </div>
+                                <small>Pick at least one event. <code>webhook.test</code> is only sent by the Test button.</small>
+                            </div>
+                            <p v-if="webhooks.error" class="notice bad">{{ webhooks.error }}</p>
+
+                            <div v-if="webhooks.loading" class="muted small">Loading webhooks…</div>
+                            <div v-else-if="!webhooks.list.length" class="empty-inline">No webhooks yet. Add one to receive signed job events.</div>
+                            <div v-for="hook in webhooks.list" :key="hook.id" style="padding:14px 0;border-top:1px solid var(--border);overflow-wrap:anywhere;">
+                                <div style="display:flex;justify-content:space-between;gap:10px;align-items:baseline;flex-wrap:wrap;">
+                                    <strong style="font-size:13px;">{{ hook.name }}</strong>
+                                    <span class="badge" :class="hook.enabled ? 'badge-success' : 'badge-normal'">{{ hook.enabled ? 'Enabled' : 'Paused' }}</span>
+                                </div>
+                                <p class="mono small" style="margin-top:4px;">{{ hook.url }}</p>
+                                <p class="muted small" style="margin-top:4px;">Events: {{ hook.events.join(', ') }}</p>
+                                <p class="muted small" style="margin-top:4px;">
+                                    Last delivery {{ hookStamp(hook.last_attempt) }}<template v-if="hook.last_status"> · HTTP {{ hook.last_status }}</template><template v-if="hook.last_error"> · {{ hook.last_error }}</template> · {{ hook.delivery_count }} delivered · {{ hook.failure_count }} failed
+                                </p>
+                                <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;">
+                                    <button class="btn btn-outline btn-sm" @click="testWebhook(hook)" :disabled="!!webhooks.busy">Send test</button>
+                                    <button class="btn btn-outline btn-sm" @click="toggleWebhook(hook)" :disabled="!!webhooks.busy">{{ hook.enabled ? 'Pause' : 'Enable' }}</button>
+                                    <button class="btn btn-outline btn-sm" @click="rotateWebhook(hook)" :disabled="!!webhooks.busy">Rotate secret</button>
+                                    <button class="btn btn-danger btn-sm" @click="deleteWebhook(hook)" :disabled="!!webhooks.busy">Delete</button>
+                                </div>
+                            </div>
                         </section>
                     </div>
 
@@ -1908,7 +1971,7 @@
 
                     <div class="form-group">
                         <label>Account</label>
-                        <select class="form-control" v-model="scraper.accountId">
+                        <select class="form-control" v-model="scraper.accountId" @change="loadGroups('scraper')">
                             <option value="">-- Select account --</option>
                             <option v-for="acc in accounts" :key="acc.account_id" :value="acc.account_id">
                                 {{ acc.phone || acc.account_id }} {{ acc.username ? '(@' + acc.username + ')' : '' }}
@@ -1916,8 +1979,19 @@
                         </select>
                     </div>
                     <div class="form-group">
-                        <label>Target (channel/group username or ID)</label>
-                        <input class="form-control" v-model="scraper.target" placeholder="e.g. @mychannel or -1001234567890">
+                        <label>Target (channel/group link, @username, or ID)</label>
+                        <div style="display:flex;gap:10px;flex-wrap:wrap;">
+                            <input class="form-control" style="flex:2;min-width:220px;" v-model="scraper.target" placeholder="https://t.me/mychannel, @mychannel or -1001234567890">
+                            <select class="form-control" style="flex:1;min-width:190px;" :disabled="!scraper.accountId || groups.scraper.loading" @focus="loadGroups('scraper')" @change="pickGroup($event, 'scraper')">
+                                <option value="">{{ groups.scraper.loading ? 'Detecting groups…' : 'Pick from my groups' }}</option>
+                                <option v-for="g in groups.scraper.list" :key="g.peer_id" :value="g.username ? '@' + g.username : String(g.peer_id)">
+                                    {{ g.name }} · {{ g.type }}<template v-if="g.members != null"> · {{ g.members }} members</template>
+                                </option>
+                            </select>
+                        </div>
+                        <small v-if="groups.scraper.error" style="color:var(--danger);">{{ groups.scraper.error }}</small>
+                        <small v-else-if="groups.scraper.accountId">Detected {{ groups.scraper.list.length }} groups and channels for this account. Picking one fills the target; private groups use their numeric ID. Links like <code>t.me/name</code>, <code>@name</code> and post links also work.</small>
+                        <small v-else>Select an account to detect the groups and channels it belongs to.</small>
                     </div>
                     <div style="display: flex; gap: 15px;">
                         <div class="form-group" style="flex:1;">
@@ -2074,7 +2148,7 @@
                         <label>Rotation accounts</label>
                         <div style="display:grid;gap:8px;max-height:200px;overflow:auto;">
                             <label v-for="acc in accounts" :key="acc.account_id" style="display:flex;align-items:center;gap:10px;padding:8px;">
-                                <input type="checkbox" v-model="adder.accountIds" :value="acc.account_id">
+                                <input type="checkbox" v-model="adder.accountIds" :value="acc.account_id" @change="loadGroups('adder')">
                                 {{ (acc.username && acc.username !== 'N/A') ? acc.username : ((acc.phone && acc.phone !== 'N/A') ? acc.phone : acc.account_id) }} · {{ acc.connected ? 'Connected' : 'Check connection' }}
                             </label>
                         </div>
@@ -2082,7 +2156,7 @@
                     </div>
                     <div class="form-group" v-else>
                         <label>Account</label>
-                        <select class="form-control" v-model="adder.accountId">
+                        <select class="form-control" v-model="adder.accountId" @change="loadGroups('adder')">
                             <option value="">-- Select account --</option>
                             <option v-for="acc in accounts" :key="acc.account_id" :value="acc.account_id">
                                 {{ acc.phone || acc.account_id }} {{ acc.username ? '(@' + acc.username + ')' : '' }}
@@ -2091,7 +2165,17 @@
                     </div>
                     <div class="form-group">
                         <label>Destination (channel/group to add members to)</label>
-                        <input class="form-control" v-model="adder.destTarget" placeholder="e.g. @mydestchannel">
+                        <div style="display:flex;gap:10px;flex-wrap:wrap;">
+                            <input class="form-control" style="flex:2;min-width:220px;" v-model="adder.destTarget" placeholder="https://t.me/mydestchannel or @mydestchannel">
+                            <select class="form-control" style="flex:1;min-width:190px;" :disabled="!groupsAccount('adder') || groups.adder.loading" @focus="loadGroups('adder')" @change="pickGroup($event, 'adder')">
+                                <option value="">{{ groups.adder.loading ? 'Detecting groups…' : 'Pick from my groups' }}</option>
+                                <option v-for="g in groups.adder.list" :key="g.peer_id" :value="g.username ? '@' + g.username : String(g.peer_id)">
+                                    {{ g.name }} · {{ g.type }}<template v-if="g.members != null"> · {{ g.members }} members</template>
+                                </option>
+                            </select>
+                        </div>
+                        <small v-if="groups.adder.error" style="color:var(--danger);">{{ groups.adder.error }}</small>
+                        <small v-else-if="groups.adder.accountId">Detected {{ groups.adder.list.length }} groups and channels for the selected sender account.</small>
                     </div>
                     <div class="form-group">
                         <label>Consenting recipients (usernames or IDs, one per line)</label>
@@ -2233,7 +2317,7 @@
                     <div class="card-header">
                         <h3>Auto join</h3>
                     </div>
-                    <p style="color: var(--text-dim); margin-bottom: 20px;">Automatically join channels and groups from their links — public links (<code>t.me/name</code>, <code>@name</code>) and private invite links (<code>t.me/+hash</code>). One account or automatic rotation.</p>
+                    <p style="color: var(--text-dim); margin-bottom: 20px;">Automatically join channels and groups from their links — public links (<code>t.me/name</code>, <code>t.me/name/123</code>, <code>@name</code>) and private invite links (<code>t.me/+hash</code>). One account or automatic rotation. The job runs in the background, so closing the browser does not stop it.</p>
 
                     <div class="form-group">
                         <label>Join mode</label>
@@ -2288,30 +2372,29 @@
                     </button>
 
                     <!-- Results -->
-                    <div v-if="autojoin.resultMsg" style="margin-top: 15px; padding: 12px; border-radius: 8px; background: rgba(255,255,255,0.05);">
-                        <span>{{ autojoin.resultMsg }}</span>
+                    <div v-if="autojoin.resultMsg" style="margin-top: 15px; padding: 12px; border-radius: 8px; background: rgba(255,255,255,0.05);" aria-live="polite">
+                        <span style="overflow-wrap:anywhere;">{{ autojoin.resultMsg }}</span>
                     </div>
-                    <ul v-if="autojoin.results.length" style="margin-top: 12px; padding-left: 20px;">
-                        <li v-for="(result, index) in autojoin.results" :key="index" style="overflow-wrap:anywhere;">
-                            {{ result.url }} · {{ result.account_id || '—' }} · {{ result.success ? (result.already ? 'Already a member' : 'Joined') : (result.skipped || result.error || 'Failed') }}
-                        </li>
-                    </ul>
                 </div>
             </div>
 
-            <div v-if="tab === 'adder' || tab === 'bulksend'" class="card" style="margin-top:16px;">
+            <div v-if="['adder', 'bulksend', 'autojoin'].includes(tab)" class="card" style="margin-top:16px;">
                 <div class="card-header"><h3>Progress tracker</h3><button class="btn btn-outline" @click="loadOutreachJobs" :disabled="outreachJobsLoading">Refresh</button></div>
-                <p>Worker: {{ outreachWorker || 'Checking' }}. Jobs continue while this browser is closed. Pause or Stop prevents the next operation; an in-flight operation may finish.</p>
+                <p>Worker: {{ outreachWorker || 'Checking' }}. Jobs continue while this browser is closed and refresh every 2 seconds. Pause or Stop prevents the next operation; an in-flight operation may finish.</p>
                 <p v-if="outreachJobError" role="alert">{{ outreachJobError }}</p>
-                <p v-if="!outreachJobs.length">No jobs yet.</p>
-                <div v-for="job in outreachJobs.filter(j => j.kind === (tab === 'adder' ? 'member_add' : 'personal_send'))" :key="job.id" style="padding:16px 0;border-top:1px solid #555;overflow-wrap:anywhere;">
-                    <strong>{{ job.state === 'queued' && job.retry_after > 0 ? 'waiting' : job.state }} · {{ job.id.slice(0,8) }}</strong>
-                    <p>{{ job.reason === 'operator_resume' && job.retry_after > 0 ? 'Resumed; waiting for the next eligible attempt' : job.reason ? outreachReason(job.reason) : (job.state === 'completed' ? 'Finished processing this list' : 'Processing consenting recipients') }}</p>
+                <p v-if="!progressJobs.length">No {{ tab === 'autojoin' ? 'Auto Join' : (tab === 'adder' ? 'member add' : 'message send') }} jobs yet.</p>
+                <details v-for="job in progressJobs" :key="job.id" :open="jobIsActive(job)" style="padding:12px 0;border-top:1px solid #555;overflow-wrap:anywhere;">
+                    <summary style="cursor:pointer;">
+                        <strong>{{ jobStateLabel(job) }} · {{ job.id.slice(0,8) }}</strong>
+                        <span class="muted small"> · {{ job.kind === 'auto_join' ? 'Auto Join' : (job.kind === 'member_add' ? 'Member add' : 'Message send') }} · {{ job.completed + job.skipped + job.failed + job.uncertain }}/{{ job.total }}</span>
+                    </summary>
+                    <p style="margin-top:8px;">{{ job.reason === 'operator_resume' && job.retry_after > 0 ? 'Resumed; waiting for the next eligible attempt' : job.reason ? outreachReason(job.reason) : (job.state === 'completed' ? 'Finished processing this list' : (job.kind === 'auto_join' ? 'Joining links from the selected accounts' : 'Processing consenting recipients')) }}</p>
                     <progress :value="job.completed + job.skipped + job.failed + job.uncertain" :max="job.total || 1" style="width:100%;"></progress>
-                    <p aria-live="polite">Total {{ job.total }} · {{ job.kind === 'member_add' ? 'Added' : 'Sent' }} {{ job.completed }} · Pending {{ job.pending }} · In flight {{ job.in_flight }} · Skipped {{ job.skipped }} · Failed {{ job.failed }} · Uncertain {{ job.uncertain }}</p>
+                    <p aria-live="polite">Total {{ job.total }} · {{ jobCountLabel(job) }} {{ job.completed }} · Pending {{ job.pending }} · In flight {{ job.in_flight }} · Skipped {{ job.skipped }} · Failed {{ job.failed }}<template v-if="job.kind !== 'auto_join'"> · Uncertain {{ job.uncertain }}</template></p>
+                    <p class="muted small" style="margin-top:4px;">Created {{ jobStamp(job.created) }} · Started {{ jobStamp(job.started) }} · Finished {{ jobStamp(job.finished) }}<template v-if="job.started"> · Elapsed {{ outreachDuration(jobElapsed(job)) }}</template></p>
                     <p v-if="job.next_account_id && ['queued','running','waiting','paused'].includes(job.state)">Assigned account: {{ job.next_account_id }}</p>
                     <p v-if="job.retry_after > 0 && ['queued','running','waiting'].includes(job.state)">Next eligible attempt in {{ outreachDuration(job.retry_after) }}<span v-if="job.retry_at"> · {{ outreachRetryTime(job.retry_at) }} (your local time)</span>. Updates every 2 seconds.</p>
-                    <p v-if="job.reason === 'telegram_cooldown' && job.state === 'running'">A selected account is in a Telegram cooldown. Recipients on the other available accounts keep sending automatically; recipients pinned to the limited account resume once its cooldown ends. No click is needed.</p>
+                    <p v-if="job.reason === 'telegram_cooldown' && job.state === 'running'">A selected account is in a Telegram cooldown. Remaining work on the other available accounts keeps going automatically; work pinned to the limited account resumes once its cooldown ends. No click is needed.</p>
                     <p v-if="job.reason === 'telegram_cooldown' && ['queued','waiting'].includes(job.state)">Every selected account is in a Telegram cooldown, so the job waits automatically and resumes after the soonest one clears; no click is needed. Pause, Resume, or a new job cannot shorten Telegram's wait.</p>
                     <p v-if="job.state === 'paused'">Paused. Resume is required to continue; any remaining Telegram cooldown still applies.</p>
                     <div style="display:flex;flex-wrap:wrap;gap:8px;margin:10px 0;">
@@ -2320,10 +2403,10 @@
                         <button v-if="['queued','running','waiting','paused'].includes(job.state)" class="btn btn-danger" @click="controlOutreachJob(job, 'stop')" :disabled="!!outreachJobBusy">Stop</button>
                     </div>
                     <p v-if="job.state === 'needs_review'">Delivery is uncertain. Check Telegram before creating another job; automatic retry is disabled.</p>
-                    <details><summary>Recipient history (latest 100)</summary>
+                    <details><summary>{{ job.kind === 'auto_join' ? 'Link history' : 'Recipient history' }} (latest 100)</summary>
                         <ul><li v-for="(result,index) in job.results" :key="index">{{ result.target }} · {{ result.account_id }} · {{ result.state }} · {{ outreachReason(result.reason) }}</li></ul>
                     </details>
-                </div>
+                </details>
             </div>
 
             <!-- ============ Account Factory ============ -->
@@ -3421,6 +3504,14 @@
                     },
                     outreachJobs: [], outreachJobsLoading: false, outreachJobError: '', outreachWorker: '',
                     outreachJobBusy: '', jobsPoll: null,
+                    groups: {
+                        scraper: { accountId: '', loading: false, list: [], error: '' },
+                        adder: { accountId: '', loading: false, list: [], error: '' },
+                    },
+                    webhooks: {
+                        loading: false, list: [], events: [], error: '', busy: '', created: '',
+                        form: { name: '', url: '', events: [] },
+                    },
                     // Adder
                     adder: {
                         consentConfirmed: false,
@@ -3438,6 +3529,7 @@
                     },
                     // Auto Join
                     autojoin: {
+                        requestId: '',
                         rotationMode: 'single',
                         accountId: '',
                         accountIds: [],
@@ -3446,7 +3538,6 @@
                         limit: 20,
                         loading: false,
                         resultMsg: '',
-                        results: [],
                     },
                     // BulkSend
                     bulksend: {
@@ -3561,6 +3652,10 @@
                     // parsing and skips anything it cannot recognise.
                     return [...new Set((this.autojoin.urls || '').split(/\r\n|\r|\n/).map(l => l.trim()).filter(Boolean))];
                 },
+                progressJobs() {
+                    const kind = this.tab === 'adder' ? 'member_add' : (this.tab === 'autojoin' ? 'auto_join' : (this.tab === 'bulksend' ? 'personal_send' : ''));
+                    return kind ? this.outreachJobs.filter(job => job.kind === kind) : [];
+                },
                 avatarInitials() {
                     const name = this.userProfile.display_name || this.user?.email || '?'
                     const parts = name.replace(/@.*/, '').trim().split(/[\s._-]+/).filter(Boolean)
@@ -3636,6 +3731,8 @@
                     }
                     if (tab === 'copilot') this.loadCopilot()
                     if (tab === 'tasks') this.loadOutreachJobs()
+                    if (tab === 'integrations') this.loadWebhooks()
+                    if (tab === 'scraper' || tab === 'adder') this.loadGroups(tab)
                     if (tab === 'schedule') this.loadSchedules()
                     if (tab === 'logs') this.loadLogs()
                     if (tab === 'templates') this.loadTemplates()
@@ -3651,6 +3748,8 @@
                     this.loadSchedules()
                     this.loadLogs()
                     this.loadOutreachJobs()
+                    if (this.tab === 'integrations') this.loadWebhooks()
+                    if (this.tab === 'scraper' || this.tab === 'adder') this.loadGroups(this.tab)
                     if (['overview', 'tasks', 'automation', 'factory'].includes(this.tab)) this.loadAutomationStatus()
                     this.showToast('Refreshed.')
                 },
@@ -3790,6 +3889,44 @@
                         this.loadAutomationStatus();
                     }
                 },
+                // ---- Detected groups ----
+                groupsAccount(context) {
+                    if (context === 'adder') {
+                        return this.adder.rotationMode === 'round_robin'
+                            ? (this.adder.accountIds[0] || '')
+                            : this.adder.accountId;
+                    }
+                    return this.scraper.accountId;
+                },
+                async loadGroups(context) {
+                    const state = this.groups[context];
+                    if (!state) return;
+                    const accountId = this.groupsAccount(context);
+                    if (!accountId) {
+                        state.accountId = ''; state.list = []; state.error = '';
+                        return;
+                    }
+                    if (state.loading) return;
+                    if (state.accountId === accountId && state.list.length && !state.error) return;
+                    const revision = this.authRevision;
+                    state.loading = true; state.error = ''; state.accountId = accountId;
+                    try {
+                        const { data } = await _api.post('/api/channels/groups', { account_id: accountId }, { timeout: 60000 });
+                        if (!this.accessReady || revision !== this.authRevision || state.accountId !== accountId) return;
+                        state.list = data.groups || [];
+                    } catch (e) {
+                        if (this.accessReady && revision === this.authRevision)
+                            state.error = e.response?.data?.detail || 'Could not detect groups for this account. Check the connection and try again.';
+                    } finally {
+                        if (revision === this.authRevision) state.loading = false;
+                    }
+                },
+                pickGroup(event, context) {
+                    const value = event.target.value;
+                    if (!value) return;
+                    if (context === 'adder') this.adder.destTarget = value;
+                    else this.scraper.target = value;
+                },
                 // ---- Scraper ----
                 async runScraper() {
                     this.scraper.loading = true;
@@ -3828,6 +3965,25 @@
                 },
                 outreachRetryTime(timestamp) {
                     return new Date(timestamp * 1000).toLocaleString();
+                },
+                jobStamp(timestamp) {
+                    return timestamp ? new Date(timestamp * 1000).toLocaleString() : '—';
+                },
+                hookStamp(timestamp) {
+                    return timestamp ? new Date(timestamp * 1000).toLocaleString() : 'never';
+                },
+                jobIsActive(job) {
+                    return ['queued', 'running', 'waiting', 'paused'].includes(job.state);
+                },
+                jobStateLabel(job) {
+                    return job.state === 'queued' && job.retry_after > 0 ? 'waiting' : job.state;
+                },
+                jobCountLabel(job) {
+                    return job.kind === 'auto_join' ? 'Joined' : (job.kind === 'member_add' ? 'Added' : 'Sent');
+                },
+                jobElapsed(job) {
+                    if (!job.started) return 0;
+                    return Math.max(0, (job.finished || Date.now() / 1000) - job.started);
                 },
                 outreachReason(reason) {
                     const labels = {
@@ -3884,7 +4040,7 @@
                     this.adder.loading = true;
                     this.adder.resultMsg = '';
                     try {
-                        const { targets: usernames, invalidLines, tooLarge } = this.parseAdderRecipients();
+                        const { targets: usernames, duplicates, invalidLines, tooLarge } = this.parseAdderRecipients();
                         if (tooLarge) throw new Error('Recipient list must be at most 2 MB.');
                         if (!usernames.length) throw new Error('Enter at least one valid consenting recipient. Invalid entries are skipped automatically.');
                         if (!this.adder.consentConfirmed) throw new Error('Confirm that these recipients agreed to join before starting.');
@@ -3911,7 +4067,7 @@
                         const res = await _api.post('/api/outreach/jobs/members', payload);
                         if (!this.accessReady || revision !== this.authRevision) return;
                         this.adder.requestId = '';
-                        this.adder.resultMsg = `Queued. ${invalidLines.length} invalid entries will be skipped. Missing, deleted and activity-filtered users are skipped automatically. Monitor progress below.`;
+                        this.adder.resultMsg = `Queued ${res.data.total ?? payload.usernames.length} recipients. ${invalidLines.length} invalid ${invalidLines.length === 1 ? 'entry' : 'entries'} and ${duplicates} duplicate ${duplicates === 1 ? 'line' : 'lines'} will be skipped. Missing, deleted and activity-filtered users are skipped automatically. Monitor progress, dates and status below — the job runs even if you close this browser.`;
                         this.outreachJobs.unshift(res.data);
                         await this.loadOutreachJobs();
                     } catch (e) {
@@ -3955,7 +4111,6 @@
                     const revision = this.authRevision;
                     this.autojoin.loading = true;
                     this.autojoin.resultMsg = '';
-                    this.autojoin.results = [];
                     try {
                         const urls = this.autojoinLinks;
                         if (!urls.length) throw new Error('Enter at least one channel or group link.');
@@ -3969,22 +4124,30 @@
                         if (rotating ? !this.autojoin.accountIds.length : !this.autojoin.accountId) {
                             throw new Error('Select at least one account for the chosen join mode.');
                         }
+                        this.autojoin.requestId ||= crypto.randomUUID();
                         const payload = {
+                            request_id: this.autojoin.requestId,
                             rotation_mode: this.autojoin.rotationMode,
                             ...(rotating ? { account_ids: this.autojoin.accountIds } : { account_id: this.autojoin.accountId }),
                             urls,
                             delay: this.autojoin.delay,
                             limit: this.autojoin.limit,
                         };
-                        const res = await _api.post('/api/channels/join', payload);
+                        const res = await _api.post('/api/join/jobs', payload);
                         if (!this.accessReady || revision !== this.authRevision) return;
-                        const d = res.data;
-                        this.autojoin.results = d.results || [];
-                        const bits = [`Joined ${d.joined}`, `${d.failed} failed`, `${d.skipped} skipped`];
-                        if (d.stopped_reason) bits.push(`stopped: ${d.stopped_reason}`);
-                        this.autojoin.resultMsg = (d.success ? '✅ ' : '⚠️ ') + bits.join(' · ') + ` (of ${d.total}).`;
+                        this.autojoin.requestId = '';
+                        const job = res.data;
+                        this.autojoin.resultMsg = `Queued ${job.total} ${job.total === 1 ? 'link' : 'links'}. ${job.skipped || 0} invalid or duplicate ${job.skipped === 1 ? 'line was' : 'lines were'} skipped. Joining runs in the background — progress and dates are below, even if you close this browser.`;
+                        this.outreachJobs.unshift(job);
+                        await this.loadOutreachJobs();
                     } catch (e) {
                         if (!this.accessReady || revision !== this.authRevision) return;
+                        if (e.response?.status === 409) {
+                            this.autojoin.requestId = '';
+                            await this.loadOutreachJobs();
+                            this.autojoin.resultMsg = 'Your previous submission exists. Check its progress below. Press Start again only if this edited list is a separate job.';
+                            return;
+                        }
                         this.autojoin.resultMsg = '❌ ' + (e.response?.data?.detail || e.message);
                     } finally {
                         if (revision === this.authRevision) this.autojoin.loading = false;
@@ -4073,6 +4236,94 @@
                         if (this.accessReady && revision === this.authRevision)
                             this.outreachJobError = error.response?.data?.detail || 'Control request failed. Refresh to verify the job state.';
                     } finally { this.outreachJobBusy = ''; }
+                },
+                // ---- Webhooks ----
+                async loadWebhooks() {
+                    if (!this.accessReady || this.webhooks.loading) return;
+                    const revision = this.authRevision;
+                    this.webhooks.loading = true;
+                    try {
+                        const { data } = await _api.get('/api/webhooks');
+                        if (!this.accessReady || revision !== this.authRevision) return;
+                        this.webhooks.list = data.webhooks || [];
+                        this.webhooks.events = data.events || [];
+                        if (!this.webhooks.form.events.length)
+                            this.webhooks.form.events = this.webhooks.events.map(e => e.name).filter(e => e !== 'webhook.test');
+                        this.webhooks.error = '';
+                    } catch (e) {
+                        if (this.accessReady && revision === this.authRevision)
+                            this.webhooks.error = e.response?.data?.detail || 'Could not load webhooks.';
+                    } finally { this.webhooks.loading = false; }
+                },
+                async createWebhook() {
+                    if (this.webhooks.busy) return;
+                    this.webhooks.busy = 'create'; this.webhooks.error = '';
+                    const revision = this.authRevision;
+                    try {
+                        const name = this.webhooks.form.name.trim();
+                        const url = this.webhooks.form.url.trim();
+                        if (!name) throw new Error('Give the webhook a name.');
+                        if (!/^https:\/\//i.test(url)) throw new Error('The endpoint must be an https:// URL.');
+                        if (!this.webhooks.form.events.length) throw new Error('Select at least one event.');
+                        const { data } = await _api.post('/api/webhooks', { name, url, events: this.webhooks.form.events });
+                        if (!this.accessReady || revision !== this.authRevision) return;
+                        this.webhooks.created = data.secret;
+                        this.webhooks.form = { name: '', url: '', events: this.webhooks.events.map(e => e.name).filter(e => e !== 'webhook.test') };
+                        await this.loadWebhooks();
+                        this.showToast('Webhook created. Copy the signing secret now.');
+                    } catch (e) {
+                        if (this.accessReady && revision === this.authRevision)
+                            this.webhooks.error = e.response?.data?.detail || e.message;
+                    } finally { this.webhooks.busy = ''; }
+                },
+                async toggleWebhook(hook) {
+                    await this.patchWebhook(hook, { enabled: !hook.enabled });
+                },
+                async patchWebhook(hook, patch) {
+                    if (this.webhooks.busy) return;
+                    this.webhooks.busy = hook.id;
+                    try {
+                        const { data } = await _api.patch('/api/webhooks/' + hook.id, patch);
+                        const index = this.webhooks.list.findIndex(h => h.id === data.id);
+                        if (index >= 0) this.webhooks.list.splice(index, 1, data);
+                        this.webhooks.error = '';
+                    } catch (e) {
+                        this.webhooks.error = e.response?.data?.detail || 'Could not update the webhook.';
+                    } finally { this.webhooks.busy = ''; }
+                },
+                async rotateWebhook(hook) {
+                    if (this.webhooks.busy) return;
+                    this.webhooks.busy = hook.id;
+                    try {
+                        const { data } = await _api.post('/api/webhooks/' + hook.id + '/rotate');
+                        this.webhooks.created = data.secret;
+                        await this.loadWebhooks();
+                        this.showToast('Secret rotated. Copy the new secret now.');
+                    } catch (e) {
+                        this.webhooks.error = e.response?.data?.detail || 'Could not rotate the secret.';
+                    } finally { this.webhooks.busy = ''; }
+                },
+                async testWebhook(hook) {
+                    if (this.webhooks.busy) return;
+                    this.webhooks.busy = hook.id;
+                    try {
+                        const { data } = await _api.post('/api/webhooks/' + hook.id + '/test', null, { timeout: 20000 });
+                        this.showToast(data.ok ? `Test delivered · HTTP ${data.status}` : `Test failed · ${data.error || ('HTTP ' + data.status)}`, !data.ok);
+                        await this.loadWebhooks();
+                    } catch (e) {
+                        this.webhooks.error = e.response?.data?.detail || 'Could not send the test event.';
+                    } finally { this.webhooks.busy = ''; }
+                },
+                async deleteWebhook(hook) {
+                    if (this.webhooks.busy) return;
+                    this.webhooks.busy = hook.id;
+                    try {
+                        await _api.delete('/api/webhooks/' + hook.id);
+                        this.webhooks.list = this.webhooks.list.filter(h => h.id !== hook.id);
+                        this.showToast('Webhook deleted.');
+                    } catch (e) {
+                        this.webhooks.error = e.response?.data?.detail || 'Could not delete the webhook.';
+                    } finally { this.webhooks.busy = ''; }
                 },
                 // === Auth Methods ===
                 async initAuth() {

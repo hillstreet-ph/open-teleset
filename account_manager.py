@@ -659,7 +659,12 @@ class AccountManager:
 
         # 创建新连接
         account = self.accounts[account_id]
-        session_string = account["session_string"]
+        session_string = account.get("session_string")
+        if session_string is None:
+            self.connection_errors[account_id] = (
+                "Account has no saved Telegram session. Sign in again using Add account."
+            )
+            return None
 
         client = None
         try:

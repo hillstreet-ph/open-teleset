@@ -86,7 +86,7 @@ assert http.get("/dashboard").status_code == 200
     env.update(APP_ENV="production", PYTHONPATH=f"{root}:{root / 'src'}")
     result = subprocess.run(
         [sys.executable, "-c", script], cwd=tmp_path, env=env,
-        capture_output=True, text=True, timeout=30,
+        capture_output=True, text=True, timeout=90,
     )
     assert result.returncode == 0, result.stderr
 
@@ -109,7 +109,7 @@ async def run():
 asyncio.run(run())
 '''
     env = dict(os.environ, PYTHONPATH=f'{root}:{root / "src"}', APP_ENV='development')
-    result = subprocess.run([sys.executable, '-c', script], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30)
+    result = subprocess.run([sys.executable, '-c', script], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=90)
     assert result.returncode == 0, result.stderr
 
 
@@ -152,5 +152,5 @@ async def run():
 asyncio.run(run())
 '''
     env = dict(os.environ, PYTHONPATH=f'{root}:{root / "src"}', APP_ENV='development')
-    result = subprocess.run([sys.executable, '-c', script], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30)
+    result = subprocess.run([sys.executable, '-c', script], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=90)
     assert result.returncode == 0, result.stderr

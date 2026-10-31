@@ -30,6 +30,11 @@ telegram_ops_router = APIRouter()
 ActivityFilter = Literal["all", "recently", "7_days", "15_days", "30_days"]
 
 
+def _client_unavailable_detail(account_id: str) -> str:
+    return (account_manager.connection_errors.get(account_id)
+            or "Client unavailable — account not connected")
+
+
 def activity_details(user):
     """Expose only the status Telegram actually shared, never inferred timestamps."""
     status = getattr(user, "status", None)
@@ -176,7 +181,8 @@ class BulkSendRequest(BaseModel):
 # invite hash; a public channel/group (t.me/<username>, @<username> or a bare
 # username) is joined by resolving its entity.
 _TME_INVITE_RE = _re.compile(r"(?:https?://)?t\.me/(?:joinchat/|\+)([A-Za-z0-9_-]{6,})", _re.I)
-_TME_PUBLIC_RE = _re.compile(r"(?:https?://)?t\.me/(?:s/)?([A-Za-z][A-Za-z0-9_]{3,31})/?$", _re.I)
+_TME_PUBLIC_RE = _re.compile(
+    r"(?:https?://)?t\.me/(?:s/)?([A-Za-z][A-Za-z0-9_]{3,31})(?:/\d+)?/?$", _re.I)
 _BARE_INVITE_RE = _re.compile(r"^\+([A-Za-z0-9_-]{6,})$")
 _BARE_USERNAME_RE = _re.compile(r"^[A-Za-z][A-Za-z0-9_]{3,31}$")
 
@@ -245,33 +251,61 @@ def _enforce_outreach(action: str, subjects: List[str], account_id: str, approva
 
 # ============ 1. Member Scraper ============
 
-_TARGET_USERNAME_RE = _re.compile(r"^@?([A-Za-z]\w{3,31})$")
+# Paths that are Telegram app features rather than public channel/group names.
+_TME_RESERVED = {"s", "share", "joinchat", "addstickers", "addtheme", "addemoji", "addlist",
+                 "proxy", "socks", "bg", "login", "iv", "setlanguage", "confirmphone", "c", "contact"}
+
+_TARGET_USERNAME_RE = _re.compile(r"^@?([A-Za-z][A-Za-z0-9_]{3,31})$")
 _TARGET_URL_RE = _re.compile(
-    r"^(?:https?://)?(?:www\.)?(?:t\.me|telegram\.me)/(?:s/)?([A-Za-z]\w{3,31})/?(?:\?.*)?$",
+    r"^(?:https?://)?(?:www\.)?(?:t\.me|telegram\.me)/(?:s/)?([A-Za-z][A-Za-z0-9_]{3,31})"
+    r"(?:/\d+)?/?(?:\?.*)?$",
     _re.I,
 )
 _TARGET_ID_RE = _re.compile(r"^-?\d+$")
-_PRIVATE_LINK_RE = _re.compile(r"^(?:https?://)?(?:www\.)?(?:t\.me|telegram\.me)/(?:\+|joinchat/)", _re.I)
+_PRIVATE_LINK_RE = _re.compile(
+    r"^(?:https?://)?(?:www\.)?(?:t\.me|telegram\.me)/(?:\+|joinchat/|c/)", _re.I)
 _TARGET_HELP = ("Use a public @username, a t.me/username link, or a numeric channel ID. "
                 "Private invite links must be joined before scraping.")
 
 
 def _normalise_scrape_target(raw: str):
-    """Return an @username or integer ID Telethon can resolve, else None."""
+    """Return an @username or integer ID Telethon can resolve, else None.
+
+    Public links may carry a public preview prefix (t.me/s/name) or point at a
+    specific post (t.me/name/123); Telegram resolves both to the same channel.
+    """
     target = (raw or "").strip()
     if not target:
         return None
     if _PRIVATE_LINK_RE.match(target):
         return None
     url_match = _TARGET_URL_RE.match(target)
-    if url_match:
+    if url_match and url_match.group(1).lower() not in _TME_RESERVED:
         return "@" + url_match.group(1)
     if _TARGET_ID_RE.match(target):
         return int(target)
     username_match = _TARGET_USERNAME_RE.match(target)
-    if username_match:
+    if username_match and username_match.group(1).lower() not in _TME_RESERVED:
         return "@" + username_match.group(1)
     return None
+
+
+async def _resolve_target_entity(client, target):
+    """Resolve a username, ID, or peer ID, falling back to the account's dialogs.
+
+    Numeric IDs of channels the account is a member of are not always cached in
+    a fresh StringSession; scanning dialogs recovers those without asking the
+    operator for a public username.
+    """
+    try:
+        return await client.get_entity(target)
+    except (ValueError, KeyError):
+        if not isinstance(target, int):
+            raise
+        async for dialog in client.iter_dialogs():
+            if utils.get_peer_id(dialog.entity) == target:
+                return dialog.entity
+        raise
 
 
 @telegram_ops_router.post("/api/scraper/members")
@@ -287,11 +321,12 @@ async def scrape_members(request: ScrapeRequest):
 
         client = await account_manager.get_client(request.account_id)
         if not client:
-            raise HTTPException(status_code=400, detail="Client unavailable — account not connected")
+            raise HTTPException(status_code=400,
+                                detail=_client_unavailable_detail(request.account_id))
 
         try:
-            entity = await client.get_entity(target)
-        except ValueError:
+            entity = await _resolve_target_entity(client, target)
+        except (ValueError, KeyError):
             raise HTTPException(
                 status_code=400,
                 detail=f"Could not find {request.target}. Check the username or ID and that "
@@ -355,10 +390,53 @@ async def scrape_members(request: ScrapeRequest):
         ) from None
 
 
+class GroupListRequest(BaseModel):
+    account_id: str
+
+
+@telegram_ops_router.post("/api/channels/groups")
+async def list_account_groups(request: GroupListRequest):
+    """Groups and channels the account belongs to, for the target pickers."""
+    account_id = (request.account_id or "").strip()
+    if not account_id:
+        raise HTTPException(status_code=400, detail="Select an account first")
+    client = await account_manager.get_client(account_id)
+    if not client:
+        raise HTTPException(status_code=400, detail=_client_unavailable_detail(account_id))
+    try:
+        dialogs = await asyncio.wait_for(client.get_dialogs(limit=None), 45)
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=504,
+            detail="Telegram did not return the group list in time. Try again.",
+        ) from None
+    except Exception:
+        raise HTTPException(
+            status_code=502,
+            detail="Could not load groups from Telegram. Check the account connection.",
+        ) from None
+
+    groups = []
+    for dialog in dialogs:
+        if not (dialog.is_group or dialog.is_channel):
+            continue
+        entity = dialog.entity
+        username = getattr(entity, "username", None) or ""
+        members = getattr(entity, "participants_count", None)
+        groups.append({
+            "peer_id": utils.get_peer_id(entity),
+            "name": dialog.name or (f"@{username}" if username else str(dialog.id)),
+            "username": username,
+            "type": "group" if dialog.is_group else "channel",
+            "members": members if isinstance(members, int) else None,
+        })
+    groups.sort(key=lambda g: (g["type"], g["name"].lower()))
+    log_manager.add_log("Groups", account_id, f"Detected {len(groups)} groups and channels", "info")
+    return {"success": True, "groups": groups}
+
+
 # Public t.me/web discovery (used when no Telegram account is selected).
 _TME_USERNAME_RE = _re.compile(r"(?:https?://)?t\.me/(?:s/)?([A-Za-z]\w{3,31})\b", _re.I)
-_TME_RESERVED = {"s", "share", "joinchat", "addstickers", "addtheme", "addemoji", "addlist",
-                 "proxy", "socks", "bg", "login", "iv", "setlanguage", "confirmphone", "c", "contact"}
 _OG_TITLE_RE = _re.compile(r'<meta property="og:title" content="([^"]*)"', _re.I)
 _EXTRA_RE = _re.compile(r'<div class="tgme_page_extra">([^<]*)</div>', _re.I)
 _BROWSER_HEADERS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -645,7 +723,7 @@ async def scrape_channels(request: ChannelScrapeRequest):
 
     client = await account_manager.get_client(account_id)
     if not client:
-        raise HTTPException(status_code=400, detail="Client unavailable — account not connected")
+        raise HTTPException(status_code=400, detail=_client_unavailable_detail(account_id))
 
     country = request.country.lower()
     seen: set = set()
@@ -733,7 +811,8 @@ async def add_members(request: AddMembersRequest):
 
         client = await account_manager.get_client(request.account_id)
         if not client:
-            raise HTTPException(status_code=400, detail="Client unavailable — account not connected")
+            raise HTTPException(status_code=400,
+                                detail=_client_unavailable_detail(request.account_id))
 
         if not user_list:
             return {"success": True, "added": 0, "failed": 0, "results": [], "message": "No users to add"}

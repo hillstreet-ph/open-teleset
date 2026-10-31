@@ -16,7 +16,7 @@ import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Optional
 from uuid import uuid4
 
 import httpx
@@ -38,14 +38,19 @@ from outreach_policy import (
 from telegram_ops import (
     AddMembersRequest,
     BulkSendRequest,
+    JoinChannelsRequest,
     _enforce_outreach,
+    _parse_join_target,
+    _resolve_target_entity,
     account_manager,
     matches_activity,
     outreach_policy,
 )
+import webhooks
 
 router = APIRouter()
 ACTIVE = ("queued", "running", "waiting")
+TERMINAL = ("completed", "stopped", "needs_review")
 # Per-recipient authorization failures for a personal send: skipping the recipient
 # means we never message someone who hasn't consented or has opted out, so the job
 # continues safely instead of pausing the whole list for one recipient.
@@ -68,6 +73,10 @@ class RecipientChanged(Exception):
 
 
 class BulkJobRequest(BulkSendRequest):
+    request_id: str = Field(min_length=16, max_length=128, pattern=r"^[a-zA-Z0-9_-]+$")
+
+
+class AutoJoinJobRequest(JoinChannelsRequest):
     request_id: str = Field(min_length=16, max_length=128, pattern=r"^[a-zA-Z0-9_-]+$")
 
 
@@ -111,6 +120,7 @@ class JobStore:
                     fingerprint TEXT NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL,
                     state TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '',
                     retry_at REAL NOT NULL DEFAULT 0, created REAL NOT NULL,
+                    started REAL NOT NULL DEFAULT 0, finished REAL NOT NULL DEFAULT 0,
                     UNIQUE(owner, request_id));
                 CREATE TABLE IF NOT EXISTS items (
                     job TEXT NOT NULL REFERENCES jobs(id), seq INTEGER NOT NULL,
@@ -132,6 +142,12 @@ class JobStore:
                 CREATE TABLE IF NOT EXISTS store_metadata (
                     key TEXT PRIMARY KEY, value TEXT NOT NULL);
             """)
+            # Existing state volumes predate job timing; add the columns in place.
+            columns = {row[1] for row in db.execute("PRAGMA table_info(jobs)")}
+            if "started" not in columns:
+                db.execute("ALTER TABLE jobs ADD COLUMN started REAL NOT NULL DEFAULT 0")
+            if "finished" not in columns:
+                db.execute("ALTER TABLE jobs ADD COLUMN finished REAL NOT NULL DEFAULT 0")
             self._backfill_message_aggregates(db)
             db.commit()
             with db:
@@ -195,6 +211,34 @@ class JobStore:
                 if not isinstance(identity, int) or isinstance(identity, bool) or identity <= 0:
                     raise HTTPException(422, "Selected account has no verified Telegram identity")
                 identities[account] = identity
+            if kind == "auto_join":
+                # Joining is a self-action: no recipient consent or message
+                # pacing. Invalid and duplicate links are retained as skipped
+                # so the operator can see exactly what was not attempted.
+                payload.pop("urls", None)
+                payload["operator"] = operator
+                payload["sender_identities"] = identities
+                payload["limited_accounts"] = []
+                job = str(uuid4())
+                db.execute("INSERT INTO jobs(id,owner,request_id,fingerprint,kind,payload,state,created) "
+                           "VALUES(?,?,?,?,?,?,?,?)",
+                           (job, owner_hash, request.request_id, fingerprint, kind,
+                            self.pack(payload), "queued", time.time()))
+                seen = set()
+                for seq, raw in enumerate(targets[:request.limit]):
+                    duplicate = raw in seen
+                    seen.add(raw)
+                    if _parse_join_target(raw) is None:
+                        state, reason = "skipped", "invalid_link"
+                    elif duplicate:
+                        state, reason = "skipped", "duplicate_link"
+                    else:
+                        state, reason = "pending", ""
+                    db.execute("INSERT INTO items(job,seq,payload,state,reason) VALUES(?,?,?,?,?)",
+                               (job, seq,
+                                self.pack({"target": raw, "account": accounts[seq % len(accounts)]}),
+                                state, reason))
+                return job
             if kind == "personal_send":
                 if request.template_id:
                     from template_manager import template_manager
@@ -280,14 +324,18 @@ class JobStore:
                     "completed": counts.get("completed", 0), "skipped": counts.get("skipped", 0),
                     "failed": counts.get("failed", 0), "uncertain": counts.get("uncertain", 0),
                     "pending": counts.get("pending", 0), "in_flight": counts.get("sending", 0),
-                    "results": list(reversed(results)), "created": row["created"]}
+                    "results": list(reversed(results)), "created": row["created"],
+                    "started": row["started"], "finished": row["finished"]}
 
-    def listing(self, operator):
+    def listing(self, operator, kind=None):
         with self.db() as db:
-            ids = [r[0] for r in db.execute("SELECT id FROM jobs WHERE owner=? AND (state NOT IN ('completed','stopped','needs_review') "
-                                           "OR id IN (SELECT id FROM jobs WHERE owner=? AND state IN ('completed','stopped','needs_review') "
+            ids = [r[0] for r in db.execute("SELECT id FROM jobs WHERE owner=? AND "
+                                           "(? IS NULL OR kind=?) AND (state NOT IN ('completed','stopped','needs_review') "
+                                           "OR id IN (SELECT id FROM jobs WHERE owner=? AND (? IS NULL OR kind=?) "
+                                           "AND state IN ('completed','stopped','needs_review') "
                                            "ORDER BY created DESC LIMIT 30)) ORDER BY created DESC",
-                                           (hash_identifier(operator), hash_identifier(operator)))]
+                                           (hash_identifier(operator), kind, kind,
+                                            hash_identifier(operator), kind, kind))]
         return [self.snapshot(j, operator) for j in ids]
 
     def control(self, job, operator, action):
@@ -316,13 +364,19 @@ class JobStore:
             else:
                 state = "paused" if action == "pause" else "stopped"
             # Keep retry_at: user resume cannot shorten an existing cooldown.
-            db.execute("UPDATE jobs SET state=?,reason=? WHERE id=?", (state, reason, job))
+            if state in TERMINAL:
+                db.execute("UPDATE jobs SET state=?,reason=?,"
+                           "finished=COALESCE(NULLIF(finished,0),?) WHERE id=?",
+                           (state, reason, time.time(), job))
+            else:
+                db.execute("UPDATE jobs SET state=?,reason=? WHERE id=?", (state, reason, job))
         return self.snapshot(job, operator)
 
     def recover(self):
         with self.db() as db:
-            db.execute("UPDATE jobs SET state='needs_review',reason='delivery_uncertain_after_restart' "
-                       "WHERE id IN (SELECT job FROM items WHERE state='sending')")
+            db.execute("UPDATE jobs SET state='needs_review',reason='delivery_uncertain_after_restart',"
+                       "finished=COALESCE(NULLIF(finished,0),?) "
+                       "WHERE id IN (SELECT job FROM items WHERE state='sending')", (time.time(),))
             db.execute("UPDATE items SET state='uncertain',reason='delivery_uncertain_after_restart' WHERE state='sending'")
 
     def guard(self, job, seq, mark=False):
@@ -354,13 +408,26 @@ class JobStore:
             db.execute("UPDATE jobs SET retry_at=? WHERE id=?", (time.time() + delay, job))
             if job_state:
                 # Never undo a concurrent manual Stop/Pause.
-                db.execute("UPDATE jobs SET state=?,reason=? WHERE id=? AND state IN ('queued','running','waiting')",
-                           (job_state, reason, job))
+                if job_state in TERMINAL:
+                    db.execute("UPDATE jobs SET state=?,reason=?,"
+                               "finished=COALESCE(NULLIF(finished,0),?) "
+                               "WHERE id=? AND state IN ('queued','running','waiting')",
+                               (job_state, reason, time.time(), job))
+                else:
+                    db.execute("UPDATE jobs SET state=?,reason=? WHERE id=? AND state IN ('queued','running','waiting')",
+                               (job_state, reason, job))
 
     def waiting(self, job, reason, seconds):
         with self.db() as db:
             db.execute("UPDATE jobs SET state='waiting',reason=?,retry_at=? WHERE id=? "
                        "AND state IN ('queued','running','waiting')", (reason, time.time() + seconds, job))
+
+    def mark_running(self, job, reason=""):
+        with self.db() as db:
+            db.execute("UPDATE jobs SET state='running',reason=?,"
+                       "started=CASE WHEN started=0 THEN ? ELSE started END "
+                       "WHERE id=? AND state IN ('queued','running','waiting')",
+                       (reason, time.time(), job))
 
 
 store = JobStore()
@@ -488,22 +555,38 @@ class JobWorker:
                 # jobs keep running and the worker stays available.
                 log.exception("Outreach job %s processing failed; pausing for review", job["id"])
                 with self.store.db() as db:
-                    db.execute("UPDATE jobs SET state='needs_review',reason=? WHERE id=? "
+                    db.execute("UPDATE jobs SET state='needs_review',reason=?,"
+                               "finished=COALESCE(NULLIF(finished,0),?) WHERE id=? "
                                "AND state IN ('queued','running','waiting')",
-                               (f"job_error:{type(exc).__name__}"[:120], job["id"]))
+                               (f"job_error:{type(exc).__name__}"[:120], time.time(), job["id"]))
+
+    def _emit_terminal(self, job_id, kind, operator):
+        if not operator:
+            return
+        try:
+            webhooks.emit_job(operator, kind, self.store.snapshot(job_id, operator))
+        except Exception:
+            log.exception("Webhook notification failed for job %s", job_id)
 
     async def process(self, job):
         job_id = job["id"]
         config = self.store.unpack(job["payload"])
+        if job["kind"] == "auto_join":
+            await self.process_join(job, config)
+            return
         with self.store.db() as db:
             if db.execute("SELECT 1 FROM items WHERE job=? AND state IN ('sending','uncertain')", (job_id,)).fetchone():
-                db.execute("UPDATE jobs SET state='needs_review',reason='delivery_uncertain' WHERE id=?", (job_id,))
+                db.execute("UPDATE jobs SET state='needs_review',reason='delivery_uncertain',"
+                           "finished=COALESCE(NULLIF(finished,0),?) WHERE id=?", (time.time(), job_id))
                 db.execute("UPDATE items SET state='uncertain' WHERE job=? AND state='sending'", (job_id,))
                 return
             pending = db.execute("SELECT * FROM items WHERE job=? AND state='pending' ORDER BY seq", (job_id,)).fetchall()
             if not pending:
-                db.execute("UPDATE jobs SET state='completed',reason='' WHERE id=? "
-                           "AND state IN ('queued','running','waiting')", (job_id,))
+                db.execute("UPDATE jobs SET state='completed',reason='',"
+                           "finished=COALESCE(NULLIF(finished,0),?) WHERE id=? "
+                           "AND state IN ('queued','running','waiting')", (time.time(), job_id))
+                db.commit()
+                self._emit_terminal(job_id, job["kind"], config.get("operator"))
                 return
             current = db.execute("SELECT state FROM jobs WHERE id=?", (job_id,)).fetchone()
             if current[0] not in ACTIVE:
@@ -548,7 +631,9 @@ class JobWorker:
             if item is None:
                 self.store.waiting(job_id, soonest_reason, max(1, soonest or 30))
                 return
-            db.execute("UPDATE jobs SET state='running',reason='' WHERE id=?", (job_id,))
+            db.execute("UPDATE jobs SET state='running',reason='',"
+                       "started=CASE WHEN started=0 THEN ? ELSE started END WHERE id=?",
+                       (time.time(), job_id))
             if rotated_account is not None:
                 rotated = self.store.unpack(item["payload"])
                 if rotated.get("account") != rotated_account:
@@ -645,7 +730,8 @@ class JobWorker:
             # Resolve destination and check existing membership before attempting an add.
             destination = None
             if job["kind"] == "member_add":
-                destination = await asyncio.wait_for(client.get_entity(config["dest_target"]), TELEGRAM_READ_TIMEOUT)
+                destination = await asyncio.wait_for(
+                    _resolve_target_entity(client, config["dest_target"]), TELEGRAM_READ_TIMEOUT)
                 try:
                     membership = await asyncio.wait_for(
                         client(functions.channels.GetParticipantRequest(destination, entity)), TELEGRAM_READ_TIMEOUT)
@@ -767,6 +853,139 @@ class JobWorker:
             if token is not None:
                 dispatch_guard.reset(token)
 
+    async def process_join(self, job, config):
+        """Join the next pending link; joining is idempotent so retries are safe."""
+        job_id = job["id"]
+        operator = config.get("operator")
+        with self.store.db() as db:
+            pending = db.execute("SELECT * FROM items WHERE job=? AND state='pending' "
+                                 "ORDER BY seq", (job_id,)).fetchall()
+            if not pending:
+                db.execute("UPDATE jobs SET state='completed',reason='',"
+                           "finished=COALESCE(NULLIF(finished,0),?) WHERE id=? "
+                           "AND state IN ('queued','running','waiting')", (time.time(), job_id))
+                db.commit()
+                self._emit_terminal(job_id, "auto_join", operator)
+                return
+            current = db.execute("SELECT state FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if current[0] not in ACTIVE:
+                return
+        item = pending[0]
+        seq = item["seq"]
+        raw = self.store.unpack(item["payload"])["target"]
+        parsed = _parse_join_target(raw)
+        if parsed is None:
+            self.store.outcome(job_id, seq, "skipped", "invalid_link")
+            return
+        kind, value = parsed
+        rotation = (config.get("rotation_mode") == "round_robin"
+                    and len(config.get("account_ids") or []) > 1)
+        accounts = [a for a in (config.get("account_ids") if rotation else [config.get("account_id")]) if a]
+        limited = set(config.get("limited_accounts") or [])
+        ordered = [accounts[(seq + offset) % len(accounts)] for offset in range(len(accounts))]
+        candidates = [account for account in ordered if account not in limited]
+        if not candidates:
+            soonest = None
+            for account in accounts:
+                try:
+                    remaining = account_cooldown_remaining(account)
+                except OutreachDenied as exc:
+                    self.store.outcome(job_id, seq, "pending", "rate_store_unavailable", job_state="paused")
+                    log.warning("Join job %s paused: %s", job_id, exc)
+                    return
+                soonest = remaining if soonest is None else min(soonest, remaining)
+            self.store.waiting(job_id, "telegram_cooldown", max(1, soonest or 30))
+            return
+        chosen, soonest = None, None
+        for account in candidates:
+            try:
+                remaining = account_cooldown_remaining(account)
+            except OutreachDenied as exc:
+                self.store.outcome(job_id, seq, "pending", "rate_store_unavailable", job_state="paused")
+                log.warning("Join job %s paused: %s", job_id, exc)
+                return
+            if remaining <= 0:
+                chosen = account
+                break
+            soonest = remaining if soonest is None else min(soonest, remaining)
+        if chosen is None:
+            self.store.waiting(job_id, "telegram_cooldown", max(1, soonest or 30))
+            return
+        self.store.mark_running(job_id)
+        delay = config.get("delay", 45)
+        with self.store.db() as db:
+            remaining_items = db.execute(
+                "SELECT COUNT(*) FROM items WHERE job=? AND state='pending' AND seq!=?",
+                (job_id, seq)).fetchone()[0]
+        if remaining_items == 0:
+            delay = 0
+        try:
+            # The operator who queued the job must still have administrator access.
+            await _load_profile(operator)
+            client = await asyncio.wait_for(account_manager.get_client(chosen), TELEGRAM_READ_TIMEOUT)
+            if not client:
+                self.store.waiting(job_id, "account_unavailable", 30)
+                return
+            if kind == "invite":
+                await asyncio.wait_for(
+                    client(functions.messages.ImportChatInviteRequest(value)), TELEGRAM_SEND_TIMEOUT)
+                self.store.outcome(job_id, seq, "completed", delay=delay)
+            else:
+                try:
+                    entity = await asyncio.wait_for(
+                        _resolve_target_entity(client, "@" + value), TELEGRAM_READ_TIMEOUT)
+                except (ValueError, KeyError):
+                    self.store.outcome(job_id, seq, "skipped", "target_unresolvable", delay=delay)
+                    return
+                await asyncio.wait_for(
+                    client(functions.channels.JoinChannelRequest(entity)), TELEGRAM_SEND_TIMEOUT)
+                self.store.outcome(job_id, seq, "completed", delay=delay)
+        except errors.UserAlreadyParticipantError:
+            self.store.outcome(job_id, seq, "skipped", "already_member", delay=delay)
+        except errors.FloodWaitError as exc:
+            record_provider_restriction(chosen, exc)
+            if rotation:
+                limited.add(chosen)
+                with self.store.db() as db:
+                    updated = dict(config)
+                    updated["limited_accounts"] = sorted(limited)
+                    db.execute("UPDATE jobs SET payload=? WHERE id=?",
+                               (self.store.pack(updated), job_id))
+                self.store.outcome(job_id, seq, "pending", "telegram_cooldown")
+            else:
+                self.store.outcome(job_id, seq, "pending", "telegram_cooldown")
+                self.store.waiting(job_id, "telegram_cooldown", max(1, exc.seconds))
+        except (errors.ChannelsTooMuchError, errors.UserDeactivatedBanError,
+                errors.AuthKeyUnregisteredError, errors.FrozenMethodInvalidError) as exc:
+            record_provider_restriction(chosen, exc)
+            if rotation:
+                limited.add(chosen)
+                with self.store.db() as db:
+                    updated = dict(config)
+                    updated["limited_accounts"] = sorted(limited)
+                    db.execute("UPDATE jobs SET payload=? WHERE id=?",
+                               (self.store.pack(updated), job_id))
+                self.store.outcome(job_id, seq, "pending", type(exc).__name__)
+            else:
+                self.store.outcome(job_id, seq, "pending", type(exc).__name__, job_state="paused")
+        except (errors.InviteHashExpiredError, errors.InviteHashInvalidError,
+                errors.InviteRequestSentError, errors.UsernameInvalidError,
+                errors.UsernameNotOccupiedError) as exc:
+            self.store.outcome(job_id, seq, "failed", type(exc).__name__, delay=delay)
+        except TimeoutError:
+            # A join may have completed server-side; retrying is safe because an
+            # existing membership is reported as already-participant.
+            self.store.outcome(job_id, seq, "pending", "telegram_timeout", delay=0)
+            self.store.waiting(job_id, "telegram_timeout", 30)
+        except errors.RPCError as exc:
+            self.store.outcome(job_id, seq, "failed", type(exc).__name__, delay=delay)
+        except asyncio.CancelledError:
+            self.store.outcome(job_id, seq, "pending", "worker_interrupted")
+            raise
+        except (OSError, RuntimeError, TypeError) as exc:
+            self.store.outcome(job_id, seq, "pending", type(exc).__name__,
+                               job_state="paused")
+
 
 worker = JobWorker(store)
 
@@ -816,9 +1035,17 @@ async def submit(kind, operator, body, targets, accounts):
         raise HTTPException(503, "Encrypted job storage unavailable") from None
 
 
+@router.post("/api/join/jobs", status_code=202)
+async def submit_join(body: AutoJoinJobRequest, request: Request):
+    """Queue an Auto Join run; progress is durable and polled by the dashboard."""
+    require_worker()
+    return await submit("auto_join", owner(request), body, body.urls, body.selected_accounts())
+
+
 @router.get("/api/outreach/jobs")
-async def list_jobs(request: Request):
-    return {"jobs": store.listing(owner(request)), "worker": "ready" if worker.ensure_running() else "unavailable"}
+async def list_jobs(request: Request, kind: Optional[Literal["personal_send", "member_add", "auto_join"]] = None):
+    return {"jobs": store.listing(owner(request), kind),
+            "worker": "ready" if worker.ensure_running() else "unavailable"}
 
 
 @router.get("/api/outreach/jobs/{job_id}")
@@ -828,4 +1055,8 @@ async def get_job(job_id: str, request: Request):
 
 @router.post("/api/outreach/jobs/{job_id}/{action}")
 async def control_job(job_id: str, action: Literal["pause", "resume", "stop"], request: Request):
-    return store.control(job_id, owner(request), action)
+    operator = owner(request)
+    snapshot = store.control(job_id, operator, action)
+    if snapshot["state"] == "stopped":
+        webhooks.emit_job(operator, snapshot["kind"], snapshot)
+    return snapshot
