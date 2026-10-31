@@ -647,6 +647,7 @@
                 <div class="tab" :class="{ active: tab === 'adder' }" @click="tab = 'adder'">➕ Adder</div>
                 <div class="tab" :class="{ active: tab === 'autojoin' }" @click="tab = 'autojoin'">🔗 Auto Join</div>
                 <div class="tab" :class="{ active: tab === 'bulksend' }" @click="tab = 'bulksend'">📨 BulkSend</div>
+                <div class="tab" :class="{ active: tab === 'automation' }" @click="openAutomationTab">⚡ Automation</div>
             </div>
 
             <!-- Accounts -->
@@ -1523,6 +1524,74 @@
                     <details><summary>Recipient history (latest 100)</summary>
                         <ul><li v-for="(result,index) in job.results" :key="index">{{ result.target }} · {{ result.account_id }} · {{ result.state }} · {{ outreachReason(result.reason) }}</li></ul>
                     </details>
+                </div>
+            </div>
+
+            <!-- ============ Automation Tab ============ -->
+            <div v-show="tab === 'automation'">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>⚡ Account factory</h3>
+                        <button class="btn btn-outline" @click="loadAutomationStatus" :disabled="automation.loading">↻ Refresh</button>
+                    </div>
+                    <p style="color: #999; margin-bottom: 20px;">Buys the cheapest Telegram number on HeroSMS, registers the account, imports the session here, and records it in Airtable. Each click starts one n8n run; the workflow runs in the background and new accounts appear under Accounts.</p>
+
+                    <div v-if="automation.status && !automation.status.configured" style="padding:16px;border-radius:8px;background:rgba(243,156,18,0.08);border:1px solid rgba(243,156,18,0.3);margin-bottom:20px;">
+                        <strong>⚠️ Automation is not configured</strong>
+                        <p style="margin:8px 0 0;">{{ automation.status.problem }}</p>
+                        <p style="margin:8px 0 0;color:#999;font-size:0.85em;">Backend environment: <code>N8N_AUTOMATION_WEBHOOK_URL</code> and <code>N8N_AUTOMATION_WEBHOOK_TOKEN</code>. Store the same token in the n8n workflow Variables as <code>AUTOMATION_WEBHOOK_TOKEN</code>.</p>
+                    </div>
+
+                    <div v-else-if="automation.status" style="max-width:560px;">
+                        <div style="display:flex;gap:15px;">
+                            <div class="form-group" style="flex:1;">
+                                <label>Max price per number (USD)</label>
+                                <input class="form-control" type="number" min="0.02" max="5" step="0.01" v-model="automation.maxPrice" :disabled="automation.running">
+                            </div>
+                            <div class="form-group" style="flex:1;">
+                                <label>OTP attempts</label>
+                                <input class="form-control" type="number" min="1" max="120" step="1" v-model="automation.otpAttempts" :disabled="automation.running">
+                            </div>
+                        </div>
+                        <button class="btn btn-primary" @click="runAutomation" :disabled="automation.running || automation.status.cooldown_remaining > 0">
+                            {{ automation.running ? '⏳ Starting…' : (automation.status.cooldown_remaining > 0 ? '⏱ Ready again in ' + automation.status.cooldown_remaining + 's' : '⚡ Run account factory') }}
+                        </button>
+                        <p v-if="automation.message" role="status" :style="{ marginTop: '12px', color: automation.messageError ? '#e74c3c' : '#6ee7b7' }">{{ automation.message }}</p>
+                        <p style="margin-top:12px;color:#999;font-size:0.85em;">Webhook: {{ automation.status.webhook_host }} · cooldown {{ automation.status.cooldown_seconds }}s. The n8n workflow must be published for production webhooks to accept runs.</p>
+                    </div>
+
+                    <div v-else-if="!automation.status" style="padding:16px;border-radius:8px;background:rgba(231,76,60,0.08);border:1px solid rgba(231,76,60,0.3);margin-bottom:20px;">
+                        <strong>⚠️ Could not load automation status</strong>
+                        <p style="margin:8px 0 0;">{{ automation.loading ? 'Loading…' : (automation.message || 'Check that the dashboard backend is reachable and signed in.') }}</p>
+                    </div>
+
+                    <div v-if="automation.status?.runs?.length" style="margin-top:24px;">
+                        <h4 style="margin-bottom:10px;">Recent runs</h4>
+                        <div style="max-height:320px;overflow:auto;border:1px solid rgba(255,255,255,0.1);border-radius:8px;">
+                            <table style="width:100%;border-collapse:collapse;">
+                                <thead>
+                                    <tr style="background:rgba(255,255,255,0.05);position:sticky;top:0;">
+                                        <th style="padding:8px 12px;text-align:left;">Run</th>
+                                        <th style="padding:8px 12px;text-align:left;">Requested</th>
+                                        <th style="padding:8px 12px;text-align:left;">Max price</th>
+                                        <th style="padding:8px 12px;text-align:left;">Status</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr v-for="run in automation.status.runs" :key="run.run_id">
+                                        <td style="padding:6px 12px;font-family:monospace;">{{ run.run_id.slice(0, 12) }}…</td>
+                                        <td style="padding:6px 12px;">{{ formatTime(run.requested_at) }}</td>
+                                        <td style="padding:6px 12px;">{{ run.max_price != null ? '$' + run.max_price : 'default' }}</td>
+                                        <td style="padding:6px 12px;">
+                                            <span class="badge" :class="run.status === 'accepted' ? 'badge-success' : 'badge-danger'">{{ run.status }}</span>
+                                            <small v-if="run.error" style="display:block;color:#f5b7b1;margin-top:4px;">{{ run.error }}</small>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <p style="margin-top:8px;color:#999;font-size:0.8em;">Run history is kept in the backend process and resets on redeploy. Execution details and errors live in n8n.</p>
+                    </div>
                 </div>
             </div>
 
@@ -2431,6 +2500,17 @@
                         resultMsg: '',
                         results: [],
                     },
+                    // Automation (account factory)
+                    automation: {
+                        loading: false,
+                        running: false,
+                        message: '',
+                        messageError: false,
+                        status: null,
+                        maxPrice: '',
+                        otpAttempts: '',
+                        poll: null,
+                    },
                     // Pagination
                     accountPage: 1,
                     accountPageSize: 10,
@@ -2595,6 +2675,54 @@
                         this.showToast(e.message, true);
                     } finally {
                         event.target.value = '';
+                    }
+                },
+                // ---- Automation ----
+                openAutomationTab() {
+                    this.tab = 'automation';
+                    this.loadAutomationStatus();
+                },
+                async loadAutomationStatus() {
+                    clearTimeout(this.automation.poll);
+                    this.automation.loading = true;
+                    try {
+                        const res = await _api.get('/api/automation/status');
+                        const status = res.data || {};
+                        this.automation.status = status;
+                        if (!this.automation.maxPrice && status.defaults?.max_price != null) {
+                            this.automation.maxPrice = String(status.defaults.max_price);
+                        }
+                        if (!this.automation.otpAttempts && status.defaults?.otp_attempts != null) {
+                            this.automation.otpAttempts = String(status.defaults.otp_attempts);
+                        }
+                    } catch (e) {
+                        this.automation.status = null;
+                        this.automation.message = e.response?.data?.detail || e.message || 'Could not load automation status.';
+                        this.automation.messageError = true;
+                    } finally {
+                        this.automation.loading = false;
+                        if (this.tab === 'automation') {
+                            this.automation.poll = setTimeout(() => this.loadAutomationStatus(), 15000);
+                        }
+                    }
+                },
+                async runAutomation() {
+                    if (!window.confirm('Run the account factory now? This can buy a paid HeroSMS number.')) return;
+                    this.automation.running = true;
+                    this.automation.message = '';
+                    this.automation.messageError = false;
+                    try {
+                        const body = {};
+                        if (this.automation.maxPrice) body.max_price = Number(this.automation.maxPrice);
+                        if (this.automation.otpAttempts) body.otp_attempts = Number(this.automation.otpAttempts);
+                        const res = await _api.post('/api/automation/run', body);
+                        this.automation.message = `Run ${res.data.run_id} accepted by n8n. New accounts appear under Accounts and in Airtable when the run completes.`;
+                    } catch (e) {
+                        this.automation.message = e.response?.data?.detail || e.message || 'Could not start the run.';
+                        this.automation.messageError = true;
+                    } finally {
+                        this.automation.running = false;
+                        this.loadAutomationStatus();
                     }
                 },
                 // ---- Scraper ----
@@ -4141,6 +4269,7 @@
                 this.disconnectStatusSocket()
                 clearInterval(this.dashboardPoll)
                 clearInterval(this.jobsPoll)
+                clearTimeout(this.automation.poll)
                 this.authSubscription?.unsubscribe()
                 if (this.apiResponseInterceptor !== null) _api.interceptors.response.eject(this.apiResponseInterceptor)
             }
