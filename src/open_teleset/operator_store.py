@@ -78,7 +78,12 @@ def delete_secret(name: str) -> None:
             pass
 
 
-DEFAULT_FEATURES = {"automation_enabled": True, "factory_enabled": True}
+DEFAULT_FEATURES = {
+    "automation_enabled": True,
+    "factory_enabled": True,
+    # Ships dark: it only does something once the operator points it at a hosted browser.
+    "cloud_browser_enabled": False,
+}
 
 
 def get_features() -> dict:

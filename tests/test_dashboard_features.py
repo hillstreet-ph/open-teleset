@@ -29,11 +29,14 @@ def isolated_store(tmp_path, monkeypatch):
 
 
 def test_feature_toggles_default_on_and_persist():
-    assert operator_store.get_features() == {"automation_enabled": True, "factory_enabled": True}
-    updated = operator_store.set_features({"factory_enabled": False})
-    assert updated == {"automation_enabled": True, "factory_enabled": False}
+    assert operator_store.get_features() == {
+        "automation_enabled": True, "factory_enabled": True, "cloud_browser_enabled": False,
+    }
+    updated = operator_store.set_features({"factory_enabled": False, "cloud_browser_enabled": True})
+    assert updated == {"automation_enabled": True, "factory_enabled": False, "cloud_browser_enabled": True}
     assert operator_store.feature_enabled("factory") is False
     assert operator_store.feature_enabled("automation") is True
+    assert operator_store.feature_enabled("cloud_browser") is True
 
 
 def test_totp_matches_rfc_6238_vector():

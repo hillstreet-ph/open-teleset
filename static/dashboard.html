@@ -1418,9 +1418,13 @@
                                 <div><strong style="font-size:13px;">Automation</strong><p class="muted small" style="margin-top:2px;">Scheduled tasks run only while this is on.</p></div>
                                 <button class="toggle" :class="{ on: features.automation_enabled }" role="switch" :aria-checked="features.automation_enabled ? 'true' : 'false'" :disabled="features.saving === 'automation_enabled'" @click="saveFeature('automation_enabled', !features.automation_enabled)"></button>
                             </div>
-                            <div class="toggle-row" style="border-bottom:0;">
+                            <div class="toggle-row">
                                 <div><strong style="font-size:13px;">Account Factory</strong><p class="muted small" style="margin-top:2px;">The factory run button is refused while this is off.</p></div>
                                 <button class="toggle" :class="{ on: features.factory_enabled }" role="switch" :aria-checked="features.factory_enabled ? 'true' : 'false'" :disabled="features.saving === 'factory_enabled'" @click="saveFeature('factory_enabled', !features.factory_enabled)"></button>
+                            </div>
+                            <div class="toggle-row" style="border-bottom:0;">
+                                <div><strong style="font-size:13px;">Cloud Browser</strong><p class="muted small" style="margin-top:2px;">Lets you drive a hosted browser you own. Telegram sending, joining and scraping always stay on the Telethon accounts.</p></div>
+                                <button class="toggle" :class="{ on: features.cloud_browser_enabled }" role="switch" :aria-checked="features.cloud_browser_enabled ? 'true' : 'false'" :disabled="features.saving === 'cloud_browser_enabled'" @click="saveFeature('cloud_browser_enabled', !features.cloud_browser_enabled)"></button>
                             </div>
                             <p v-if="features.loading" class="muted small">Loading switches…</p>
                         </section>
@@ -1769,6 +1773,125 @@
                             </span>
                         </div>
                     </div>
+                </div>
+            </div>
+
+            <!-- Cloud Browser -->
+            <div v-show="tab === 'cloudbrowser'">
+                <div class="card">
+                    <div class="card-header">
+                        <div>
+                            <h3>Cloud Browser</h3>
+                            <p class="muted small" style="margin-top:4px;">Drive a hosted browser you already own - a vendor debugger address or your own Chromium. Telegram sends, joins and scraping stay on the Telethon accounts; nothing here touches them.</p>
+                        </div>
+                        <span class="badge" :class="!cloudBrowser.config.enabled ? 'badge-danger' : (cloudBrowser.config.configured ? 'badge-info' : 'badge-warning')">{{ !cloudBrowser.config.enabled ? 'Switched off' : (cloudBrowser.config.configured ? 'Connected setup' : 'Needs setup') }}</span>
+                    </div>
+                    <div class="note-strip">
+                        The address and access token are encrypted per operator and never shown back to you. Text you type and codes you send go straight into the page - they are not stored, not repeated in a response and only counted in the logs. No proxy rotation or fingerprint masking is built in.
+                    </div>
+                    <p v-if="!cloudBrowser.config.enabled" class="small" style="color:var(--warning);">Cloud Browser is off. Turn it on under Integrations › Platform switches.</p>
+                    <p v-else-if="!cloudBrowser.config.encryption_ready" class="small" style="color:var(--danger);">SESSION_ENCRYPTION_KEY is not set on the server, so an address cannot be stored safely yet.</p>
+                    <p v-if="cloudBrowser.error" class="small" style="color:var(--danger);">{{ cloudBrowser.error }}</p>
+                    <p v-if="cloudBrowser.message" class="muted small">{{ cloudBrowser.message }}</p>
+                    <div class="form-row">
+                        <div class="form-group" style="flex:2;">
+                            <label>DevTools address</label>
+                            <input v-model="cloudBrowser.endpoint" class="form-control mono" placeholder="wss://browser.example.com/session/abc?token=…" autocomplete="off" spellcheck="false">
+                        </div>
+                        <div class="form-group">
+                            <label>Access token</label>
+                            <input v-model="cloudBrowser.token" type="password" class="form-control" :placeholder="cloudBrowser.config.has_token ? 'Stored — leave blank to keep' : 'Optional'" autocomplete="new-password">
+                        </div>
+                    </div>
+                    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                        <button class="btn btn-primary" @click="saveCloudBrowserEndpoint" :disabled="!!cloudBrowser.busy || !cloudBrowser.config.enabled">{{ cloudBrowser.busy === 'save' ? 'Saving…' : 'Save address' }}</button>
+                        <button class="btn btn-outline" @click="checkCloudBrowser" :disabled="!!cloudBrowser.busy || !cloudBrowser.config.configured || !cloudBrowser.config.enabled">{{ cloudBrowser.busy === 'check' ? 'Checking…' : 'Check connection' }}</button>
+                        <button class="btn btn-danger" @click="clearCloudBrowserEndpoint" :disabled="!!cloudBrowser.busy || !cloudBrowser.config.configured">Forget</button>
+                    </div>
+                    <div style="margin-top:14px;">
+                        <div class="status-row"><span class="status-key">Host</span><span class="status-val mono">{{ cloudBrowser.config.host || '—' }}</span></div>
+                        <div class="status-row"><span class="status-key">Access token</span><span class="status-val">{{ cloudBrowser.config.has_token ? 'Stored' : 'None' }}</span></div>
+                        <div class="status-row"><span class="status-key">Browser</span><span class="status-val mono">{{ cloudBrowser.product || 'Not checked' }}<span v-if="cloudBrowser.revision"> · {{ cloudBrowser.revision }}</span></span></div>
+                        <div class="status-row"><span class="status-key">Saved</span><span class="status-val">{{ cloudBrowser.config.updated_at ? formatTime(cloudBrowser.config.updated_at) : '—' }}</span></div>
+                    </div>
+                </div>
+
+                <div class="card" style="margin-top:18px;">
+                    <div class="card-header">
+                        <div>
+                            <h3>Open pages</h3>
+                            <p class="muted small" style="margin-top:4px;">Read from the browser over DevTools.</p>
+                        </div>
+                        <button class="btn btn-outline btn-sm" @click="loadCloudBrowserPages" :disabled="!!cloudBrowser.busy || !cloudBrowser.config.configured">{{ cloudBrowser.busy === 'pages' ? 'Loading…' : 'Refresh pages' }}</button>
+                    </div>
+                    <div class="form-row" style="align-items:flex-end;">
+                        <div class="form-group" style="flex:2;">
+                            <label>Open a page</label>
+                            <input v-model="cloudBrowser.url" class="form-control mono" placeholder="https://web.telegram.org" autocomplete="off" spellcheck="false">
+                        </div>
+                        <div class="form-group" style="flex:0 0 auto;">
+                            <button class="btn btn-outline" @click="openCloudBrowserPage" :disabled="!!cloudBrowser.busy || !cloudBrowser.config.configured">Open</button>
+                        </div>
+                    </div>
+                    <p v-if="!cloudBrowser.pages.length" class="empty-state"><span>No pages read yet. Save an address, then check the connection.</span></p>
+                    <div v-else class="contact-rows">
+                        <div v-for="page in cloudBrowser.pages" :key="page.target_id" class="contact-row" style="flex-wrap:wrap;">
+                            <span class="account-face"><app-icon name="globe" :size="18"></app-icon></span>
+                            <span class="contact-main">
+                                <strong>{{ page.title || 'Untitled page' }}</strong>
+                                <small class="mono" style="overflow-wrap:anywhere;">{{ page.url || 'about:blank' }}</small>
+                            </span>
+                            <span class="account-tools" style="margin:0;">
+                                <button class="btn btn-sm" :class="cloudBrowser.selected === page.target_id ? 'btn-primary' : 'btn-outline'" @click="selectCloudBrowserPage(page)">View</button>
+                                <button class="btn btn-sm btn-danger" @click="closeCloudBrowserPage(page)">Close</button>
+                            </span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card" style="margin-top:18px;" v-if="cloudBrowser.selected">
+                    <div class="card-header">
+                        <div>
+                            <h3>Page view</h3>
+                            <p class="muted small" style="margin-top:4px;">A still frame from the browser. Click Refresh view after the page changes.</p>
+                        </div>
+                        <button class="btn btn-outline btn-sm" @click="refreshCloudBrowserView" :disabled="!!cloudBrowser.busy">{{ cloudBrowser.busy === 'view' ? 'Capturing…' : 'Refresh view' }}</button>
+                    </div>
+                    <div v-if="cloudBrowser.view" style="border:1px solid var(--border);border-radius:10px;overflow:hidden;background:var(--surface-2);">
+                        <img :src="cloudBrowser.view" alt="Screenshot of the selected page in the hosted browser" style="display:block;width:100%;max-height:520px;object-fit:contain;">
+                    </div>
+                    <p v-else class="muted small">No frame captured yet.</p>
+                    <div class="form-group" style="margin-top:14px;">
+                        <label>Go to</label>
+                        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                            <input v-model="cloudBrowser.navigateUrl" class="form-control mono" style="flex:1;min-width:220px;" placeholder="https://web.telegram.org/a/" autocomplete="off" spellcheck="false">
+                            <button class="btn btn-outline" @click="navigateCloudBrowserPage" :disabled="!!cloudBrowser.busy">Go</button>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Type into the focused field</label>
+                        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                            <input v-model="cloudBrowser.text" class="form-control" type="password" style="flex:1;min-width:220px;" placeholder="Phone number, code or password" autocomplete="off">
+                            <button class="btn btn-outline" @click="typeIntoCloudBrowserPage" :disabled="!!cloudBrowser.busy">Send text</button>
+                        </div>
+                        <p class="muted small" style="margin-top:6px;">Cleared from this form as soon as it is sent. Nothing typed here is stored or logged.</p>
+                    </div>
+                    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;">
+                        <button v-for="key in ['Enter','Tab','Escape','Backspace']" :key="key" class="btn btn-outline btn-sm" @click="pressCloudBrowserKey(key)" :disabled="!!cloudBrowser.busy">{{ key }}</button>
+                    </div>
+                    <div class="form-row" style="align-items:flex-end;">
+                        <div class="form-group">
+                            <label>Cloud Phone code</label>
+                            <select v-model="cloudBrowser.otpAccount" class="form-control">
+                                <option value="">Select a record with an OTP secret</option>
+                                <option v-for="entry in cloudPhoneOtpAccounts" :key="entry.account_id" :value="entry.account_id">{{ accountDisplayName(accounts.find(a => a.account_id === entry.account_id) || { account_id: entry.account_id }) }}</option>
+                            </select>
+                        </div>
+                        <div class="form-group" style="flex:0 0 auto;">
+                            <button class="btn btn-primary" @click="sendCloudBrowserOtp" :disabled="!!cloudBrowser.busy || !cloudBrowser.otpAccount">Send current code</button>
+                        </div>
+                    </div>
+                    <p class="muted small">The code is generated and typed on the server. It is never returned to this page, so the only place it appears is the browser you are driving.</p>
                 </div>
             </div>
 
@@ -3606,7 +3729,13 @@
                     integrations: {
                         loading: false, list: [], suggested: [], error: '', busy: '', form: { name: '', url: '', transport: 'http', token: '' },
                     },
-                    features: { loading: false, automation_enabled: true, factory_enabled: true, saving: '' },
+                    features: { loading: false, automation_enabled: true, factory_enabled: true, cloud_browser_enabled: false, saving: '' },
+                    cloudBrowser: {
+                        config: { configured: false, host: '', has_token: false, updated_at: '', enabled: false, encryption_ready: false },
+                        endpoint: '', token: '', product: '', revision: '',
+                        pages: [], selected: '', url: '', navigateUrl: '', text: '', otpAccount: '',
+                        view: '', busy: '', error: '', message: '',
+                    },
                     freeProxies: { count: 5, loading: false },
                     templateEdit: { id: '', name: '', content: '', busy: false },
                     templateAiBusy: '',
@@ -3646,6 +3775,7 @@
                                 { tab: 'accounts', label: 'Accounts', icon: 'users', badge: 'accounts' },
                                 { tab: 'contacts', label: 'Contacts', icon: 'contact' },
                                 { tab: 'cloudphone', label: 'Cloud Phone', icon: 'cloud' },
+                                { tab: 'cloudbrowser', label: 'Cloud Browser', icon: 'globe' },
                                 { tab: 'proxies', label: 'Proxies', icon: 'globe' }
                             ]
                         },
@@ -4049,6 +4179,7 @@
                         accounts: ['Accounts', 'Telegram accounts connected to this workspace.'],
                         contacts: ['Contacts', 'Per-account contact lists with CSV import and export.'],
                         cloudphone: ['Cloud Phone', 'Encrypted recovery records for numbers and logins.'],
+                        cloudbrowser: ['Cloud Browser', 'Drive a hosted browser you own, and hand it a Cloud Phone code.'],
                         proxies: ['Proxies', 'Global and per-account connection routing.'],
                         health: ['Health', 'Connection risk and account reliability.'],
                         stats: ['Stats', 'Usage across messages and accounts.'],
@@ -4129,6 +4260,9 @@
                 cloudPhoneAccounts() {
                     return this.recovery.list.slice().sort((a, b) => String(a.account_id).localeCompare(String(b.account_id)))
                 },
+                cloudPhoneOtpAccounts() {
+                    return this.cloudPhoneAccounts.filter(entry => entry.has_otp)
+                },
                 onlineCount() { return this.accounts.filter(a => a.status === 'online').length },
                 offlineCount() { return this.accounts.filter(a => a.status !== 'online').length },
                 currentYear() { return new Date().getFullYear() },
@@ -4196,6 +4330,7 @@
                     if (tab === 'integrations') { this.loadWebhooks(); this.loadIntegrations(); this.loadAiSettings(); this.loadFeatures() }
                     if (tab === 'contacts') { if (!this.contacts.accountId && this.accounts.length) this.contacts.accountId = this.accounts[0].account_id; this.loadContacts() }
                     if (tab === 'cloudphone') this.loadRecovery()
+                    if (tab === 'cloudbrowser') this.loadCloudBrowser()
                     if (tab === 'scraper' || tab === 'adder') this.loadGroups(tab)
                     if (tab === 'schedule') this.loadSchedules()
                     if (tab === 'logs') this.loadLogs()
@@ -6030,6 +6165,220 @@
                         this.showToast(e.response?.data?.detail || 'Could not generate an OTP.', true)
                     }
                 },
+                // ---- Cloud Browser ----
+                applyCloudBrowserConfig(data) {
+                    this.cloudBrowser.config = {
+                        configured: !!data.configured,
+                        host: data.host || '',
+                        has_token: !!data.has_token,
+                        updated_at: data.updated_at || '',
+                        enabled: !!data.enabled,
+                        encryption_ready: !!data.encryption_ready,
+                    }
+                    if ('enabled' in data) this.features.cloud_browser_enabled = !!data.enabled
+                },
+                resetCloudBrowserView() {
+                    this.cloudBrowser.pages = []
+                    this.cloudBrowser.selected = ''
+                    this.cloudBrowser.view = ''
+                    this.cloudBrowser.product = ''
+                    this.cloudBrowser.revision = ''
+                    this.cloudBrowser.message = ''
+                },
+                async loadCloudBrowser() {
+                    this.cloudBrowser.error = ''
+                    try {
+                        const { data } = await _api.get('/api/cloud-browser/config')
+                        this.applyCloudBrowserConfig(data)
+                        if (data.configured && data.enabled) await this.checkCloudBrowser()
+                        if (data.enabled && !this.recovery.list.length) await this.loadRecovery()
+                    } catch (e) {
+                        this.cloudBrowser.error = e.response?.data?.detail || 'Could not load the Cloud Browser settings.'
+                    }
+                },
+                async checkCloudBrowser() {
+                    this.cloudBrowser.busy = 'check'
+                    this.cloudBrowser.error = ''
+                    try {
+                        const { data } = await _api.post('/api/cloud-browser/check', {}, { timeout: 45000 })
+                        this.cloudBrowser.product = data.product || ''
+                        this.cloudBrowser.revision = data.revision || ''
+                        this.cloudBrowser.pages = data.pages || []
+                        this.cloudBrowser.message = `Connected to ${data.product || 'the hosted browser'}.`
+                        if (!this.cloudBrowser.pages.length) {
+                            this.cloudBrowser.selected = ''
+                            this.cloudBrowser.view = ''
+                        } else if (!this.cloudBrowser.pages.some(page => page.target_id === this.cloudBrowser.selected)) {
+                            this.selectCloudBrowserPage(this.cloudBrowser.pages[0])
+                        }
+                    } catch (e) {
+                        this.cloudBrowser.error = e.response?.data?.detail || 'The hosted browser did not answer. Check the address and that its session is still live.'
+                        this.resetCloudBrowserView()
+                    } finally {
+                        this.cloudBrowser.busy = ''
+                    }
+                },
+                async saveCloudBrowserEndpoint() {
+                    const endpoint = this.cloudBrowser.endpoint.trim()
+                    if (!/^wss?:\/\//i.test(endpoint)) {
+                        this.showToast('Use the ws:// or wss:// debugger address of your hosted browser.', true)
+                        return
+                    }
+                    if (/@/.test(endpoint)) {
+                        this.showToast('Keep the token out of the address — put it in the access-token field.', true)
+                        return
+                    }
+                    this.cloudBrowser.busy = 'save'
+                    try {
+                        const { data } = await _api.put('/api/cloud-browser/config', { endpoint, token: this.cloudBrowser.token, clear: false })
+                        this.applyCloudBrowserConfig(data)
+                        this.cloudBrowser.token = ''
+                        this.showToast('Browser address saved encrypted.')
+                        await this.checkCloudBrowser()
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not save the browser address.', true)
+                    } finally {
+                        this.cloudBrowser.busy = ''
+                    }
+                },
+                async clearCloudBrowserEndpoint() {
+                    if (!window.confirm('Forget this browser address? The session itself stays with your provider.')) return
+                    this.cloudBrowser.busy = 'save'
+                    try {
+                        const { data } = await _api.put('/api/cloud-browser/config', { endpoint: '', token: '', clear: true })
+                        this.cloudBrowser.endpoint = ''
+                        this.cloudBrowser.token = ''
+                        this.applyCloudBrowserConfig({ ...data, configured: false, host: '', has_token: false })
+                        this.resetCloudBrowserView()
+                        this.showToast('Browser address forgotten.')
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not forget the browser address.', true)
+                    } finally {
+                        this.cloudBrowser.busy = ''
+                    }
+                },
+                async loadCloudBrowserPages() {
+                    this.cloudBrowser.busy = 'pages'
+                    this.cloudBrowser.error = ''
+                    try {
+                        const { data } = await _api.get('/api/cloud-browser/pages')
+                        this.cloudBrowser.pages = data.pages || []
+                    } catch (e) {
+                        this.cloudBrowser.error = e.response?.data?.detail || 'Could not read the open pages.'
+                    } finally {
+                        this.cloudBrowser.busy = ''
+                    }
+                },
+                async openCloudBrowserPage() {
+                    const url = this.cloudBrowser.url.trim()
+                    if (!/^https?:\/\//i.test(url)) {
+                        this.showToast('Enter the full https:// address to open.', true)
+                        return
+                    }
+                    this.cloudBrowser.busy = 'open'
+                    try {
+                        const { data } = await _api.post('/api/cloud-browser/pages', { url })
+                        await this.loadCloudBrowserPages()
+                        const opened = this.cloudBrowser.pages.find(page => page.target_id === data.target_id)
+                        if (opened) this.selectCloudBrowserPage(opened)
+                        this.cloudBrowser.url = ''
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not open that page.', true)
+                    } finally {
+                        this.cloudBrowser.busy = ''
+                    }
+                },
+                async closeCloudBrowserPage(page) {
+                    if (!window.confirm(`Close ${(page.title || page.url || 'this page').slice(0, 60)}?`)) return
+                    this.cloudBrowser.busy = 'close'
+                    try {
+                        await _api.delete(`/api/cloud-browser/pages/${encodeURIComponent(page.target_id)}`)
+                        if (this.cloudBrowser.selected === page.target_id) {
+                            this.cloudBrowser.selected = ''
+                            this.cloudBrowser.view = ''
+                        }
+                        await this.loadCloudBrowserPages()
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not close that page.', true)
+                    } finally {
+                        this.cloudBrowser.busy = ''
+                    }
+                },
+                selectCloudBrowserPage(page) {
+                    this.cloudBrowser.selected = page.target_id
+                    this.cloudBrowser.view = ''
+                    this.cloudBrowser.navigateUrl = page.url && page.url !== 'about:blank' ? page.url : ''
+                    this.refreshCloudBrowserView()
+                },
+                async refreshCloudBrowserView() {
+                    if (!this.cloudBrowser.selected) return
+                    this.cloudBrowser.busy = 'view'
+                    try {
+                        const { data } = await _api.post(`/api/cloud-browser/pages/${encodeURIComponent(this.cloudBrowser.selected)}/screenshot`, {}, { timeout: 45000 })
+                        this.cloudBrowser.view = `data:image/jpeg;base64,${data.image}`
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not capture the page view.', true)
+                    } finally {
+                        this.cloudBrowser.busy = ''
+                    }
+                },
+                async navigateCloudBrowserPage() {
+                    const url = this.cloudBrowser.navigateUrl.trim()
+                    if (!/^https?:\/\//i.test(url)) {
+                        this.showToast('Enter the full https:// address to go to.', true)
+                        return
+                    }
+                    this.cloudBrowser.busy = 'navigate'
+                    try {
+                        await _api.post(`/api/cloud-browser/pages/${encodeURIComponent(this.cloudBrowser.selected)}/navigate`, { url })
+                        await this.refreshCloudBrowserView()
+                        await this.loadCloudBrowserPages()
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not move that page.', true)
+                    } finally {
+                        this.cloudBrowser.busy = ''
+                    }
+                },
+                async typeIntoCloudBrowserPage() {
+                    const text = this.cloudBrowser.text
+                    if (!text) return
+                    this.cloudBrowser.text = ''
+                    this.cloudBrowser.busy = 'type'
+                    try {
+                        const { data } = await _api.post(`/api/cloud-browser/pages/${encodeURIComponent(this.cloudBrowser.selected)}/type`, { text })
+                        this.showToast(`Sent ${data.characters} characters to the page.`)
+                        await this.refreshCloudBrowserView()
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not type into that page.', true)
+                    } finally {
+                        this.cloudBrowser.busy = ''
+                    }
+                },
+                async pressCloudBrowserKey(key) {
+                    this.cloudBrowser.busy = 'key'
+                    try {
+                        await _api.post(`/api/cloud-browser/pages/${encodeURIComponent(this.cloudBrowser.selected)}/key`, { key })
+                        await this.refreshCloudBrowserView()
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not send that key.', true)
+                    } finally {
+                        this.cloudBrowser.busy = ''
+                    }
+                },
+                async sendCloudBrowserOtp() {
+                    const accountId = this.cloudBrowser.otpAccount
+                    if (!accountId) return
+                    this.cloudBrowser.busy = 'otp'
+                    try {
+                        const { data } = await _api.post(`/api/cloud-browser/pages/${encodeURIComponent(this.cloudBrowser.selected)}/otp`, { account_id: accountId })
+                        this.showToast(`Code typed into the page — valid for ${data.seconds_remaining}s.`)
+                        await this.refreshCloudBrowserView()
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not send the Cloud Phone code.', true)
+                    } finally {
+                        this.cloudBrowser.busy = ''
+                    }
+                },
                 // ---- AI providers ----
                 async loadAiSettings() {
                     this.ai.loading = true
@@ -6249,6 +6598,7 @@
                         const { data } = await _api.get('/api/platform/features')
                         this.features.automation_enabled = !!data.automation_enabled
                         this.features.factory_enabled = !!data.factory_enabled
+                        this.features.cloud_browser_enabled = !!data.cloud_browser_enabled
                     } catch (e) {
                         this.showToast(e.response?.data?.detail || 'Could not load platform settings.', true)
                     } finally {
