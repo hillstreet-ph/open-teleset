@@ -5157,6 +5157,7 @@
                     if (draft.action === 'task') {
                         this.bulksend = {
                             ...this.bulksend,
+                            messages: {},
                             message: payload.message || '',
                             targets: (payload.targets || []).join('\n'),
                             consentConfirmed: false,

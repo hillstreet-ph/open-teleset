@@ -34,7 +34,7 @@ function harness(draftResponse) {
       repeat: 'once', action: 'send_message', selectedAccount: '', selectedFriends: [],
       strangerUsernames: '', interval: 3000, approvalId: '', autoDedup: false, validateUsernames: false,
     },
-    bulksend: { message: '', targets: '', consentConfirmed: true, delay: 5 },
+    bulksend: { messages: { stale_user: 'old' }, message: '', targets: '', consentConfirmed: true, delay: 5 },
     scheduleStep: 3,
     tab: 'copilot',
     sidebarOpen: true,
@@ -151,6 +151,7 @@ test('task draft prefills BulkSend with consent unchecked and sends nothing', as
   assert.equal(state.tab, 'bulksend');
   assert.equal(state.bulksend.message, 'Hi there');
   assert.equal(state.bulksend.targets, 'alice123');
+  assert.equal(Object.keys(state.bulksend.messages).length, 0, 'stale per-recipient messages are cleared');
   assert.equal(state.bulksend.consentConfirmed, false, 'consent must be re-confirmed by the operator');
   assert.equal(toasts.length, 1);
 });
