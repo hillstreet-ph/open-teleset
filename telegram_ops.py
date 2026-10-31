@@ -245,6 +245,35 @@ def _enforce_outreach(action: str, subjects: List[str], account_id: str, approva
 
 # ============ 1. Member Scraper ============
 
+_TARGET_USERNAME_RE = _re.compile(r"^@?([A-Za-z]\w{3,31})$")
+_TARGET_URL_RE = _re.compile(
+    r"^(?:https?://)?(?:www\.)?(?:t\.me|telegram\.me)/(?:s/)?([A-Za-z]\w{3,31})/?(?:\?.*)?$",
+    _re.I,
+)
+_TARGET_ID_RE = _re.compile(r"^-?\d+$")
+_PRIVATE_LINK_RE = _re.compile(r"^(?:https?://)?(?:www\.)?(?:t\.me|telegram\.me)/(?:\+|joinchat/)", _re.I)
+_TARGET_HELP = ("Use a public @username, a t.me/username link, or a numeric channel ID. "
+                "Private invite links must be joined before scraping.")
+
+
+def _normalise_scrape_target(raw: str):
+    """Return an @username or integer ID Telethon can resolve, else None."""
+    target = (raw or "").strip()
+    if not target:
+        return None
+    if _PRIVATE_LINK_RE.match(target):
+        return None
+    url_match = _TARGET_URL_RE.match(target)
+    if url_match:
+        return "@" + url_match.group(1)
+    if _TARGET_ID_RE.match(target):
+        return int(target)
+    username_match = _TARGET_USERNAME_RE.match(target)
+    if username_match:
+        return "@" + username_match.group(1)
+    return None
+
+
 @telegram_ops_router.post("/api/scraper/members")
 async def scrape_members(request: ScrapeRequest):
     """
@@ -252,11 +281,22 @@ async def scrape_members(request: ScrapeRequest):
     Returns list of {id, username, first_name, last_name, is_bot}.
     """
     try:
+        target = _normalise_scrape_target(request.target)
+        if target is None:
+            raise HTTPException(status_code=400, detail=f"Invalid scrape target. {_TARGET_HELP}")
+
         client = await account_manager.get_client(request.account_id)
         if not client:
             raise HTTPException(status_code=400, detail="Client unavailable — account not connected")
 
-        entity = await client.get_entity(request.target)
+        try:
+            entity = await client.get_entity(target)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Could not find {request.target}. Check the username or ID and that "
+                       "the selected account can access it.",
+            ) from None
 
         participants = await client.get_participants(entity, limit=request.limit)
 
@@ -294,12 +334,25 @@ async def scrape_members(request: ScrapeRequest):
 
     except HTTPException:
         raise
+    except errors.FloodWaitError as e:
+        log_manager.add_log(
+            "Scraper", request.account_id,
+            f"Scrape rate-limited for {request.target}: retry in {e.seconds}s", "warning",
+        )
+        raise HTTPException(
+            status_code=429,
+            detail=f"Telegram rate limit reached — retry in {e.seconds}s",
+        ) from None
     except Exception as e:
         log_manager.add_log(
             "Scraper", request.account_id,
             f"Scrape failed for {request.target}: {type(e).__name__}", "error",
         )
-        raise HTTPException(status_code=500, detail=type(e).__name__)
+        raise HTTPException(
+            status_code=500,
+            detail="Scrape failed. Telegram did not complete the request — try again or "
+                   "check the account connection.",
+        ) from None
 
 
 # Public t.me/web discovery (used when no Telegram account is selected).
@@ -441,10 +494,21 @@ async def _scrape_channels_tgstat(request: ChannelScrapeRequest, token):
     seen: set = set()
     results: list = []
     async with aiohttp.ClientSession(headers=_BROWSER_HEADERS) as session:
-        for keyword in request.keywords:
+        # Search every keyword concurrently; a slow query must not push the
+        # whole request past the dashboard's 120 s timeout (20 keywords x 15 s
+        # serially would).
+        semaphore = asyncio.Semaphore(5)
+
+        async def search(keyword):
+            async with semaphore:
+                return await _tgstat_search(
+                    session, token, keyword, peer_type, country_code, request.limit)
+
+        per_keyword = await asyncio.gather(*(search(k) for k in request.keywords))
+        for keyword, infos in zip(request.keywords, per_keyword):
             if len(results) >= request.limit:
                 break
-            for info in await _tgstat_search(session, token, keyword, peer_type, country_code, request.limit):
+            for info in infos:
                 key = info["username"].lower()
                 if key in seen:
                     continue
@@ -477,6 +541,9 @@ async def _scrape_channels_public(request: ChannelScrapeRequest):
     return await _scrape_channels_web(request)
 
 
+_PUBLIC_PREVIEW_BUDGET = 45.0  # seconds; keeps the fallback inside the client timeout
+
+
 async def _scrape_channels_web(request: ChannelScrapeRequest):
     """Account-free fallback: public web search + public t.me preview pages.
 
@@ -484,15 +551,23 @@ async def _scrape_channels_web(request: ChannelScrapeRequest):
     rate-limiting the server, so this can legitimately return nothing; configure
     TGSTAT_TOKEN for reliable account-free search.
     """
+    preview_budget = _PUBLIC_PREVIEW_BUDGET
     country = request.country.lower()
     want_candidates = min(request.limit * 3, 180)
     seen: set = set()
     candidates: list = []
     async with aiohttp.ClientSession(headers=_BROWSER_HEADERS) as session:
-        for keyword in request.keywords:
+        discover_semaphore = asyncio.Semaphore(4)
+
+        async def discover(keyword):
+            async with discover_semaphore:
+                return await _ddg_usernames(session, keyword, want_candidates)
+
+        discovered = await asyncio.gather(*(discover(k) for k in request.keywords))
+        for keyword, usernames in zip(request.keywords, discovered):
             if len(candidates) >= want_candidates:
                 break
-            for username in await _ddg_usernames(session, keyword, want_candidates):
+            for username in usernames:
                 key = username.lower()
                 if key in seen:
                     continue
@@ -509,7 +584,21 @@ async def _scrape_channels_web(request: ChannelScrapeRequest):
                     info["matched_keyword"] = keyword
                 return info
 
-        enriched = await asyncio.gather(*[enrich(u, k) for u, k in candidates])
+        tasks = [asyncio.create_task(enrich(u, k)) for u, k in candidates]
+        if tasks:
+            done, pending = await asyncio.wait(tasks, timeout=preview_budget)
+        else:
+            done, pending = set(), set()
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        enriched: list = []
+        for task in tasks:
+            if task in done and not task.cancelled() and task.exception() is None:
+                enriched.append(task.result())
+            else:
+                enriched.append(None)
 
     results: list = []
     for info in enriched:

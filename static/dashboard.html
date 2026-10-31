@@ -1532,7 +1532,7 @@
                     <p style="color: var(--text-dim); margin-bottom: 15px;">Set a dedicated proxy per account (higher priority than the global proxy). Username/password optional by proxy type.</p>
                     <div class="form-row">
                         <div class="form-group">
-                            <label>ProxyName</label>
+                            <label>Proxy name</label>
                             <input v-model="newProxy.id" class="form-control" placeholder="proxy1">
                         </div>
                         <div class="form-group">
@@ -1745,11 +1745,11 @@
                     <div class="card-header"><h3>Quick templates</h3></div>
                     <div style="display: flex; flex-wrap: wrap; gap: 10px;">
                         <button class="btn btn-outline btn-sm" @click="addQuickTemplate('Greeting', 'Hi! Nice to meet you 👋')">Greeting</button>
-                        <button class="btn btn-outline btn-sm" @click="addQuickTemplate('Thanks', 'Thank you for your help！🙏')">Thanks</button>
-                        <button class="btn btn-outline btn-sm" @click="addQuickTemplate('Confirm', 'OK, got it！✅')">Confirm</button>
+                        <button class="btn btn-outline btn-sm" @click="addQuickTemplate('Thanks', 'Thank you for your help!🙏')">Thanks</button>
+                        <button class="btn btn-outline btn-sm" @click="addQuickTemplate('Confirm', 'OK, got it!✅')">Confirm</button>
                         <button class="btn btn-outline btn-sm" @click="addQuickTemplate('Wait', 'Please wait, I will handle it shortly ⏳')">Wait</button>
-                        <button class="btn btn-outline btn-sm" @click="addQuickTemplate('Done', 'Already done！🎉')">Done</button>
-                        <button class="btn btn-outline btn-sm" @click="addQuickTemplate('Bye', 'Goodbye, have a great day！👋')">Bye</button>
+                        <button class="btn btn-outline btn-sm" @click="addQuickTemplate('Done', 'Already done!🎉')">Done</button>
+                        <button class="btn btn-outline btn-sm" @click="addQuickTemplate('Bye', 'Goodbye, have a great day!👋')">Bye</button>
                     </div>
                 </div>
             </div>
@@ -1883,7 +1883,7 @@
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    <tr v-for="(m, idx) in scraper.results" :key="m.id" style="border-top: 1px solid rgba(255,255,255,0.05);">
+                                    <tr v-for="(m, idx) in scraperRows" :key="m.id" style="border-top: 1px solid rgba(255,255,255,0.05);">
                                         <td style="padding: 6px 12px; color: var(--text-dim);">{{ idx + 1 }}</td>
                                         <td style="padding: 6px 12px;">{{ m.id }}</td>
                                         <td style="padding: 6px 12px; color: var(--accent);">{{ m.username || '—' }}</td>
@@ -1893,6 +1893,7 @@
                                 </tbody>
                             </table>
                         </div>
+                        <p v-if="scraper.results.length > scraperRows.length" class="muted small" style="margin-top:8px;">Showing the first {{ scraperRows.length }} of {{ scraper.results.length }}. Export CSV for every row.</p>
                     </div>
                 </div>
 
@@ -1959,7 +1960,7 @@
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    <tr v-for="(c, idx) in channelScraper.results" :key="c.id" style="border-top: 1px solid rgba(255,255,255,0.05);">
+                                    <tr v-for="(c, idx) in channelRows" :key="c.id" style="border-top: 1px solid rgba(255,255,255,0.05);">
                                         <td style="padding: 6px 12px; color: var(--text-dim);">{{ idx + 1 }}</td>
                                         <td style="padding: 6px 12px;">{{ c.title }} <app-icon v-if="c.verified" name="check" :size="14" style="vertical-align:-2px;color:var(--accent);" title="Verified"></app-icon></td>
                                         <td style="padding: 6px 12px;"><a :href="c.url" target="_blank" rel="noopener noreferrer" style="color: var(--accent);">{{ c.url }}</a></td>
@@ -1969,6 +1970,7 @@
                                 </tbody>
                             </table>
                         </div>
+                        <p v-if="channelScraper.results.length > channelRows.length" class="muted small" style="margin-top:8px;">Showing the first {{ channelRows.length }} of {{ channelScraper.results.length }}. Export CSV for every row.</p>
                     </div>
                 </div>
             </div>
@@ -2471,7 +2473,7 @@
                     </div>
 
                     <button v-if="qrStatus !== 'success' && qrStatus !== 'need_password'" class="btn btn-outline" @click="closeQrModal" style="margin-top: 15px;">Close</button>
-                    <button v-if="qrStatus === 'need_password'" class="btn btn-outline" @click="closeQrModal" style="margin-top: 15px;">CancelLog in</button>
+                    <button v-if="qrStatus === 'need_password'" class="btn btn-outline" @click="closeQrModal" style="margin-top: 15px;">Cancel</button>
                 </div>
 
                 <div v-else-if="loginMode === 'hex'">
@@ -2488,7 +2490,7 @@
 
                 <!-- Phone login -->
                 <div v-else-if="loginMode === 'phone'">
-                    <h2 style="cursor: pointer;" @click="backToLoginMethods">Back to phone login</h2>
+                    <h2 style="cursor: pointer;" @click="backToLoginMethods">Back to login options</h2>
                     <p class="subtitle">Supports international phone numbers</p>
 
                     <!-- Step 1: Select region+Enter phone -->
@@ -2535,7 +2537,7 @@
                             <label style="color: var(--text-dim);">Code</label>
                             <input v-model="phoneData.code" type="text" class="form-control" placeholder="Enter code..." @keyup.enter="verifyPhoneCode" maxlength="10">
                             <div style="font-size: 12px; color: var(--text-dim); margin-top: 5px;">
-                                Send to : +{{ phoneData.countryCode }} {{ phoneData.phone }}
+                                Send to +{{ phoneData.countryCode }} {{ phoneData.phone }}
                             </div>
                         </div>
                         <div v-if="phoneError" style="color: var(--danger); margin-bottom: 15px;">{{ phoneError }}</div>
@@ -2636,24 +2638,24 @@
                     <div :style="{ color: scheduleStep === 1 ? 'var(--accent)' : '#666' }">
                         <span style="display: inline-block; width: 24px; height: 24px; border-radius: 50%; text-align: center; line-height: 24px; margin-right: 5px;"
                               :style="{ background: scheduleStep === 1 ? 'var(--accent)' : 'rgba(255,255,255,0.1)', color: scheduleStep === 1 ? '#fff' : '#666' }">1</span>
-                        BasicSettings
+                        Message
                     </div>
                     <div :style="{ color: scheduleStep === 2 ? 'var(--accent)' : '#666' }">
                         <span style="display: inline-block; width: 24px; height: 24px; border-radius: 50%; text-align: center; line-height: 24px; margin-right: 5px;"
                               :style="{ background: scheduleStep === 2 ? 'var(--accent)' : 'rgba(255,255,255,0.1)', color: scheduleStep === 2 ? '#fff' : '#666' }">2</span>
-                        SendTarget
+                        Recipients
                     </div>
                     <div :style="{ color: scheduleStep === 3 ? 'var(--accent)' : '#666' }">
                         <span style="display: inline-block; width: 24px; height: 24px; border-radius: 50%; text-align: center; line-height: 24px; margin-right: 5px;"
                               :style="{ background: scheduleStep === 3 ? 'var(--accent)' : 'rgba(255,255,255,0.1)', color: scheduleStep === 3 ? '#fff' : '#666' }">3</span>
-                        SendSettings
+                        Settings
                     </div>
                 </div>
 
                 <!-- Step 1: Basic settings -->
                 <div v-if="scheduleStep === 1">
                     <div class="form-group">
-                        <label>MessagesSource</label>
+                        <label>Message source</label>
                         <div style="display: flex; gap: 10px; margin-bottom: 10px;">
                             <label style="display: flex; align-items: center; gap: 5px; cursor: pointer; padding: 8px 15px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1);"
                                    :style="{ background: newSchedule.messageSource === 'input' ? 'rgba(16,163,127,0.18)' : 'transparent', borderColor: newSchedule.messageSource === 'input' ? 'var(--accent)' : 'rgba(255,255,255,0.1)' }">
@@ -2748,7 +2750,7 @@
                             </label>
                         </div>
                         <p style="font-size: 12px; color: var(--text-dim); margin-top: 5px;">
-                            {{ newSchedule.action === 'send_message' ? 'Send as-is without changes' : 'AIOptimize tone before sending' }}
+                            {{ newSchedule.action === 'send_message' ? 'Send as-is without changes' : 'AI will optimise the tone before sending' }}
                         </p>
                     </div>
                     
@@ -2774,10 +2776,10 @@
                     <!-- Friends list -->
                     <div v-if="newSchedule.selectedAccount" class="form-group">
                         <label style="display: flex; justify-content: space-between; align-items: center;">
-                            <span>SelectFriends ({{ selectedFriendsCount }}/{{ accountFriends.length }})</span>
+                            <span>Friends ({{ selectedFriendsCount }}/{{ accountFriends.length }})</span>
                             <span>
                                 <button class="btn btn-sm btn-outline" @click="selectAllFriends" style="margin-right: 5px;">Select all</button>
-                                <button class="btn btn-sm btn-outline" @click="deselectAllFriends">CancelSelect all</button>
+                                <button class="btn btn-sm btn-outline" @click="deselectAllFriends">Deselect all</button>
                             </span>
                         </label>
                         <div v-if="loadingFriends" style="text-align: center; padding: 20px; color: var(--text-dim);">
@@ -2797,7 +2799,7 @@
                         </div>
                     </div>
                     
-                    <!-- StrangersSend -->
+                    <!-- Additional recipients -->
                     <div class="form-group" style="margin-top: 20px; padding-top: 20px; border-top: 1px solid rgba(255,255,255,0.1);">
                         <label style="display: flex; justify-content: space-between; align-items: center;">
                             <span>Consenting recipients (maximum 20 total, including selected friends)</span>
@@ -2805,10 +2807,10 @@
                             <button class="btn btn-sm btn-outline" @click="$refs.usernameFile.click()">Import file</button>
                         </label>
                         <textarea v-model="newSchedule.strangerUsernames" class="form-control" rows="4" 
-                                  placeholder="One username per line, e.g.：&#10;username1&#10;username2&#10;@username3"></textarea>
+                                  placeholder="One username per line, for example:&#10;username1&#10;username2&#10;@username3"></textarea>
                         <p style="font-size: 12px; color: var(--text-dim); margin-top: 5px;">
                             Entered {{ strangerUsernameCount }} usernames
-                            <span v-if="strangerUsernameCount + newSchedule.selectedFriends.length > 20" style="color: var(--danger);">（Over limit！）</span>
+                            <span v-if="strangerUsernameCount + newSchedule.selectedFriends.length > 20" style="color: var(--danger);">(Over the 20-recipient limit)</span>
                         </p>
                     </div>
                     
@@ -2858,10 +2860,10 @@
                         <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; font-size: 13px;">
                             <div><span style="color: var(--text-dim);">Run time:</span> {{ currentYear }}{{ newSchedule.month }}mo{{ newSchedule.day }}d {{ newSchedule.hour.toString().padStart(2,'0') }}:{{ newSchedule.minute.toString().padStart(2,'0') }}:{{ newSchedule.second.toString().padStart(2,'0') }}</div>
                             <div><span style="color: var(--text-dim);">Repeat:</span> {{ { once: 'Once', daily: 'Daily', weekly: 'Weekly', workday: 'Weekdays' }[newSchedule.repeat] }}</div>
-                            <div><span style="color: var(--text-dim);">Action:</span> {{ newSchedule.action === 'send_message' ? 'Send original' : 'AIOptimizeSend' }}</div>
-                            <div><span style="color: var(--text-dim);">SendAccount:</span> {{ newSchedule.selectedAccount }}</div>
+                            <div><span style="color: var(--text-dim);">Action:</span> {{ newSchedule.action === 'send_message' ? 'Send original' : 'AI-optimised send' }}</div>
+                            <div><span style="color: var(--text-dim);">Account:</span> {{ newSchedule.selectedAccount }}</div>
                             <div><span style="color: var(--text-dim);">Friends:</span> {{ newSchedule.selectedFriends.length }} </div>
-                            <div><span style="color: var(--text-dim);">Stranger count:</span> {{ strangerUsernameCount }} </div>
+                            <div><span style="color: var(--text-dim);">Imported recipients:</span> {{ strangerUsernameCount }} </div>
                             <div><span style="color: var(--text-dim);">Send interval:</span> {{ formatInterval(newSchedule.interval) }}</div>
                             <div><span style="color: var(--text-dim);">Total sent:</span> {{ newSchedule.selectedFriends.length + strangerUsernameCount }} </div>
                         </div>
@@ -2870,7 +2872,7 @@
                     <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 25px;">
                         <button class="btn btn-outline" @click="scheduleStep = 2">Back</button>
                         <button class="btn btn-primary" @click="addSchedule" :disabled="scheduleSubmitting || !newSchedule.approvalId">
-                            {{ scheduleSubmitting ? 'CreateMed...' : 'Create schedule' }}
+                            {{ scheduleSubmitting ? 'Creating…' : 'Create schedule' }}
                         </button>
                     </div>
                 </div>
@@ -3405,7 +3407,8 @@
                     newProxy: { id: '', protocol: 'socks5', host: '', port: 1080, username: '', password: '' },
 
                     // Toast
-                    toast: { show: false, message: '', error: false }
+                    toast: { show: false, message: '', error: false },
+                    toastTimer: null
                 }
             },
             computed: {
@@ -3465,6 +3468,8 @@
                     return 'ok'
                 },
                 adderRecipients() { return this.parseAdderRecipients(); },
+                scraperRows() { return this.scraper.results.slice(0, 200) },
+                channelRows() { return this.channelScraper.results.slice(0, 200) },
                 autojoinLinks() {
                     // Unique, non-blank links; the server does the authoritative
                     // parsing and skips anything it cannot recognise.
@@ -3576,7 +3581,7 @@
                     try {
                         const {data} = await _api.post('/api/proxies/free-global', {}, {timeout: 90000});
                         await this.loadProxies();
-                        this.showToast(data.success ? 'Global proxy ready. Reconnect accounts to apply it.' : data.status.replace(/_/g, ' '), !data.success);
+                        this.showToast(data.success ? 'Global proxy ready. Reconnect accounts to apply it.' : (String(data.status || '').replace(/_/g, ' ') || 'No free proxy was found.'), !data.success);
                     } catch (e) {
                         this.showToast(e.response?.data?.detail || e.message, true);
                     } finally {
@@ -3608,11 +3613,14 @@
                             country: this.channelScraper.country,
                             group_type: this.channelScraper.groupType,
                             limit: this.channelScraper.limit,
-                        });
+                        }, {timeout: 120000});
                         this.channelScraper.results = res.data.results || [];
                         this.channelScraper.summary = `Found ${res.data.total || 0} public channels/groups.`;
                     } catch (e) {
-                        alert('Search failed: ' + (e.response?.data?.detail || e.message));
+                        const message = e.code === 'ECONNABORTED'
+                            ? 'Search timed out. Try fewer keywords or a narrower country filter.'
+                            : (e.response?.data?.detail || 'Search failed. Try again in a moment.');
+                        this.showToast(message, true);
                     } finally {
                         this.channelScraper.loading = false;
                     }
@@ -3707,19 +3715,23 @@
                             limit: this.scraper.limit,
                             filter_bots: this.scraper.filterBots,
                             activity_filter: this.scraper.activityFilter,
-                        });
+                        }, {timeout: 90000});
                         this.scraper.results = res.data.members || [];
                         this.scraper.summary = `Matched ${res.data.total || 0}, scanned ${res.data.scanned || 0}, excluded ${res.data.excluded || 0}.`;
                     } catch (e) {
-                        alert('Scrape failed: ' + (e.response?.data?.detail || e.message));
+                        const message = e.code === 'ECONNABORTED'
+                            ? 'Scrape timed out. Lower the member limit or check the account connection.'
+                            : (e.response?.data?.detail || 'Scrape failed. Check the target and account connection.');
+                        this.showToast(message, true);
                     } finally {
                         this.scraper.loading = false;
                     }
                 },
                 copyScrapedUsernames() {
-                    const unames = this.scraper.results.filter(m => m.username).map(m => m.username).join('\n');
-                    navigator.clipboard.writeText(unames);
-                    alert('Copied ' + this.scraper.results.filter(m => m.username).length + ' usernames');
+                    const names = this.scraper.results.filter(m => m.username).map(m => m.username)
+                    navigator.clipboard.writeText(names.join('\n'))
+                        .then(() => this.showToast(`Copied ${names.length} ${names.length === 1 ? 'username' : 'usernames'}.`))
+                        .catch(() => this.showToast('Copy failed — select and copy manually.', true))
                 },
                 // ---- Adder ----
                 outreachDuration(seconds) {
@@ -4382,8 +4394,9 @@
                 },
                 // === App Methods ===
                 showToast(msg, error = false) {
+                    clearTimeout(this.toastTimer)
                     this.toast = { show: true, message: msg, error }
-                    setTimeout(() => this.toast.show = false, 3000)
+                    this.toastTimer = setTimeout(() => { this.toast.show = false }, 3000)
                 },
                 addLog(action, account, detail = '') {
                     this.logs.push({
@@ -4435,13 +4448,13 @@
                 },
 
                 async clearLogs() {
-                    if (!confirm('Clear all logs??')) return
+                    if (!confirm('Clear all logs?')) return
                     try {
                         await _api.post('/api/logs/clear')
                         this.logs = []
-                        this.showToast('LogsClear')
+                        this.showToast('Logs cleared.')
                     } catch (e) {
-                        this.showToast('ClearFailed', true)
+                        this.showToast(e.response?.data?.detail || 'Could not clear the logs. Try again.', true)
                     }
                 },
 
@@ -4574,7 +4587,7 @@
                             if (res.data.status === 'success') {
                                 this.qrStatus = 'success'
                                 this.stopQrPolling()
-                                this.showToast('Login successful！')
+                                this.showToast('Login successful.')
                                 this.addLog('Login successful', this.qrAccountId)
                                 this.loadAccounts()
                                 setTimeout(() => this.closeQrModal(), 1500)
@@ -4632,7 +4645,7 @@
                         }, {timeout: 65000})
                         if (res.data.success) {
                             this.qrStatus = 'success'
-                            this.showToast('Login successful！')
+                            this.showToast('Login successful.')
                             this.addLog('Login successful(2FA)', this.qrAccountId)
                             this.loadAccounts()
                             setTimeout(() => this.closeQrModal(), 1500)
@@ -4685,7 +4698,7 @@
                         }, {timeout: 45000})
                         if (res.data.success) {
                             this.phoneStep = 'success'
-                            this.showToast('Login successful！')
+                            this.showToast('Login successful.')
                             this.addLog('Phone login successful', this.phoneAccountId)
                             this.loadAccounts()
                             setTimeout(() => this.closeQrModal(), 1500)
@@ -4710,7 +4723,7 @@
                         }, {timeout: 45000})
                         if (res.data.success) {
                             this.phoneStep = 'success'
-                            this.showToast('Login successful！')
+                            this.showToast('Login successful.')
                             this.addLog('Phone login successful(2FA)', this.phoneAccountId)
                             this.loadAccounts()
                             setTimeout(() => this.closeQrModal(), 1500)
@@ -4793,14 +4806,14 @@
                     }
                 },
                 async deleteAccount(id) {
-                    if (!confirm(`Delete account? ${id}?`)) return
+                    if (!confirm(`Delete account ${id}?`)) return
                     try {
                         await _api.delete(`/api/accounts/${id}`)
-                        this.showToast('AccountDelete')
-                        this.addLog('DeleteAccount', id)
+                        this.showToast('Account deleted.')
+                        this.addLog('Delete account', id)
                         this.loadAccounts()
                     } catch (e) {
-                        this.showToast(e.response?.data?.detail || 'Delete failed', true)
+                        this.showToast(e.response?.data?.detail || 'Could not delete the account.', true)
                     }
                 },
 
@@ -4811,7 +4824,7 @@
                         this.showExportModal = true
                         this.addLog('ExportSession', id)
                     } catch (e) {
-                        this.showToast('ExportFailed', true)
+                        this.showToast(e.response?.data?.detail || 'Could not export this session. Try again.', true)
                     }
                 },
 
@@ -4830,7 +4843,7 @@
                             document.execCommand('copy')
                             this.showToast(`✅ Copied: ${accountId}`)
                         } catch (e) {
-                            this.showToast('CopyFailed', true)
+                            this.showToast('Could not copy the account ID.', true)
                         }
                         document.body.removeChild(textarea)
                     })
@@ -4838,12 +4851,14 @@
 
                 copyExport() {
                     navigator.clipboard.writeText(this.exportData.session)
-                    this.showToast('Copied to clipboard')
+                        .then(() => this.showToast('Copied to clipboard'))
+                        .catch(() => this.showToast('Copy failed — select and copy manually.', true))
                 },
 
                 copyExportAll() {
                     navigator.clipboard.writeText(this.exportAllData)
-                    this.showToast('CopiedAll')
+                        .then(() => this.showToast('Copied all accounts.'))
+                        .catch(() => this.showToast('Copy failed — select and copy manually.', true))
                 },
 
                 async importSession() {
@@ -4852,13 +4867,13 @@
                             account_id: this.importData.id,
                             session_string: this.importData.session, proxy_mode: 'default'
                         }, {timeout: 45000})
-                        this.showToast('ImportSuccess')
+                        this.showToast('Session imported.')
                         this.addLog('Import session', this.importData.id)
                         this.showImportModal = false
                         this.importData = { id: '', session: '' }
                         this.loadAccounts()
                     } catch (e) {
-                        this.showToast(e.response?.data?.detail || 'ImportFailed', true)
+                        this.showToast(e.response?.data?.detail || 'Could not import the session.', true)
                     }
                 },
 
@@ -4872,23 +4887,23 @@
                 async setGlobalProxy() {
                     try {
                         await _api.post('/api/proxies/set-global', this.newGlobal)
-                        this.showToast('Global proxy saved')
+                        this.showToast('Global proxy saved.')
                         this.addLog('Set global proxy', `${this.newGlobal.host}:${this.newGlobal.port}`)
                         this.newGlobal = { protocol: 'socks5', host: '', port: 1080, username: '', password: '' }
                         this.loadProxies()
                     } catch (e) {
-                        this.showToast('SettingsFailed', true)
+                        this.showToast(e.response?.data?.detail || 'Could not save the global proxy.', true)
                     }
                 },
 
                 async removeGlobalProxy() {
                     try {
                         await _api.delete('/api/proxies/global')
-                        this.showToast('Global proxy removed')
+                        this.showToast('Global proxy removed.')
                         this.addLog('Remove global proxy', '-')
                         this.loadProxies()
                     } catch (e) {
-                        this.showToast('RemoveFailed', true)
+                        this.showToast(e.response?.data?.detail || 'Could not remove the global proxy.', true)
                     }
                 },
 
@@ -4898,12 +4913,12 @@
                         const res = await _api.post('/api/proxies/test', null, {params: {proxy_id: 'global'}, timeout: 40000})
                         const result = res.data.result
                         if (result?.success) {
-                            this.showToast(`Connected! Response: ${result.response_time.toFixed(0)}ms`)
+                            this.showToast(`Connected! Response: ${Number(result.response_time || 0).toFixed(0)}ms`)
                         } else {
                             this.showToast(result?.error || 'Connection failed', true)
                         }
                     } catch (e) {
-                        this.showToast('Test failed', true)
+                        this.showToast(e.response?.data?.detail || 'Proxy test failed. Try again.', true)
                     }
                     this.testing = false
                 },
@@ -4918,24 +4933,24 @@
                             username: this.newProxy.username,
                             password: this.newProxy.password
                         })
-                        this.showToast('Proxy added')
+                        this.showToast('Proxy added.')
                         this.addLog('Add proxy', this.newProxy.id)
                         this.newProxy = { id: '', protocol: 'socks5', host: '', port: 1080, username: '', password: '' }
                         this.loadProxies()
                     } catch (e) {
-                        this.showToast('Add failed', true)
+                        this.showToast(e.response?.data?.detail || 'Could not add the proxy.', true)
                     }
                 },
 
                 async deleteProxy(id) {
-                    if (!confirm(`Delete proxy? ${id}?`)) return
+                    if (!confirm(`Delete proxy ${id}?`)) return
                     try {
                         await _api.delete(`/api/proxies/${id}`)
-                        this.showToast('ProxyDelete')
-                        this.addLog('DeleteProxy', id)
+                        this.showToast('Proxy deleted.')
+                        this.addLog('Delete proxy', id)
                         this.loadProxies()
                     } catch (e) {
-                        this.showToast('Delete failed', true)
+                        this.showToast(e.response?.data?.detail || 'Could not delete the proxy.', true)
                     }
                 },
 
@@ -4944,12 +4959,12 @@
                         const res = await _api.post('/api/proxies/test', null, { params: { proxy_id: id }, timeout: 40000 })
                         const result = res.data.result
                         if (result?.success) {
-                            this.showToast(`Connected! Response: ${result.response_time.toFixed(0)}ms`)
+                            this.showToast(`Connected! Response: ${Number(result.response_time || 0).toFixed(0)}ms`)
                         } else {
                             this.showToast(result?.error || 'Connection failed', true)
                         }
                     } catch (e) {
-                        this.showToast('Test failed', true)
+                        this.showToast(e.response?.data?.detail || 'Proxy test failed. Try again.', true)
                     }
                 },
 
@@ -4966,13 +4981,13 @@
                         await _api.post('/api/templates', {
                             content: this.newTemplate.content
                         })
-                        this.showToast('Template added')
+                        this.showToast('Template added.')
                         this.addLog('Add template', this.newTemplate.content.substring(0, 30) + '...')
                         this.showTemplateModal = false
                         this.newTemplate = { content: '' }
                         await this.loadTemplates()
                     } catch (e) {
-                        this.showToast(e.response?.data?.detail || e.message || 'Add failed', true)
+                        this.showToast(e.response?.data?.detail || e.message || 'Could not add the template.', true)
                     }
                 },
 
@@ -4986,29 +5001,30 @@
                             category: 'Quick',
                             variables: []
                         })
-                        this.showToast(`Added"${name}"Template`)
+                        this.showToast(`Added "${name}" template.`)
                         await this.loadTemplates()
                     } catch (e) {
-                        this.showToast('Add failed', true)
+                        this.showToast(e.response?.data?.detail || 'Could not add the template.', true)
                     }
                 },
 
                 async deleteTemplate(i) {
-                    if (!confirm('Delete this template??')) return
+                    if (!confirm('Delete this template?')) return
                     const tpl = this.templates[i]
                     try {
                         await _api.delete(`/api/templates/${tpl.template_id || tpl.id}`)
-                        this.showToast('TemplateDelete')
-                        this.addLog('DeleteTemplate', tpl.name)
+                        this.showToast('Template deleted.')
+                        this.addLog('Delete template', tpl.name)
                         await this.loadTemplates()
                     } catch (e) {
-                        this.showToast('Delete failed', true)
+                        this.showToast(e.response?.data?.detail || 'Could not delete the template.', true)
                     }
                 },
 
                 copyTemplate(tpl) {
                     navigator.clipboard.writeText(tpl.content)
-                    this.showToast('Copied to clipboard')
+                        .then(() => this.showToast('Copied to clipboard'))
+                        .catch(() => this.showToast('Copy failed — select and copy manually.', true))
                 },
 
                 // Schedules
@@ -5082,7 +5098,7 @@
                         } else {
                             this.newSchedule.strangerUsernames = lines.join('\n')
                         }
-                        this.showToast(`Import ${lines.length} Username`)
+                        this.showToast(`Imported ${lines.length} ${lines.length === 1 ? 'username' : 'usernames'}.`)
                     }
                     reader.readAsText(file)
                     event.target.value = ''
@@ -5140,12 +5156,12 @@
                             enabled: true
                         })
                         if (result.data.success !== true) throw new Error(result.data.error || 'Schedule was not created')
-                        this.showToast('Schedule added')
+                        this.showToast('Schedule added.')
                         this.addLog('Add schedule', schedule_id)
                         this.closeScheduleModal()
                         await this.loadSchedules()
                     } catch (e) {
-                        this.showToast(e.response?.data?.detail || e.message || 'Add failed', true)
+                        this.showToast(e.response?.data?.detail || e.message || 'Could not add the schedule.', true)
                     }
                     this.scheduleSubmitting = false
                 },
@@ -5155,23 +5171,23 @@
                     try {
                         await _api.post(`/api/schedules/${sched.schedule_id}/toggle`)
                         sched.enabled = !sched.enabled
-                        this.showToast(sched.enabled ? 'ScheduleEnable' : 'ScheduleDisable')
+                        this.showToast(`Schedule ${sched.enabled ? 'enabled' : 'paused'}.`)
                         this.updateScheduleStats()
                     } catch (e) {
-                        this.showToast('ActionsFailed', true)
+                        this.showToast(e.response?.data?.detail || 'Could not update the schedule. Try again.', true)
                     }
                 },
 
                 async deleteSchedule(i) {
-                    if (!confirm('Delete this schedule??')) return
+                    if (!confirm('Delete this schedule?')) return
                     const sched = this.schedules[i]
                     try {
                         await _api.delete(`/api/schedules/${sched.schedule_id}`)
-                        this.showToast('ScheduleDelete')
+                        this.showToast('Schedule deleted.')
                         this.addLog('Delete schedule', sched.name)
                         await this.loadSchedules()
                     } catch (e) {
-                        this.showToast('Delete failed', true)
+                        this.showToast(e.response?.data?.detail || 'Could not delete the schedule.', true)
                     }
                 },
 
