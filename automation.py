@@ -29,6 +29,9 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from open_teleset.operator_store import feature_enabled
+from open_teleset.telegram_notify import queue_event
+
 from log_manager import log_manager
 
 router = APIRouter()
@@ -122,6 +125,8 @@ async def automation_status(request: Request):
 @router.post("/api/automation/run")
 async def automation_run(request: Request, body: AutomationRunRequest | None = None):
     """Start one account-factory run through the n8n webhook."""
+    if not feature_enabled("factory"):
+        raise HTTPException(403, "Account Factory is turned off. Turn it on in Automation settings.")
     config = _config()
     if not config["configured"]:
         raise HTTPException(503, config["problem"] or "Automation is not configured.")
@@ -212,6 +217,8 @@ async def automation_run(request: Request, body: AutomationRunRequest | None = N
     record["status"] = "accepted"
     _record(record)
     log_manager.add_log("Automation", "account-factory", f"{record['run_id']} accepted", "success")
+    queue_event(requested_by, "factory.run.accepted",
+                f"Account Factory run {record['run_id']} was accepted by n8n.")
     return {
         "accepted": True,
         "run_id": record["run_id"],

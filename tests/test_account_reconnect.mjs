@@ -23,7 +23,7 @@ test('timestamps are interpreted as UTC across browser timezones and invalid dat
   const timestamp = new Date(Date.now()-3600000).toISOString();
   assert.equal(format(timestamp), format(timestamp.slice(0,-1)));
   assert.equal(format('not-a-date'), '-');
-  assert.match(html, /<td>\{\{ acc.phone \|\| '-' \}\}<\/td>/);
+  assert.match(html, /<b>Phone<\/b>\{\{ acc\.phone \|\| '—' \}\}/);
 });
 
 test('QR polling displays terminal persistence errors and stops polling', async () => {

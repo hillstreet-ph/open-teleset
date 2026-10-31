@@ -30,5 +30,5 @@ test('webhook client methods use owner-scoped endpoints and refresh health', () 
   ]) {
     assert.ok(html.includes(call), `missing ${call}`);
   }
-  assert.match(html, /if \(tab === 'integrations'\) this\.loadWebhooks\(\)/);
+  assert.match(html, /if \(tab === 'integrations'\) \{[^}]*this\.loadWebhooks\(\)/);
 });
