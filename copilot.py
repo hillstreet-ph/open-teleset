@@ -22,9 +22,8 @@ _TIME_RE = re.compile(r"\b(?:at\s+)?(\d{1,2}):(\d{2})\s*(am|pm)?\b", re.I)
 _HOUR_RE = re.compile(r"\bat\s+(\d{1,2})\s*(am|pm)\b", re.I)
 _QUOTED_RE = re.compile(r"[\"“”]([^\"“”]{2,})[\"“”]")
 _NAME_RE = re.compile(
-    r"\b(?:named|called|name)\s*[:=]?\s*[\"“”']?([^\"“”'\n,;.:]{1,60})", re.I
+    r"\b(?:named|called|name)\b[^A-Za-z0-9]{0,8}([^\"“”'\n,;.:]{1,60})", re.I
 )
-_APPROVAL_RE = re.compile(r"\bapproval(?:\s+(?:id|reference))?\s*[:=]?\s*([A-Za-z0-9_-]{2,64})", re.I)
 _RECIPIENTS_RE = re.compile(r"\brecipients?\b\s*(?:are|is|:|-)?\s*", re.I)
 _CONTENT_RE = re.compile(
     r"\b(?:message|saying|that says|content|text|body|send)\b\s*[:=-]\s*", re.I
@@ -172,8 +171,28 @@ def _name(text: str, fallback: str) -> str:
     if not match:
         return fallback
     name = match.group(1).strip().strip("\"'“”").strip()
-    name = re.split(r"\s+(?:that|which|saying|with|message|content|text)\b", name, maxsplit=1)[0]
+    words = name.split()
+    for index, word in enumerate(words):
+        if index and word.lower() in {"that", "which", "saying", "with", "message", "content", "text"}:
+            name = " ".join(words[:index])
+            break
     return name.strip() or fallback
+
+
+def _approval(text: str) -> str:
+    """Read an approval reference without a backtracking-prone regex."""
+    match = re.search(r"\bapproval\b", text, re.I)
+    if not match:
+        return ""
+    tail = text[match.end():].lstrip()
+    for prefix in ("id", "reference"):
+        if tail.lower().startswith(prefix):
+            tail = tail[len(prefix):].lstrip()
+            break
+    if tail[:1] in (":", "=", "-"):
+        tail = tail[1:].lstrip()
+    token = re.match(r"[A-Za-z0-9_-]{2,64}", tail)
+    return token.group(0) if token else ""
 
 
 def _time(text: str) -> tuple | None:
@@ -232,7 +251,7 @@ def _draft_schedule(text: str) -> dict[str, Any]:
     message = _message(text)
     recipients = _recipients(text)
     hour, minute = _time(command) or (10, 0)
-    approval = _APPROVAL_RE.search(command)
+    approval = _approval(command)
     warnings = []
     if not message:
         warnings.append("Add the message text before creating this schedule.")
@@ -257,7 +276,7 @@ def _draft_schedule(text: str) -> dict[str, Any]:
             "hour": hour,
             "minute": minute,
             "interval": 3000,
-            "approvalId": approval.group(1) if approval else "",
+            "approvalId": approval if approval else "",
             "autoDedup": True,
             "validateUsernames": True,
         },

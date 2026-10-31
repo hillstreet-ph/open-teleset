@@ -55,6 +55,16 @@ def test_schedule_reads_approval_and_recipients_without_touching_the_message():
     assert payload["interval"] >= 3000
 
 
+def test_schedule_approval_survives_whitespace_without_backtracking():
+    draft = copilot.build_draft(
+        "Schedule a daily message at 10:00 approval" + (" " * 500) +
+        "OPS-42 saying: Hi {name}, short update."
+    )
+    payload = draft["payload"]
+    assert payload["approvalId"] == "OPS-42"
+    assert payload["message"].startswith("Hi {name}")
+
+
 def test_schedule_caps_recipients_at_the_form_limit():
     recipients = " ".join(f"@user_{index:02d}1" for index in range(25))
     draft = copilot.build_draft(f"Schedule a daily message at 10:00 recipients: {recipients}")
