@@ -15,6 +15,7 @@ from account_manager import account_manager
 from template_manager import template_manager
 from log_manager import log_manager
 from outreach_policy import outreach_policy, dispatch_outreach, valid_bounds
+from open_teleset.operator_store import feature_enabled
 from telethon import utils
 
 
@@ -476,6 +477,9 @@ class TaskScheduler:
 
         while self.running:
             try:
+                if not feature_enabled("automation"):
+                    await asyncio.sleep(5)
+                    continue
                 now = datetime.now()
                 
                 # 重新加载配置（支持动态添加任务）

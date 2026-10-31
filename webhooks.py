@@ -322,6 +322,18 @@ def emit_job(operator, kind, snapshot):
     else:
         return
     emit(operator, event, {"job": snapshot})
+    from open_teleset.telegram_notify import queue_event
+    labels = {
+        "join.job.completed": "Auto Join finished",
+        "join.job.failed": "Auto Join finished with failures",
+        "join.job.stopped": "Auto Join stopped",
+        "outreach.job.completed": "Outreach job finished",
+        "outreach.job.failed": "Outreach job finished with failures",
+        "outreach.job.stopped": "Outreach job stopped",
+    }
+    details = (f"{snapshot.get('completed', 0)} done · {snapshot.get('skipped', 0)} skipped · "
+               f"{snapshot.get('failed', 0)} failed")
+    queue_event(operator, event, f"{labels[event]}: {details}")
 
 
 def owner(request):

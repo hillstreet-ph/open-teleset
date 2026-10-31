@@ -703,6 +703,48 @@
         .password-reset-link { display: block; text-align: right; margin-top: 4px; color: var(--accent); font-size: 11.5px; cursor: pointer; }
         .password-reset-link:hover { text-decoration: underline; }
 
+        /* ---------- Operator surface additions ---------- */
+        .sidebar-resizer { position: absolute; top: 0; bottom: 0; right: -3px; width: 6px; cursor: col-resize; z-index: 2; touch-action: none; }
+        .sidebar-resizer:hover, .sidebar-resizer:active { background: var(--accent-soft); }
+        .notifications { position: relative; }
+        .notifications-panel { position: absolute; right: 0; top: 42px; width: min(380px, calc(100vw - 32px)); max-height: 70vh; overflow: auto; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 14px; box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45); z-index: 60; padding: 8px; }
+        .notif-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px 10px; border-bottom: 1px solid var(--border); }
+        .notif-item { padding: 10px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 3px; }
+        .notif-item:last-child { border-bottom: 0; }
+        .notif-meta { font-size: 11px; color: var(--text-dim); display: flex; justify-content: space-between; gap: 8px; }
+        .notif-dot { position: absolute; top: 4px; right: 4px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 999px; background: var(--accent); color: #04140f; font-size: 10px; font-weight: 700; display: grid; place-items: center; }
+        .account-cards { display: flex; flex-direction: column; gap: 10px; }
+        .account-card { border: 1px solid var(--border); border-radius: 12px; background: var(--surface-2); overflow: hidden; }
+        .account-card-head { display: flex; align-items: center; gap: 12px; padding: 10px 12px; cursor: pointer; }
+        .account-card-head:hover { background: var(--hover); }
+        .account-face { width: 36px; height: 36px; flex: none; border-radius: 10px; overflow: hidden; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); font-weight: 700; }
+        .account-face img { width: 100%; height: 100%; object-fit: cover; }
+        .account-main { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 2px; }
+        .account-main strong { font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .account-main small { color: var(--text-dim); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .account-card-body { padding: 4px 12px 12px; border-top: 1px solid var(--border); display: grid; gap: 12px; }
+        .account-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; font-size: 12px; color: var(--text-secondary); }
+        .account-facts b { display: block; color: var(--text-dim); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600; }
+        .account-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+        .account-tools .form-control { max-width: 230px; }
+        .ai-provider-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+        .toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+        .toggle { position: relative; width: 44px; height: 24px; flex: none; border-radius: 999px; border: 1px solid var(--border-strong); background: var(--surface-3); cursor: pointer; transition: background 0.18s ease; }
+        .toggle::after { content: ''; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: #8a8a8a; transition: transform 0.18s ease, background 0.18s ease; }
+        .toggle.on { background: var(--accent-soft); border-color: var(--accent); }
+        .toggle.on::after { transform: translateX(20px); background: var(--accent); }
+        .template-editor { width: 100%; background: rgba(0, 0, 0, 0.2); border: 1px solid var(--border); border-radius: 8px; padding: 10px; color: var(--text); font-size: 13px; line-height: 1.5; resize: vertical; }
+        .contact-rows { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+        .contact-row { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); }
+        .contact-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+        .contact-main strong { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .contact-main small { color: var(--text-dim); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; }
+        .note-strip { border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 8px; padding: 10px 12px; margin-bottom: 14px; font-size: 12.5px; color: var(--text-secondary); background: var(--surface-2); }
+        .btn.disabled, .btn[disabled] { opacity: 0.55; pointer-events: none; }
+        @media (max-width: 760px) { .contact-row { align-items: flex-start; flex-wrap: wrap; } .contact-row .account-tools { width: 100%; } }
+        @media (max-width: 1024px) { .sidebar-resizer { display: none; } }
+        @media (max-width: 760px) { .account-tools .form-control { max-width: none; width: 100%; } .notifications-panel { position: fixed; left: 12px; right: 12px; top: 64px; width: auto; } }
+
         /* ---------- Responsive ---------- */
         @media (max-width: 1024px) {
             .sidebar { transform: translateX(-100%); box-shadow: 0 0 60px rgba(0, 0, 0, 0.5); }
@@ -860,7 +902,7 @@
 
         <div v-if="userMenuOpen" class="menu-scrim" @click="userMenuOpen = false"></div>
 
-        <div class="shell" :class="{ 'nav-collapsed': sidebarCollapsed }">
+        <div class="shell" :class="{ 'nav-collapsed': sidebarCollapsed }" :style="{ '--sidebar-w': sidebarWidth + 'px' }">
             <aside class="sidebar" :class="{ open: sidebarOpen }" aria-label="Primary navigation">
                 <div class="sidebar-brand">
                     <button class="brand" @click="go('overview')" aria-label="Open Teleset dashboard">
@@ -916,6 +958,7 @@
                         <app-icon name="chevron-up" :size="16" class="account-trigger-caret"></app-icon>
                     </button>
                 </div>
+                <div class="sidebar-resizer" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" title="Drag to resize · double-click to reset" @pointerdown.prevent="startSidebarResize" @dblclick="resetSidebarWidth"></div>
             </aside>
 
             <div v-if="sidebarOpen" class="scrim" @click="sidebarOpen = false"></div>
@@ -929,6 +972,28 @@
                     </div>
                     <div class="topbar-actions">
                         <span class="live-pill" :title="'Realtime connection: ' + liveStatus"><span class="status-dot" :class="liveStatus === 'Live' ? 'ok' : ''"></span>{{ liveStatus }}</span>
+                        <div class="notifications" @click.stop>
+                            <button class="icon-btn" @click="toggleNotifications" :title="'Notifications: ' + inbox.length + ' recent'" aria-label="Open notifications" :aria-expanded="notificationsOpen ? 'true' : 'false'">
+                                <app-icon name="bell" :size="18"></app-icon>
+                                <span v-if="unreadNotifications" class="notif-dot">{{ unreadNotifications > 9 ? '9+' : unreadNotifications }}</span>
+                            </button>
+                            <div v-if="notificationsOpen" class="notifications-panel" role="dialog" aria-label="Activity inbox">
+                                <div class="notif-head">
+                                    <strong style="font-size:13px;">Activity inbox</strong>
+                                    <div style="display:flex;gap:6px;">
+                                        <button class="btn btn-sm btn-outline" @click="refreshInbox" :disabled="inboxLoading">{{ inboxLoading ? 'Loading…' : 'Refresh' }}</button>
+                                        <button class="btn btn-sm btn-outline" @click="markInboxRead" :disabled="!unreadNotifications">Mark read</button>
+                                    </div>
+                                </div>
+                                <p v-if="inboxError" class="small" style="color:var(--danger);padding:10px;">{{ inboxError }}</p>
+                                <p v-if="!inbox.length" class="small muted" style="padding:14px 10px;">No platform activity yet.</p>
+                                <div v-for="(item, i) in inbox" :key="i" class="notif-item">
+                                    <div class="notif-meta"><span>{{ item.title }}</span><span>{{ formatTime(item.time) }}</span></div>
+                                    <span class="small" style="color:var(--text-secondary);overflow-wrap:anywhere;">{{ item.detail || item.title }}</span>
+                                </div>
+                                <div style="padding:8px 6px 2px;text-align:center;"><button class="btn btn-sm btn-outline" @click="go('logs'); notificationsOpen = false">Open all logs</button></div>
+                            </div>
+                        </div>
                         <button class="icon-btn" @click="refreshView" title="Refresh this page" aria-label="Refresh"><app-icon name="refresh" :size="18"></app-icon></button>
                         <span class="avatar topbar-avatar" @click="toggleAccountMenu" title="Account menu">{{ avatarInitials }}</span>
                     </div>
@@ -1087,6 +1152,21 @@
 
                         <section class="panel">
                             <div class="panel-head">
+                                <h3>Scheduled tasks</h3>
+                                <button class="btn btn-outline btn-sm" @click="openScheduleModal"><app-icon name="plus" :size="15"></app-icon>New schedule</button>
+                            </div>
+                            <div v-if="!schedules.length" class="empty-inline">Nothing scheduled yet. Create a schedule to send messages or run actions later.</div>
+                            <div v-for="(sch, i) in schedules" :key="i" class="status-row">
+                                <span class="status-key">{{ sch.name }} · {{ getScheduleDescription(sch) }}</span>
+                                <span class="status-val"><span class="badge" :class="sch.enabled ? 'badge-success' : 'badge-normal'">{{ sch.enabled ? 'Enabled' : 'Paused' }}</span></span>
+                            </div>
+                            <div class="panel-foot">
+                                <button class="btn btn-outline btn-sm" @click="go('schedule')">Manage schedule</button>
+                            </div>
+                        </section>
+
+                        <section class="panel">
+                            <div class="panel-head">
                                 <h3>Account factory runs</h3>
                                 <button class="btn btn-outline btn-sm" @click="loadAutomationStatus" :disabled="automation.loading">{{ automation.loading ? 'Loading…' : 'Refresh' }}</button>
                             </div>
@@ -1133,20 +1213,6 @@
                             </details>
                         </section>
 
-                        <section class="panel">
-                            <div class="panel-head">
-                                <h3>Scheduled tasks</h3>
-                                <button class="btn btn-outline btn-sm" @click="openScheduleModal"><app-icon name="plus" :size="15"></app-icon>New schedule</button>
-                            </div>
-                            <div v-if="!schedules.length" class="empty-inline">Nothing scheduled yet. Create a schedule to send messages or run actions later.</div>
-                            <div v-for="(sch, i) in schedules" :key="i" class="status-row">
-                                <span class="status-key">{{ sch.name }} · {{ getScheduleDescription(sch) }}</span>
-                                <span class="status-val"><span class="badge" :class="sch.enabled ? 'badge-success' : 'badge-normal'">{{ sch.enabled ? 'Enabled' : 'Paused' }}</span></span>
-                            </div>
-                            <div class="panel-foot">
-                                <button class="btn btn-outline btn-sm" @click="go('schedule')">Manage schedule</button>
-                            </div>
-                        </section>
                     </div>
 
                     <!-- ============ Automation ============ -->
@@ -1345,6 +1411,65 @@
                                 </div>
                             </div>
                         </section>
+
+                        <section class="panel" style="margin-top:24px;">
+                            <div class="panel-head"><h3>Platform switches</h3><span class="panel-sub">Applies immediately</span></div>
+                            <div class="toggle-row">
+                                <div><strong style="font-size:13px;">Automation</strong><p class="muted small" style="margin-top:2px;">Scheduled tasks run only while this is on.</p></div>
+                                <button class="toggle" :class="{ on: features.automation_enabled }" role="switch" :aria-checked="features.automation_enabled ? 'true' : 'false'" :disabled="features.saving === 'automation_enabled'" @click="saveFeature('automation_enabled', !features.automation_enabled)"></button>
+                            </div>
+                            <div class="toggle-row" style="border-bottom:0;">
+                                <div><strong style="font-size:13px;">Account Factory</strong><p class="muted small" style="margin-top:2px;">The factory run button is refused while this is off.</p></div>
+                                <button class="toggle" :class="{ on: features.factory_enabled }" role="switch" :aria-checked="features.factory_enabled ? 'true' : 'false'" :disabled="features.saving === 'factory_enabled'" @click="saveFeature('factory_enabled', !features.factory_enabled)"></button>
+                            </div>
+                            <p v-if="features.loading" class="muted small">Loading switches…</p>
+                        </section>
+
+                        <section class="panel" style="margin-top:24px;">
+                            <div class="panel-head">
+                                <h3>AI gateway</h3>
+                                <button class="btn btn-outline btn-sm" @click="openSettings('ai')">Configure</button>
+                            </div>
+                            <p class="muted small">Used by template regeneration and Copilot drafting. Keys are encrypted and write-only.</p>
+                            <div class="status-row"><span class="status-key">Provider</span><span class="status-val">{{ ai.providers.find(p => p.id === ai.provider)?.label || ai.provider || 'Not configured' }}</span></div>
+                            <div class="status-row"><span class="status-key">Model</span><span class="status-val mono">{{ ai.model || '—' }}</span></div>
+                            <div class="status-row"><span class="status-key">API key</span><span class="status-val">{{ ai.hasKey ? 'Stored (' + ai.keyHint + ')' : 'Not stored' }}</span></div>
+                            <div class="status-row"><span class="status-key">Base URL</span><span class="status-val mono" style="overflow-wrap:anywhere;">{{ ai.baseUrl || '—' }}</span></div>
+                        </section>
+
+                        <section class="panel" style="margin-top:24px;">
+                            <div class="panel-head"><h3>Custom MCP servers</h3><span class="panel-sub">HTTPS or SSE</span></div>
+                            <p class="muted small">Connect an external MCP server (Open Connect, Composio, Airtable, n8n and similar). Tokens are encrypted and never returned.</p>
+                            <div class="form-row" style="align-items:flex-end;">
+                                <div class="form-group" style="flex:1;min-width:140px;"><label>Name</label><input class="form-control" v-model="integrations.form.name" maxlength="60" placeholder="Airtable"></div>
+                                <div class="form-group" style="flex:2;min-width:220px;"><label>Base URL</label><input class="form-control" v-model="integrations.form.url" placeholder="https://mcp.airtable.com/mcp"></div>
+                            </div>
+                            <div class="form-row" style="align-items:flex-end;">
+                                <div class="form-group" style="flex:1;min-width:120px;">
+                                    <label>Transport</label>
+                                    <select class="form-control" v-model="integrations.form.transport"><option value="http">HTTP</option><option value="sse">SSE</option></select>
+                                </div>
+                                <div class="form-group" style="flex:2;min-width:200px;"><label>Token (optional)</label><input class="form-control" type="password" v-model="integrations.form.token" autocomplete="new-password"></div>
+                                <div class="form-group" style="flex:0 0 auto;"><button class="btn btn-primary" @click="saveIntegration" :disabled="!!integrations.busy">{{ integrations.busy === 'save' ? 'Saving…' : 'Add server' }}</button></div>
+                            </div>
+                            <div v-if="integrations.suggested.length" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;">
+                                <button v-for="item in integrations.suggested" :key="item.name" class="btn btn-outline btn-sm" @click="integrations.form.name = item.name; integrations.form.url = item.base_url">{{ item.name }}</button>
+                            </div>
+                            <p v-if="integrations.error" class="notice bad">{{ integrations.error }}</p>
+                            <p v-if="integrations.loading" class="muted small">Loading servers…</p>
+                            <p v-else-if="!integrations.list.length" class="empty-inline">No custom MCP servers yet.</p>
+                            <div v-for="item in integrations.list" :key="item.id" style="padding:12px 0;border-top:1px solid var(--border);overflow-wrap:anywhere;">
+                                <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;">
+                                    <strong style="font-size:13px;">{{ item.name }}</strong>
+                                    <span class="badge" :class="item.has_token ? 'badge-success' : 'badge-normal'">{{ item.has_token ? 'Token stored' : 'No token' }}</span>
+                                </div>
+                                <p class="mono small" style="margin-top:4px;">{{ item.base_url }} · {{ item.transport.toUpperCase() }}</p>
+                                <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">
+                                    <button class="btn btn-outline btn-sm" @click="testIntegration(item)" :disabled="!!integrations.busy">Test</button>
+                                    <button class="btn btn-danger btn-sm" @click="deleteIntegration(item)" :disabled="!!integrations.busy">Remove</button>
+                                </div>
+                            </div>
+                        </section>
                     </div>
 
                     <!-- ============ Developer ============ -->
@@ -1447,77 +1572,70 @@
                         <p>No accounts yet. Click a button above to add one.</p>
                     </div>
 
-                    <table v-else>
-                        <thead>
-                            <tr>
-                                <th>Account ID</th>
-                                <th>Name</th>
-                                <th>Username</th>
-                                <th>Phone</th>
-                                <th>Type</th>
-                                <th>Status</th>
-                                <th>Last online</th>
-                                <th>Usage</th>
-                                <th>Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <tr v-for="acc in pagedAccounts" :key="acc.account_id">
-                                <td>
-                                    <span
-                                        @click="copyAccountId(acc.account_id)"
-                                        :title="'Click to copy: ' + acc.account_id"
-                                        style="cursor: pointer; display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 6px; transition: all 0.2s;"
-                                        @mouseover="$event.target.style.background='rgba(103, 126, 234, 0.1)'"
-                                        @mouseout="$event.target.style.background='transparent'"
-                                    >
-                                        <strong>{{ acc.account_id }}</strong>
-                                        <svg style="width: 14px; height: 14px; opacity: 0.5;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                                            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-                                        </svg>
-                                    </span>
-                                </td>
-                                <td>{{ acc.first_name || '-' }} {{ acc.last_name || '' }}</td>
-                                <td>
-                                    <a v-if="acc.username && acc.username !== 'N/A'" 
-                                       :href="'https://t.me/' + acc.username" 
-                                       target="_blank" 
-                                       style="color: var(--accent); text-decoration: none;">
-                                        @{{ acc.username }}
-                                    </a>
-                                    <span v-else>-</span>
-                                </td>
-                                <td>{{ acc.phone || '-' }}</td>
-                                <td>
-                                    <span class="badge" :class="acc.is_premium ? 'badge-premium' : 'badge-normal'">
-                                        {{ acc.is_premium ? 'Premium' : 'Standard' }}
-                                    </span>
-                                </td>
-                                <td>
-                                    <span class="badge" :class="acc.status === 'online' ? 'badge-success' : 'badge-danger'">
-                                        {{ acc.status === 'online' ? 'Online' : 'Offline' }}
-                                    </span>
-                                    <small v-if="acc.connection_error" style="display:block;max-width:240px;margin-top:6px;color:#f5b7b1">{{ acc.connection_error }}</small>
-                                </td>
-                                <td>{{ formatTime(acc.last_online) }}</td>
-                                <td>{{ acc.use_count || 0 }}</td>
-                                <td class="actions-cell">
-                                    <div class="row-actions">
-                                        <select class="form-control" aria-label="Account connection" :value="accountConnectionChoice(acc)" @change="updateAccountConnection(acc, $event.target.value)" :disabled="checkingAccounts[acc.account_id]">
-                                            <option value="default">Global default</option>
-                                            <option value="direct">Direct connection</option>
-                                            <option v-for="proxy in proxies" :key="proxy.proxy_id" :value="'proxy:' + proxy.proxy_id">{{ proxy.proxy_id }} · {{ proxy.host }}:{{ proxy.port }}</option>
-                                            <option v-if="acc.proxy_settings?.mode === 'selected' && !proxies.some(p => p.proxy_id === acc.proxy_settings.proxy_id)" :value="'proxy:' + acc.proxy_settings.proxy_id" disabled>Missing proxy — choose another</option>
-                                        </select>
-                                        <button class="btn btn-sm btn-outline row-action-wide" :disabled="checkingAccounts[acc.account_id]" @click="checkAccountConnection(acc.account_id)">{{ checkingAccounts[acc.account_id] ? 'Checking...' : 'Check connection' }}</button>
-                                        <button class="btn btn-sm btn-outline" @click="exportSession(acc.account_id)">Export</button>
-                                        <button class="btn btn-sm btn-danger" @click="deleteAccount(acc.account_id)">Delete</button>
+                    <div v-else class="account-cards">
+                        <div v-for="acc in pagedAccounts" :key="acc.account_id" class="account-card">
+                            <div class="account-card-head" role="button" tabindex="0" :aria-expanded="expandedAccounts[acc.account_id] ? 'true' : 'false'" @click="toggleAccountCard(acc.account_id)" @keydown.enter.prevent="toggleAccountCard(acc.account_id)">
+                                <span class="account-face">
+                                    <img v-if="accountPhotos[acc.account_id]" :src="accountPhotos[acc.account_id]" alt="" @error="forgetAccountPhoto(acc.account_id)">
+                                    <template v-else>{{ accountInitials(acc) }}</template>
+                                </span>
+                                <span class="account-main">
+                                    <strong>{{ accountDisplayName(acc) }}</strong>
+                                    <small>
+                                        <a v-if="acc.username && acc.username !== 'N/A'" :href="'https://t.me/' + acc.username" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none;" @click.stop>@{{ acc.username }}</a>
+                                        <span v-else>No public username</span>
+                                        · <span class="mono">{{ shortAccountId(acc.account_id) }}</span>
+                                    </small>
+                                </span>
+                                <span class="badge" :class="acc.status === 'online' ? 'badge-success' : 'badge-danger'">{{ acc.status === 'online' ? 'Online' : 'Offline' }}</span>
+                                <app-icon :name="expandedAccounts[acc.account_id] ? 'chevron-up' : 'chevron-down'" :size="16"></app-icon>
+                            </div>
+                            <div v-if="expandedAccounts[acc.account_id]" class="account-card-body">
+                                <div class="account-facts">
+                                    <span><b>Account ID</b><span class="mono" style="cursor:pointer;" @click="copyAccountId(acc.account_id)" title="Copy account ID">{{ acc.account_id }}</span></span>
+                                    <span><b>Phone</b>{{ acc.phone || '—' }}</span>
+                                    <span><b>Type</b>{{ acc.is_premium ? 'Premium' : 'Standard' }}</span>
+                                    <span><b>Last online</b>{{ formatTime(acc.last_online) }}</span>
+                                    <span><b>Usage</b>{{ acc.use_count || 0 }}</span>
+                                </div>
+                                <small v-if="acc.connection_error" style="color:#f5b7b1;">{{ acc.connection_error }}</small>
+                                <div class="account-tools">
+                                    <select class="form-control" aria-label="Account connection" :value="accountConnectionChoice(acc)" @change="updateAccountConnection(acc, $event.target.value)" :disabled="checkingAccounts[acc.account_id]">
+                                        <option value="default">Global default</option>
+                                        <option value="direct">Direct connection</option>
+                                        <option v-for="proxy in proxies" :key="proxy.proxy_id" :value="'proxy:' + proxy.proxy_id">{{ proxy.proxy_id }} · {{ proxy.host }}:{{ proxy.port }}</option>
+                                        <option v-if="acc.proxy_settings?.mode === 'selected' && !proxies.some(p => p.proxy_id === acc.proxy_settings.proxy_id)" :value="'proxy:' + acc.proxy_settings.proxy_id" disabled>Missing proxy — choose another</option>
+                                    </select>
+                                    <button class="btn btn-sm btn-outline" :disabled="checkingAccounts[acc.account_id]" @click="checkAccountConnection(acc.account_id)">{{ checkingAccounts[acc.account_id] ? 'Checking…' : 'Check connection' }}</button>
+                                    <button class="btn btn-sm btn-outline" @click="loadAccountSessions(acc.account_id)">{{ accountSessionsLoading[acc.account_id] ? 'Loading…' : 'Login sessions' }}</button>
+                                    <label class="btn btn-sm btn-outline" style="cursor:pointer;margin:0;">
+                                        Upload photo
+                                        <input type="file" accept="image/jpeg,image/png" style="display:none;" @change="uploadAccountPhoto(acc, $event)">
+                                    </label>
+                                    <button class="btn btn-sm btn-outline" @click="openContactsFor(acc.account_id)">Contacts</button>
+                                    <button class="btn btn-sm btn-outline" @click="exportSession(acc.account_id)">Export</button>
+                                    <button class="btn btn-sm btn-danger" @click="deleteAccount(acc.account_id)">Delete</button>
+                                </div>
+                                <div v-if="accountSessions[acc.account_id] || accountSessionsError[acc.account_id]" style="display:grid;gap:8px;">
+                                    <div style="display:flex;justify-content:space-between;gap:10px;align-items:center;">
+                                        <strong style="font-size:12.5px;">Login activity</strong>
+                                        <button class="btn btn-sm btn-outline" @click="loadAccountSessions(acc.account_id, true)">Refresh</button>
                                     </div>
-                                </td>
-                            </tr>
-                        </tbody>
-                    </table>
+                                    <p v-if="accountSessionsError[acc.account_id]" class="small" style="color:var(--danger);">{{ accountSessionsError[acc.account_id] }}</p>
+                                    <p v-else-if="!accountSessions[acc.account_id].length" class="small muted">No login sessions were returned.</p>
+                                    <div v-for="session in accountSessions[acc.account_id]" :key="session.hash" class="proxy-item" style="margin:0;padding:10px 12px;align-items:flex-start;">
+                                        <div style="flex:1;min-width:180px;">
+                                            <strong style="font-size:12.5px;">{{ session.device || session.platform || 'Unknown device' }} <span v-if="session.current" class="badge badge-success">This session</span></strong>
+                                            <p class="small muted" style="margin-top:3px;">{{ session.platform }} {{ session.system }} · {{ session.app }}</p>
+                                            <p class="small muted">{{ [session.ip, session.country, session.region].filter(Boolean).join(' · ') || 'Location not shared' }}</p>
+                                            <p class="small muted">Active {{ formatTime(session.active) }} · Created {{ formatTime(session.created) }}</p>
+                                        </div>
+                                        <button v-if="!session.current" class="btn btn-sm btn-danger" @click="revokeAccountSession(acc.account_id, session.hash)">Sign out</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                     <!-- Account pages -->
                     <div v-if="accounts.length > accountPageSize" style="display: flex; justify-content: center; align-items: center; gap: 15px; margin-top: 20px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.1);">
                         <button class="btn btn-sm btn-outline" @click="accountPage = 1" :disabled="accountPage === 1">First</button>
@@ -1529,6 +1647,131 @@
                 </div>
             </div>
 
+            <!-- Contacts -->
+            <div v-show="tab === 'contacts'">
+                <div class="card">
+                    <div class="card-header">
+                        <div>
+                            <h3>Contacts</h3>
+                            <p class="muted small" style="margin-top:4px;">Each Telegram account keeps its own contact list. Imports go to Telegram, not to a local cache.</p>
+                        </div>
+                        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                            <button class="btn btn-outline btn-sm" @click="exportContacts" :disabled="!contacts.accountId || !contacts.list.length">Export CSV</button>
+                            <label class="btn btn-outline btn-sm" style="cursor:pointer;margin:0;" :class="{ 'disabled': !contacts.accountId }">
+                                {{ contacts.busy === 'import' ? 'Importing…' : 'Import CSV' }}
+                                <input type="file" accept="text/csv,.csv" style="display:none;" :disabled="!contacts.accountId || !!contacts.busy" @change="importContactCSV">
+                            </label>
+                            <button class="btn btn-outline btn-sm" @click="loadContacts" :disabled="contacts.loading || !contacts.accountId">{{ contacts.loading ? 'Loading…' : 'Refresh' }}</button>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Account</label>
+                            <select v-model="contacts.accountId" class="form-control" @change="loadContacts">
+                                <option value="">Select an account</option>
+                                <option v-for="acc in accounts" :key="acc.account_id" :value="acc.account_id">{{ accountDisplayName(acc) }} · {{ shortAccountId(acc.account_id) }}</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Search</label>
+                            <input v-model="contacts.query" class="form-control" placeholder="Name, @username or phone" @keyup.enter="loadContacts">
+                        </div>
+                    </div>
+                    <div class="form-row" style="align-items:end;">
+                        <div class="form-group"><label>Phone (with country code)</label><input v-model="contacts.newPhone" class="form-control" placeholder="+63 917 000 0000"></div>
+                        <div class="form-group"><label>First name</label><input v-model="contacts.newFirstName" class="form-control" placeholder="Optional"></div>
+                        <div class="form-group"><label>Last name</label><input v-model="contacts.newLastName" class="form-control" placeholder="Optional"></div>
+                        <div class="form-group" style="flex:0 0 auto;"><button class="btn btn-primary" @click="addContact" :disabled="contacts.busy === 'add' || !contacts.accountId">{{ contacts.busy === 'add' ? 'Adding…' : 'Add contact' }}</button></div>
+                    </div>
+                    <p v-if="contacts.error" class="small" style="color:var(--danger);">{{ contacts.error }}</p>
+                    <p v-if="!contacts.accountId" class="empty-state"><span>Choose an account to view its contacts.</span></p>
+                    <p v-else-if="contacts.loading && !contacts.list.length" class="empty-state"><span>Loading contacts…</span></p>
+                    <p v-else-if="!contacts.list.length" class="empty-state"><span>No contacts match this account.</span></p>
+                    <div v-else class="contact-rows">
+                        <div v-for="contact in contacts.list" :key="contact.id" class="contact-row">
+                            <span class="account-face">{{ (contact.first_name || contact.username || '?').slice(0, 2).toUpperCase() }}</span>
+                            <span class="contact-main">
+                                <strong>{{ [contact.first_name, contact.last_name].filter(Boolean).join(' ') || 'Unnamed contact' }}</strong>
+                                <small>
+                                    <a v-if="contact.username" :href="'https://t.me/' + contact.username" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none;">@{{ contact.username }}</a>
+                                    <span v-else class="muted">No username</span>
+                                    <span v-if="contact.phone"> · {{ contact.phone }}</span>
+                                    <span v-if="contact.last_seen"> · Active {{ formatTime(contact.last_seen) }}</span>
+                                </small>
+                            </span>
+                            <span v-if="contact.mutual" class="badge badge-success">Mutual</span>
+                            <span class="account-tools" style="margin:0;flex-wrap:nowrap;">
+                                <button class="btn btn-sm btn-outline" @click="blockContact(contact)">Block</button>
+                                <button class="btn btn-sm btn-danger" @click="deleteContact(contact)">Delete</button>
+                            </span>
+                        </div>
+                    </div>
+                    <p class="muted small" style="margin-top:12px;">CSV columns: <span class="mono">phone</span>, optional <span class="mono">first_name</span> and <span class="mono">last_name</span>. Up to 2000 contacts per import.</p>
+                </div>
+            </div>
+
+            <!-- Cloud Phone -->
+            <div v-show="tab === 'cloudphone'">
+                <div class="card">
+                    <div class="card-header">
+                        <div>
+                            <h3>Cloud Phone</h3>
+                            <p class="muted small" style="margin-top:4px;">Numbers bought by the Account Factory land here. Store recovery details encrypted so a logged-out account can be recovered even after the number expires.</p>
+                        </div>
+                        <span class="badge" :class="recovery.error ? 'badge-danger' : 'badge-info'">{{ recovery.error ? 'Needs attention' : 'Encrypted vault' }}</span>
+                    </div>
+                    <div class="note-strip">
+                        Recovery records are encrypted server-side and are never returned in the clear. Airtable only receives token lengths from the factory; this vault is the place for email, 2FA and OTP secrets you choose to keep.
+                    </div>
+                    <p v-if="recovery.error" class="small" style="color:var(--danger);">{{ recovery.error }}</p>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Account</label>
+                            <select v-model="recovery.editing" class="form-control">
+                                <option value="">Select an account</option>
+                                <option v-for="acc in accounts" :key="acc.account_id" :value="acc.account_id">{{ accountDisplayName(acc) }} · {{ shortAccountId(acc.account_id) }}</option>
+                            </select>
+                        </div>
+                        <div class="form-group"><label>Login email</label><input v-model="recovery.form.login_email" class="form-control" placeholder="account@example.com" autocomplete="off"></div>
+                        <div class="form-group"><label>Email password</label><input v-model="recovery.form.email_password" type="password" class="form-control" autocomplete="new-password"></div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group"><label>Telegram 2FA password</label><input v-model="recovery.form.twofa_password" type="password" class="form-control" autocomplete="new-password"></div>
+                        <div class="form-group"><label>OTP secret or otpauth:// URI</label><input v-model="recovery.form.otp_secret" class="form-control" placeholder="Base32 secret" autocomplete="off"></div>
+                    </div>
+                    <div class="form-group"><label>Backup codes</label><textarea v-model="recovery.form.backup_codes" class="form-control" rows="2" placeholder="One code per line"></textarea></div>
+                    <div class="form-group"><label>Note</label><input v-model="recovery.form.note" class="form-control" placeholder="Number country, purchase date, renewal reminder"></div>
+                    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                        <button class="btn btn-primary" @click="saveRecovery" :disabled="!recovery.editing || !!recovery.busy">{{ recovery.busy ? 'Saving…' : 'Save encrypted record' }}</button>
+                        <button class="btn btn-outline" @click="cancelRecoveryEdit" :disabled="!!recovery.busy">Clear form</button>
+                        <button class="btn btn-outline" @click="loadRecovery" :disabled="recovery.loading">{{ recovery.loading ? 'Loading…' : 'Refresh' }}</button>
+                    </div>
+                    <p class="muted small" style="margin-top:10px;">Saving never deletes fields you leave blank. Use Delete on a record to remove all of its secrets.</p>
+                </div>
+                <div class="card">
+                    <div class="card-header"><h3>Recovery records</h3><span class="badge badge-info">{{ recovery.list.length }}</span></div>
+                    <p v-if="!recovery.list.length" class="empty-state"><span>No recovery records yet.</span></p>
+                    <div v-else class="contact-rows">
+                        <div v-for="entry in cloudPhoneAccounts" :key="entry.account_id" class="contact-row" style="flex-wrap:wrap;">
+                            <span class="account-face"><app-icon name="cloud" :size="18"></app-icon></span>
+                            <span class="contact-main">
+                                <strong>{{ accountDisplayName(accounts.find(a => a.account_id === entry.account_id) || { account_id: entry.account_id }) }}</strong>
+                                <small class="mono">{{ entry.account_id }}</small>
+                                <small>Fields: {{ entry.fields.join(', ') || 'none' }}<span v-if="entry.updated_at"> · Updated {{ formatTime(entry.updated_at) }}</span></small>
+                                <small v-if="entry.has_otp && recovery.otp[entry.account_id]" class="mono" style="color:var(--accent);font-size:14px;">
+                                    OTP {{ recovery.otp[entry.account_id].code }} · {{ recovery.otp[entry.account_id].seconds_remaining }}s
+                                </small>
+                            </span>
+                            <span class="account-tools" style="margin:0;flex-wrap:wrap;">
+                                <button v-if="entry.has_otp" class="btn btn-sm btn-outline" @click="generateRecoveryOtp(entry.account_id)">Show OTP</button>
+                                <button class="btn btn-sm btn-outline" @click="recovery.editing = entry.account_id; recovery.form = { login_email: '', email_password: '', twofa_password: '', otp_secret: '', backup_codes: '', note: '' }">Add details</button>
+                                <button class="btn btn-sm btn-danger" @click="deleteRecovery(entry.account_id)">Delete</button>
+                            </span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Proxies -->
             <div v-show="tab === 'proxies'">
                 <div class="card">
@@ -1536,9 +1779,19 @@
                         <h3>Global proxy</h3>
                     </div>
                     <p style="color: var(--text-dim); margin-bottom: 12px;">Free global proxy discovery is enabled by default. Only a tested proxy is saved; existing and per-account settings take priority. Public proxies may be unavailable. Removing the global proxy disables automatic discovery.</p>
-                    <button class="btn btn-outline" @click="findFreeGlobalProxy" :disabled="testing || !!globalProxy?.host">
-                        {{ testing ? 'Checking free proxies...' : 'Find free global proxy' }}
-                    </button>
+                    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:end;">
+                        <button class="btn btn-outline" @click="findFreeGlobalProxy" :disabled="testing || !!globalProxy?.host">
+                            {{ testing ? 'Checking free proxies...' : 'Find free global proxy' }}
+                        </button>
+                        <div class="form-group" style="margin:0;max-width:120px;">
+                            <label>Extra free proxies</label>
+                            <input class="form-control" type="number" min="1" max="10" v-model.number="freeProxies.count">
+                        </div>
+                        <button class="btn btn-outline" @click="importFreeProxies" :disabled="freeProxies.loading">
+                            {{ freeProxies.loading ? 'Testing candidates…' : 'Import verified proxies' }}
+                        </button>
+                    </div>
+                    <p class="muted small" style="margin-top:8px;">Each candidate is tested before it is saved. Public proxies are unreliable and are used only when selected for an account.</p>
                     <div v-if="globalProxy && globalProxy.host" class="proxy-item">
                         <div class="proxy-info">
                             <h4>{{ globalProxy.protocol.toUpperCase() }}</h4>
@@ -1866,11 +2119,27 @@
                                     <h4 style="margin-bottom: 4px;">{{ tpl.name }} <span v-if="tpl.category" class="badge badge-info">{{ tpl.category }}</span></h4>
                                 </div>
                                 <div class="proxy-actions">
+                                    <button class="btn btn-sm btn-outline" @click="startTemplateEdit(tpl)">Edit</button>
+                                    <button class="btn btn-sm btn-outline" @click="rewriteTemplateWithAi(tpl)" :disabled="templateAiBusy === (tpl.template_id || tpl.id)" :title="'Regenerate with AI'">
+                                        <app-icon name="sparkles" :size="14"></app-icon>
+                                        {{ templateAiBusy === (tpl.template_id || tpl.id) ? '…' : 'AI' }}
+                                    </button>
                                     <button class="btn btn-sm btn-outline" @click="copyTemplate(tpl)">Copy</button>
                                     <button class="btn btn-sm btn-danger" @click="deleteTemplate(templates.indexOf(tpl))">Delete</button>
                                 </div>
                             </div>
-                            <div style="background: rgba(0,0,0,0.2); padding: 12px; border-radius: 8px; width: 100%; font-size: 13px; white-space: pre-wrap;">{{ tpl.content }}</div>
+                            <div v-if="templateEdit.id === (tpl.template_id || tpl.id)" class="template-editor" style="display:grid;gap:8px;">
+                                <input v-model="templateEdit.name" class="form-control" placeholder="Template name" maxlength="120">
+                                <textarea v-model="templateEdit.content" class="template-editor" rows="4" maxlength="8000"></textarea>
+                                <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                                    <button class="btn btn-sm btn-primary" @click="saveTemplateEdit" :disabled="templateEdit.busy">{{ templateEdit.busy ? 'Saving…' : 'Save' }}</button>
+                                    <button class="btn btn-sm btn-outline" @click="rewriteTemplateWithAi(tpl)" :disabled="templateAiBusy === (tpl.template_id || tpl.id)">
+                                        <app-icon name="sparkles" :size="14"></app-icon> Regenerate
+                                    </button>
+                                    <button class="btn btn-sm btn-outline" @click="cancelTemplateEdit">Cancel</button>
+                                </div>
+                            </div>
+                            <div v-else style="background: rgba(0,0,0,0.2); padding: 12px; border-radius: 8px; width: 100%; font-size: 13px; white-space: pre-wrap;">{{ tpl.content }}</div>
                         </div>
                         <!-- Template pages -->
                         <div v-if="templates.length > templatePageSize" style="display: flex; justify-content: center; align-items: center; gap: 15px; margin-top: 20px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.1);">
@@ -1999,10 +2268,17 @@
                             <input class="form-control" type="number" v-model.number="scraper.limit" min="1" max="10000">
                         </div>
                         <div class="form-group" style="flex:1;">
+                            <label>Admins</label>
+                            <select class="form-control" v-model="scraper.adminFilter">
+                                <option value="include">Include admins</option>
+                                <option value="exclude">Exclude admins</option>
+                            </select>
+                        </div>
+                        <div class="form-group" style="flex:1;">
                             <label>Filter Bots</label>
                             <select class="form-control" v-model="scraper.filterBots">
-                                <option :value="true">Yes</option>
-                                <option :value="false">No</option>
+                                <option :value="true">Exclude bots</option>
+                                <option :value="false">Include bots</option>
                             </select>
                         </div>
                     </div>
@@ -2266,6 +2542,27 @@
                         <textarea class="form-control" v-model="bulksend.targets" @input="bulksend.messages = {}" rows="5" placeholder="user1&#10;user2&#10;@username3"></textarea>
                     </div>
                     <div class="form-group">
+                        <label>Auto-detect contacts (check to add before sending)</label>
+                        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
+                            <button class="btn btn-sm btn-outline" @click="loadBulkContacts" :disabled="bulkContacts.loading">{{ bulkContacts.loading ? 'Loading contacts…' : 'Load contacts' }}</button>
+                            <button v-if="bulkContacts.list.length" class="btn btn-sm btn-outline" @click="bulkContacts.selected = bulkContacts.list.map(c => c.username)">Select all</button>
+                            <button v-if="bulkContacts.selected.length" class="btn btn-sm btn-outline" @click="bulkContacts.selected = []">Clear selection</button>
+                            <button v-if="bulkContacts.selected.length" class="btn btn-sm btn-primary" @click="useBulkContacts">Add {{ bulkContacts.selected.length }} to recipients</button>
+                        </div>
+                        <p v-if="bulkContacts.error" class="small" style="color:var(--danger);">{{ bulkContacts.error }}</p>
+                        <div v-if="bulkContacts.list.length" style="display:grid;gap:6px;max-height:220px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:8px;">
+                            <label v-for="contact in bulkContacts.list" :key="contact.id" style="display:flex;align-items:center;gap:10px;padding:4px;">
+                                <input type="checkbox" :checked="bulkContacts.selected.includes(contact.username)" @change="toggleBulkContact(contact)">
+                                <span style="flex:1;min-width:0;">
+                                    <strong style="font-size:12.5px;">{{ [contact.first_name, contact.last_name].filter(Boolean).join(' ') || contact.username }}</strong>
+                                    <small class="muted" style="margin-left:6px;">@{{ contact.username }}</small>
+                                </span>
+                                <span v-if="contact.last_seen" class="small muted">{{ formatTime(contact.last_seen) }}</span>
+                            </label>
+                        </div>
+                        <small>Uses the selected sender account's Telegram contacts. Activity and consent checks still apply when the job runs.</small>
+                    </div>
+                    <div class="form-group">
                         <label>Import recipients and messages from CSV</label>
                         <input type="file" accept=".csv,text/csv" @change="importRecipientCSV($event, 'bulksend')" :disabled="bulksend.loading">
                         <small>Headers: recipient (or username/id), optional message. No recipient count cap. A message-only CSV can contain one message row.</small>
@@ -2511,6 +2808,9 @@
                 <div class="settings-tabs">
                     <div class="settings-tab" :class="{active: settings.tab==='profile'}" @click="settings.tab='profile'">Profile</div>
                     <div class="settings-tab" :class="{active: settings.tab==='security'}" @click="settings.tab='security'">Security</div>
+                    <div class="settings-tab" :class="{active: settings.tab==='connections'}" @click="settings.tab='connections'; loadMfaFactors()">Connections</div>
+                    <div class="settings-tab" :class="{active: settings.tab==='ai'}" @click="settings.tab='ai'; loadAiSettings()">AI providers</div>
+                    <div class="settings-tab" :class="{active: settings.tab==='notifications'}" @click="settings.tab='notifications'; loadNotificationSettings()">Notifications</div>
                 </div>
 
                 <div v-show="settings.tab==='profile'">
@@ -2540,6 +2840,107 @@
                     </div>
                     <button class="btn btn-primary" @click="changePassword" :disabled="settings.savingPassword">{{ settings.savingPassword ? 'Updating…' : 'Change password' }}</button>
                     <p class="muted small" style="margin-top:10px;">Changes your sign-in password immediately. If it fails, sign out and in again, then retry.</p>
+                </div>
+
+                <div v-show="settings.tab==='connections'">
+                    <div class="settings-field">
+                        <label>Google sign-in</label>
+                        <div class="readonly-box">
+                            <span>{{ providerIdentity('google') ? 'Connected as ' + providerIdentity('google').identity_data?.email : 'Not connected' }}</span>
+                            <button v-if="providerIdentity('google')" class="btn btn-sm btn-outline" @click="disconnectIdentity('google')">Disconnect</button>
+                            <button v-else class="btn btn-sm btn-primary" @click="connectIdentity('google')">Connect</button>
+                        </div>
+                    </div>
+                    <div class="settings-field">
+                        <label>GitHub sign-in</label>
+                        <div class="readonly-box">
+                            <span>{{ providerIdentity('github') ? 'Connected as ' + (providerIdentity('github').identity_data?.preferred_username || providerIdentity('github').identity_data?.email) : 'Not connected' }}</span>
+                            <button v-if="providerIdentity('github')" class="btn btn-sm btn-outline" @click="disconnectIdentity('github')">Disconnect</button>
+                            <button v-else class="btn btn-sm btn-primary" @click="connectIdentity('github')">Connect</button>
+                        </div>
+                    </div>
+                    <p class="muted small" style="margin:10px 0 16px;">Google and GitHub must be enabled in your Supabase project's auth providers. If connecting returns an error, enable the provider there first.</p>
+                    <div class="settings-field">
+                        <label>Two-factor authentication (authenticator app)</label>
+                        <div class="readonly-box">
+                            <span>{{ mfa.factors.length ? 'Enabled · ' + mfa.factors.length + ' authenticator' : 'Not enabled' }}</span>
+                        </div>
+                    </div>
+                    <div v-if="mfa.factor" style="display:grid;gap:10px;margin-bottom:12px;">
+                        <p class="muted small">Scan this with your authenticator app, then enter the 6-digit code.</p>
+                        <img v-if="mfa.factor.qr" :src="mfa.factor.qr" alt="Authenticator QR code" style="width:170px;height:170px;background:#fff;padding:8px;border-radius:8px;">
+                        <div class="readonly-box"><span class="mono">{{ mfa.factor.secret }}</span></div>
+                        <input v-model="mfa.code" class="form-control" inputmode="numeric" maxlength="6" placeholder="123456" style="max-width:160px;">
+                        <p v-if="mfa.error" class="small" style="color:var(--danger);">{{ mfa.error }}</p>
+                        <div style="display:flex;gap:8px;">
+                            <button class="btn btn-primary btn-sm" @click="verifyMfaEnroll" :disabled="mfa.verifying">{{ mfa.verifying ? 'Verifying…' : 'Enable 2FA' }}</button>
+                            <button class="btn btn-outline btn-sm" @click="cancelMfaEnroll">Cancel</button>
+                        </div>
+                    </div>
+                    <button v-else-if="!mfa.factors.length" class="btn btn-primary" @click="startMfaEnroll" :disabled="mfa.enrolling">{{ mfa.enrolling ? 'Starting…' : 'Set up 2FA' }}</button>
+                    <p v-if="mfa.error && !mfa.factor" class="small" style="color:var(--danger);">{{ mfa.error }}</p>
+                    <p class="muted small" style="margin-top:12px;">Passkeys are not offered yet: Supabase Auth does not expose WebAuthn enrollment. Use an authenticator app for now.</p>
+                </div>
+
+                <div v-show="settings.tab==='ai'">
+                    <p v-if="ai.error" class="small" style="color:var(--danger);margin-bottom:10px;">{{ ai.error }}</p>
+                    <p v-if="ai.message" class="small" style="color:var(--accent);margin-bottom:10px;">{{ ai.message }}</p>
+                    <div class="settings-field">
+                        <label>Provider</label>
+                        <select v-model="ai.provider" class="form-control" @change="applyProviderPreset">
+                            <option v-for="provider in ai.providers" :key="provider.id" :value="provider.id">{{ provider.label }}</option>
+                        </select>
+                    </div>
+                    <div class="settings-field">
+                        <label>Base URL</label>
+                        <input v-model="ai.baseUrl" placeholder="https://open-connect.site/v1" autocomplete="off">
+                    </div>
+                    <div class="settings-field">
+                        <label>Model</label>
+                        <input v-model="ai.model" placeholder="open-connect/auto" autocomplete="off">
+                    </div>
+                    <div class="settings-field">
+                        <label>API key {{ ai.hasKey ? '(stored · paste to replace)' : '' }}</label>
+                        <input v-model="ai.apiKey" type="password" autocomplete="new-password" placeholder="Write-only; never returned by the server">
+                    </div>
+                    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                        <button class="btn btn-primary" @click="saveAiSettings" :disabled="ai.saving">{{ ai.saving ? 'Saving…' : 'Save provider' }}</button>
+                        <button class="btn btn-outline" @click="testAiProvider" :disabled="ai.testing">{{ ai.testing ? 'Testing…' : 'Test connection' }}</button>
+                        <button v-if="ai.hasKey" class="btn btn-outline" @click="clearAiKey">Remove key</button>
+                    </div>
+                    <p class="muted small" style="margin-top:10px;">Keys are encrypted with SESSION_ENCRYPTION_KEY and are write-only. The template AI button and Copilot drafting use the saved provider.</p>
+                </div>
+
+                <div v-show="settings.tab==='notifications'">
+                    <div class="toggle-row" style="padding-top:0;">
+                        <div><strong style="font-size:13px;">Telegram notifications</strong><p class="muted small" style="margin-top:2px;">Send job and factory alerts to a personal chat, group or forum topic.</p></div>
+                        <button class="toggle" :class="{ on: notificationSettings.enabled }" role="switch" :aria-checked="notificationSettings.enabled ? 'true' : 'false'" @click="notificationSettings.enabled = !notificationSettings.enabled"></button>
+                    </div>
+                    <div class="settings-field">
+                        <label>Bot token {{ notificationSettings.hasToken ? '(stored · paste to replace)' : '' }}</label>
+                        <input v-model="notificationSettings.token" type="password" autocomplete="new-password" placeholder="123456:ABC…">
+                    </div>
+                    <div class="settings-field">
+                        <label>Chat ID</label>
+                        <input v-model="notificationSettings.chatId" placeholder="Your user ID, @channelname or -100… group ID">
+                    </div>
+                    <div class="settings-field">
+                        <label>Topic ID (optional)</label>
+                        <input v-model="notificationSettings.topicId" placeholder="Forum topic message_thread_id">
+                    </div>
+                    <div class="form-group" style="text-align:left;">
+                        <label>Events</label>
+                        <div style="display:grid;gap:6px;">
+                            <label v-for="event in notificationSettings.catalog" :key="event[0]" style="display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--text-secondary);">
+                                <input type="checkbox" :value="event[0]" v-model="notificationSettings.events"> {{ event[1] }}
+                            </label>
+                        </div>
+                    </div>
+                    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                        <button class="btn btn-primary" @click="saveNotificationSettings" :disabled="notificationSettings.saving">{{ notificationSettings.saving ? 'Saving…' : 'Save notifications' }}</button>
+                        <button class="btn btn-outline" @click="sendTestNotification" :disabled="notificationSettings.testing || !notificationSettings.hasToken">{{ notificationSettings.testing ? 'Sending…' : 'Send test' }}</button>
+                    </div>
+                    <p class="muted small" style="margin-top:10px;">Add the bot to the target group or topic first. Notifications are fire-and-forget and never block a job.</p>
                 </div>
 
                 <div class="panel-foot" style="margin-top:22px;">
@@ -3123,7 +3524,12 @@
             clock: '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
             check: '<path d="M20 6L9 17l-5-5"/>',
             phone: '<path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92z"/>',
-            qr: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3h-3zM20 14h1M14 20h1M18 18h3v3h-3"/>'
+            qr: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3h-3zM20 14h1M14 20h1M18 18h3v3h-3"/>',
+            bell: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>',
+            contact: '<rect x="2" y="4" width="20" height="16" rx="2"/><circle cx="8.5" cy="10" r="2.5"/><path d="M4.5 18a4 4 0 0 1 8 0"/><path d="M15 9h5M15 13h5M15 17h3"/>',
+            cloud: '<path d="M18 18H7a5 5 0 1 1 1.2-9.86A6 6 0 0 1 19.7 10.4 4 4 0 0 1 18 18z"/><path d="M12 12v6M9.5 15.5L12 18l2.5-2.5"/>',
+            sparkles: '<path d="M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z"/><path d="M19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9z"/>',
+            image: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/>'
         }
         const AppIcon = {
             props: { name: { type: String, default: 'dashboard' }, size: { type: [Number, String], default: 18 } },
@@ -3169,6 +3575,43 @@
                     tab: 'overview',
                     sidebarCollapsed: false,
                     sidebarOpen: false,
+                    sidebarWidth: 248,
+                    notificationsOpen: false,
+                    inbox: [],
+                    inboxLoading: false,
+                    inboxError: '',
+                    inboxLastRead: '',
+                    expandedAccounts: {},
+                    accountPhotos: {},
+                    accountSessions: {},
+                    accountSessionsLoading: {},
+                    accountSessionsError: {},
+                    contacts: {
+                        accountId: '', query: '', loading: false, list: [], error: '', busy: '',
+                        newUser: '', newFirstName: '', newLastName: '', newPhone: '', importText: '', importFile: '',
+                    },
+                    recovery: {
+                        loading: false, list: [], error: '', busy: '',
+                        editing: '', form: { login_email: '', email_password: '', twofa_password: '', otp_secret: '', backup_codes: '', note: '' },
+                        otp: {},
+                    },
+                    ai: {
+                        loading: false, providers: [], provider: 'open_connect', baseUrl: '', model: '', apiKey: '',
+                        hasKey: false, keyHint: '', testing: false, saving: false, error: '', message: '',
+                    },
+                    notificationSettings: {
+                        loading: false, enabled: false, chatId: '', topicId: '', token: '', hasToken: false, tokenHint: '',
+                        events: [], catalog: [], saving: false, testing: false,
+                    },
+                    integrations: {
+                        loading: false, list: [], suggested: [], error: '', busy: '', form: { name: '', url: '', transport: 'http', token: '' },
+                    },
+                    features: { loading: false, automation_enabled: true, factory_enabled: true, saving: '' },
+                    freeProxies: { count: 5, loading: false },
+                    templateEdit: { id: '', name: '', content: '', busy: false },
+                    templateAiBusy: '',
+                    bulkContacts: { loading: false, list: [], selected: [], error: '' },
+                    mfa: { enrolling: false, factor: null, code: '', error: '', verifying: false, factors: [] },
                     navGroups: [
                         {
                             label: 'Workspace',
@@ -3201,6 +3644,8 @@
                             label: 'Accounts',
                             items: [
                                 { tab: 'accounts', label: 'Accounts', icon: 'users', badge: 'accounts' },
+                                { tab: 'contacts', label: 'Contacts', icon: 'contact' },
+                                { tab: 'cloudphone', label: 'Cloud Phone', icon: 'cloud' },
                                 { tab: 'proxies', label: 'Proxies', icon: 'globe' }
                             ]
                         },
@@ -3487,6 +3932,7 @@
                         target: '',
                         limit: 200,
                         filterBots: true,
+                        adminFilter: 'include',
                         activityFilter: 'all',
                         summary: '',
                         loading: false,
@@ -3495,7 +3941,7 @@
                     channelScraper: {
                         accountId: '',
                         keywords: '',
-                        country: '',
+                        country: 'Philippines',
                         groupType: 'all',
                         limit: 100,
                         summary: '',
@@ -3522,6 +3968,7 @@
                         destTarget: '',
                         filterBots: true,
                         activityFilter: 'all',
+                        detectedSelected: [],
                         usernames: '',
                         delay: 35,
                         loading: false,
@@ -3552,6 +3999,7 @@
                         consentConfirmed: false,
                         message: '',
                         targets: '',
+                        detectedSelected: [],
                         delay: 0,
                         loading: false,
                         resultMsg: '',
@@ -3599,6 +4047,8 @@
                         factory: ['Account Factory', 'Buy a number, register, import and record the account.'],
                         integrations: ['Integrations', 'n8n, MCP and the credentials that connect them.'],
                         accounts: ['Accounts', 'Telegram accounts connected to this workspace.'],
+                        contacts: ['Contacts', 'Per-account contact lists with CSV import and export.'],
+                        cloudphone: ['Cloud Phone', 'Encrypted recovery records for numbers and logins.'],
                         proxies: ['Proxies', 'Global and per-account connection routing.'],
                         health: ['Health', 'Connection risk and account reliability.'],
                         stats: ['Stats', 'Usage across messages and accounts.'],
@@ -3667,6 +4117,18 @@
                     return base.replace(/\/$/, '') + '/mcp'
                 },
                 supabaseUrl() { return (window.OPEN_TELESET_CONFIG?.supabaseUrl || '').replace(/\/$/, '') },
+                unreadNotifications() {
+                    if (!this.inboxLastRead) return this.inbox.length
+                    const cutoff = Date.parse(this.inboxLastRead)
+                    if (Number.isNaN(cutoff)) return this.inbox.length
+                    return this.inbox.filter(item => Date.parse(item.time) > cutoff).length
+                },
+                activeContactsAccount() {
+                    return this.accounts.find(a => a.account_id === this.contacts.accountId)
+                },
+                cloudPhoneAccounts() {
+                    return this.recovery.list.slice().sort((a, b) => String(a.account_id).localeCompare(String(b.account_id)))
+                },
                 onlineCount() { return this.accounts.filter(a => a.status === 'online').length },
                 offlineCount() { return this.accounts.filter(a => a.status !== 'online').length },
                 currentYear() { return new Date().getFullYear() },
@@ -3731,7 +4193,9 @@
                     }
                     if (tab === 'copilot') this.loadCopilot()
                     if (tab === 'tasks') this.loadOutreachJobs()
-                    if (tab === 'integrations') this.loadWebhooks()
+                    if (tab === 'integrations') { this.loadWebhooks(); this.loadIntegrations(); this.loadAiSettings(); this.loadFeatures() }
+                    if (tab === 'contacts') { if (!this.contacts.accountId && this.accounts.length) this.contacts.accountId = this.accounts[0].account_id; this.loadContacts() }
+                    if (tab === 'cloudphone') this.loadRecovery()
                     if (tab === 'scraper' || tab === 'adder') this.loadGroups(tab)
                     if (tab === 'schedule') this.loadSchedules()
                     if (tab === 'logs') this.loadLogs()
@@ -3748,7 +4212,9 @@
                     this.loadSchedules()
                     this.loadLogs()
                     this.loadOutreachJobs()
-                    if (this.tab === 'integrations') this.loadWebhooks()
+                    if (this.tab === 'integrations') { this.loadWebhooks(); this.loadIntegrations(); this.loadAiSettings(); this.loadFeatures() }
+                    if (this.tab === 'contacts') this.loadContacts()
+                    if (this.tab === 'cloudphone') this.loadRecovery()
                     if (this.tab === 'scraper' || this.tab === 'adder') this.loadGroups(this.tab)
                     if (['overview', 'tasks', 'automation', 'factory'].includes(this.tab)) this.loadAutomationStatus()
                     this.showToast('Refreshed.')
@@ -3938,6 +4404,7 @@
                             target: this.scraper.target,
                             limit: this.scraper.limit,
                             filter_bots: this.scraper.filterBots,
+                            admin_filter: this.scraper.adminFilter,
                             activity_filter: this.scraper.activityFilter,
                         }, {timeout: 90000});
                         this.scraper.results = res.data.members || [];
@@ -4631,11 +5098,14 @@
                 openSettings(tab = 'profile') {
                     this.userMenuOpen = false
                     this.settings.show = true
-                    this.settings.tab = tab === 'security' ? 'security' : 'profile'
+                    this.settings.tab = ['security', 'connections', 'ai', 'notifications'].includes(tab) ? tab : 'profile'
                     this.settings.displayName = this.userProfile.display_name || this.user?.user_metadata?.display_name || ''
                     this.settings.pwNew = ''; this.settings.pwConfirm = ''; this.settings.copied = ''
                     this.apiKeys.created = null; this.apiKeys.newName = ''
                     this.loadApiKeys()
+                    if (this.settings.tab === 'ai') this.loadAiSettings()
+                    if (this.settings.tab === 'notifications') this.loadNotificationSettings()
+                    if (this.settings.tab === 'connections') this.loadMfaFactors()
                 },
                 async loadApiKeys() {
                     this.apiKeys.loading = true
@@ -4709,6 +5179,83 @@
                         this.settings.savingPassword = false
                     }
                 },
+                providerIdentity(provider) {
+                    return (this.user?.identities || []).find(identity => identity.provider === provider)
+                },
+                async connectIdentity(provider) {
+                    try {
+                        const { error } = await _supabase.auth.linkIdentity({
+                            provider,
+                            options: { redirectTo: window.location.href },
+                        })
+                        if (error) throw error
+                    } catch (e) {
+                        this.showToast(e.message || `Could not start ${provider} sign-in. Enable it in Supabase first.`, true)
+                    }
+                },
+                async disconnectIdentity(provider) {
+                    const identity = this.providerIdentity(provider)
+                    if (!identity || !window.confirm(`Disconnect ${provider} sign-in?`)) return
+                    try {
+                        const { error } = await _supabase.auth.unlinkIdentity(identity)
+                        if (error) throw error
+                        this.showToast(`${provider} disconnected.`)
+                    } catch (e) {
+                        this.showToast(e.message || 'Could not disconnect that provider. Keep at least one sign-in method.', true)
+                    }
+                },
+                async loadMfaFactors() {
+                    try {
+                        const { data, error } = await _supabase.auth.mfa.listFactors()
+                        if (error) throw error
+                        this.mfa.factors = (data?.totp || []).filter(factor => factor.status === 'verified')
+                    } catch (e) {
+                        this.mfa.factors = []
+                    }
+                },
+                async startMfaEnroll() {
+                    if (this.mfa.enrolling) return
+                    this.mfa.enrolling = true
+                    this.mfa.error = ''
+                    try {
+                        const { data, error } = await _supabase.auth.mfa.enroll({ factorType: 'totp' })
+                        if (error) throw error
+                        this.mfa.factor = { id: data.id, qr: data.totp?.qr_code || '', secret: data.totp?.secret || '' }
+                    } catch (e) {
+                        this.mfa.error = e.message || 'Could not start 2FA enrollment. Enable MFA in Supabase first.'
+                    } finally {
+                        this.mfa.enrolling = false
+                    }
+                },
+                async verifyMfaEnroll() {
+                    if (!this.mfa.factor || this.mfa.verifying) return
+                    if (!/^\d{6}$/.test(this.mfa.code.trim())) { this.showToast('Enter the 6-digit code from your authenticator app.', true); return }
+                    this.mfa.verifying = true
+                    this.mfa.error = ''
+                    try {
+                        const challenge = await _supabase.auth.mfa.challenge({ factorId: this.mfa.factor.id })
+                        if (challenge.error) throw challenge.error
+                        const { error } = await _supabase.auth.mfa.verify({
+                            factorId: this.mfa.factor.id,
+                            challengeId: challenge.data.id,
+                            code: this.mfa.code.trim(),
+                        })
+                        if (error) throw error
+                        this.mfa.factor = null
+                        this.mfa.code = ''
+                        this.showToast('Two-factor authentication enabled.')
+                        await this.loadMfaFactors()
+                    } catch (e) {
+                        this.mfa.error = e.message || 'That code was not accepted.'
+                    } finally {
+                        this.mfa.verifying = false
+                    }
+                },
+                cancelMfaEnroll() {
+                    this.mfa.factor = null
+                    this.mfa.code = ''
+                    this.mfa.error = ''
+                },
                 async copyText(text, label) {
                     try {
                         await navigator.clipboard.writeText(text)
@@ -4747,6 +5294,7 @@
                     try {
                         const res = await _api.get('/api/accounts')
                         this.accounts = res.data.accounts || []
+                        this.accounts.forEach(account => this.loadAccountPhoto(account.account_id))
                     } catch (e) { console.error('API request failed') }
                 },
 
@@ -5187,6 +5735,619 @@
                     })
                 },
 
+                // ---- Layout: resizable sidebar ----
+                startSidebarResize(event) {
+                    if (typeof window === 'undefined' || window.innerWidth <= 1024) return
+                    const startX = event.clientX
+                    const startWidth = this.sidebarWidth
+                    const onMove = (moveEvent) => {
+                        this.sidebarWidth = Math.min(420, Math.max(196, startWidth + (moveEvent.clientX - startX)))
+                    }
+                    const onUp = () => {
+                        window.removeEventListener('pointermove', onMove)
+                        window.removeEventListener('pointerup', onUp)
+                        try { localStorage.setItem('ot_sidebar_width', String(this.sidebarWidth)) } catch (e) {}
+                    }
+                    window.addEventListener('pointermove', onMove)
+                    window.addEventListener('pointerup', onUp)
+                },
+                resetSidebarWidth() {
+                    this.sidebarWidth = 248
+                    try { localStorage.removeItem('ot_sidebar_width') } catch (e) {}
+                },
+                // ---- Activity inbox ----
+                toggleNotifications() {
+                    this.notificationsOpen = !this.notificationsOpen
+                    if (this.notificationsOpen) this.refreshInbox()
+                },
+                async refreshInbox() {
+                    if (this.inboxLoading) return
+                    this.inboxLoading = true
+                    this.inboxError = ''
+                    try {
+                        const { data } = await _api.get('/api/notifications/inbox', { params: { limit: 40 } })
+                        this.inbox = data.items || []
+                    } catch (e) {
+                        this.inboxError = e.response?.data?.detail || 'Could not load activity.'
+                    } finally {
+                        this.inboxLoading = false
+                    }
+                },
+                markInboxRead() {
+                    this.inboxLastRead = new Date().toISOString()
+                    try { localStorage.setItem('ot_inbox_read', this.inboxLastRead) } catch (e) {}
+                },
+                // ---- Account cards ----
+                toggleAccountCard(id) {
+                    this.expandedAccounts = { ...this.expandedAccounts, [id]: !this.expandedAccounts[id] }
+                },
+                accountDisplayName(acc) {
+                    const name = [acc.first_name, acc.last_name].filter(Boolean).join(' ')
+                    if (name) return name
+                    if (acc.username && acc.username !== 'N/A') return '@' + acc.username
+                    return 'Telegram account'
+                },
+                accountInitials(acc) {
+                    const name = this.accountDisplayName(acc).replace(/^@/, '')
+                    const parts = name.split(/\s+/).filter(Boolean)
+                    const letters = parts.length >= 2 ? parts[0][0] + parts[1][0] : name.slice(0, 2)
+                    return (letters || '?').toUpperCase()
+                },
+                shortAccountId(id) {
+                    const value = String(id || '')
+                    return value.length > 14 ? value.slice(0, 8) + '…' + value.slice(-4) : value
+                },
+                async loadAccountPhoto(id) {
+                    if (!id || this.accountPhotos[id]) return
+                    try {
+                        const response = await _api.get(`/api/accounts/${encodeURIComponent(id)}/photo`, { responseType: 'blob', timeout: 30000 })
+                        if (response.data && response.data.size) this.accountPhotos[id] = URL.createObjectURL(response.data)
+                    } catch (e) {
+                        // Accounts without a photo return 404; the initials fallback stays.
+                    }
+                },
+                forgetAccountPhoto(id) {
+                    if (this.accountPhotos[id]) {
+                        try { URL.revokeObjectURL(this.accountPhotos[id]) } catch (e) {}
+                        const next = { ...this.accountPhotos }
+                        delete next[id]
+                        this.accountPhotos = next
+                    }
+                },
+                async uploadAccountPhoto(acc, event) {
+                    const file = event.target.files?.[0]
+                    event.target.value = ''
+                    if (!file) return
+                    if (file.size > 5 * 1024 * 1024) { this.showToast('Profile photo must be 5 MB or smaller.', true); return }
+                    const body = new FormData()
+                    body.append('photo', file)
+                    try {
+                        await _api.post(`/api/accounts/${encodeURIComponent(acc.account_id)}/photo`, body, { timeout: 45000 })
+                        this.forgetAccountPhoto(acc.account_id)
+                        await this.loadAccountPhoto(acc.account_id)
+                        this.showToast('Profile photo updated.')
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not upload the photo.', true)
+                    }
+                },
+                async loadAccountSessions(id, force = false) {
+                    if (this.accountSessionsLoading[id]) return
+                    if (this.accountSessions[id] && !force) {
+                        const next = { ...this.accountSessions }
+                        delete next[id]
+                        this.accountSessions = next
+                        return
+                    }
+                    this.accountSessionsLoading = { ...this.accountSessionsLoading, [id]: true }
+                    this.accountSessionsError = { ...this.accountSessionsError, [id]: '' }
+                    try {
+                        const { data } = await _api.get(`/api/accounts/${encodeURIComponent(id)}/sessions`, { timeout: 45000 })
+                        this.accountSessions = { ...this.accountSessions, [id]: data.sessions || [] }
+                    } catch (e) {
+                        this.accountSessionsError = { ...this.accountSessionsError, [id]: e.response?.data?.detail || 'Could not load login activity.' }
+                    } finally {
+                        this.accountSessionsLoading = { ...this.accountSessionsLoading, [id]: false }
+                    }
+                },
+                async revokeAccountSession(id, hash) {
+                    if (!window.confirm('Sign out this Telegram session?')) return
+                    try {
+                        await _api.post(`/api/accounts/${encodeURIComponent(id)}/sessions/revoke`, { hash }, { timeout: 45000 })
+                        this.showToast('Session signed out.')
+                        await this.loadAccountSessions(id, true)
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not sign out that session.', true)
+                    }
+                },
+                openContactsFor(id) {
+                    this.contacts.accountId = id
+                    this.go('contacts')
+                },
+                // ---- Contacts ----
+                async loadContacts() {
+                    if (!this.contacts.accountId) {
+                        this.contacts.list = []
+                        return
+                    }
+                    this.contacts.loading = true
+                    this.contacts.error = ''
+                    try {
+                        const { data } = await _api.get(`/api/accounts/${encodeURIComponent(this.contacts.accountId)}/contacts`, {
+                            params: this.contacts.query ? { q: this.contacts.query } : {}, timeout: 60000,
+                        })
+                        this.contacts.list = data.contacts || []
+                    } catch (e) {
+                        this.contacts.error = e.response?.data?.detail || 'Could not load contacts for this account.'
+                    } finally {
+                        this.contacts.loading = false
+                    }
+                },
+                async addContact() {
+                    if (!this.contacts.accountId || this.contacts.busy) return
+                    if (!this.contacts.newPhone.trim()) { this.showToast('Enter a phone number with country code.', true); return }
+                    this.contacts.busy = 'add'
+                    try {
+                        const { data } = await _api.post(`/api/accounts/${encodeURIComponent(this.contacts.accountId)}/contacts`, {
+                            phone: this.contacts.newPhone.trim(),
+                            first_name: this.contacts.newFirstName.trim(),
+                            last_name: this.contacts.newLastName.trim(),
+                        }, { timeout: 45000 })
+                        if (!data.success) throw new Error('Telegram did not import that number. Check it and try again.')
+                        this.contacts.newUser = this.contacts.newPhone = this.contacts.newFirstName = this.contacts.newLastName = ''
+                        this.showToast('Contact added.')
+                        await this.loadContacts()
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || e.message || 'Could not add the contact.', true)
+                    } finally {
+                        this.contacts.busy = ''
+                    }
+                },
+                async importContactCSV(event) {
+                    const file = event.target.files?.[0]
+                    event.target.value = ''
+                    if (!file || !this.contacts.accountId) return
+                    try {
+                        if (file.size > 2 * 1024 * 1024) throw new Error('CSV must be at most 2 MB.')
+                        const rows = OpenTelesetCSV.parse(await file.text())
+                        if (!rows.length) throw new Error('CSV is empty.')
+                        const headers = rows.shift().map(value => value.trim().toLowerCase())
+                        const phoneIndex = headers.indexOf('phone')
+                        if (phoneIndex < 0) throw new Error('Use a phone header (optional first_name and last_name).')
+                        const contacts = rows.map(row => ({
+                            phone: (row[phoneIndex] || '').trim(),
+                            first_name: headers.indexOf('first_name') >= 0 ? (row[headers.indexOf('first_name')] || '').trim() : '',
+                            last_name: headers.indexOf('last_name') >= 0 ? (row[headers.indexOf('last_name')] || '').trim() : '',
+                        })).filter(contact => contact.phone)
+                        if (!contacts.length) throw new Error('No rows with a phone number were found.')
+                        if (contacts.length > 2000) throw new Error('Import at most 2000 contacts per file.')
+                        this.contacts.busy = 'import'
+                        const { data } = await _api.post(`/api/accounts/${encodeURIComponent(this.contacts.accountId)}/contacts/import`, { contacts }, { timeout: 120000 })
+                        this.showToast(`Imported ${data.imported || 0} of ${data.total || contacts.length} contacts.`)
+                        await this.loadContacts()
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || e.message || 'Could not import that file.', true)
+                    } finally {
+                        this.contacts.busy = ''
+                    }
+                },
+                async deleteContact(contact) {
+                    if (!this.contacts.accountId || !window.confirm(`Delete ${contact.username || contact.first_name || contact.id} from contacts?`)) return
+                    try {
+                        await _api.delete(`/api/accounts/${encodeURIComponent(this.contacts.accountId)}/contacts/${contact.id}`, { timeout: 45000 })
+                        this.showToast('Contact deleted.')
+                        await this.loadContacts()
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not delete the contact.', true)
+                    }
+                },
+                async blockContact(contact) {
+                    if (!this.contacts.accountId) return
+                    try {
+                        await _api.post(`/api/accounts/${encodeURIComponent(this.contacts.accountId)}/contacts/${contact.id}/block`, { blocked: true }, { timeout: 45000 })
+                        this.showToast('Contact blocked.')
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not block the contact.', true)
+                    }
+                },
+                exportContacts() {
+                    if (!this.contacts.accountId) return
+                    _api.get(`/api/accounts/${encodeURIComponent(this.contacts.accountId)}/contacts/export`, { responseType: 'blob', timeout: 60000 })
+                        .then(response => {
+                            const url = URL.createObjectURL(response.data)
+                            const link = document.createElement('a')
+                            link.href = url
+                            link.download = 'telegram-contacts.csv'
+                            link.click()
+                            setTimeout(() => URL.revokeObjectURL(url), 1000)
+                        })
+                        .catch(e => this.showToast(e.response?.data?.detail || 'Could not export contacts.', true))
+                },
+                // ---- Cloud Phone recovery vault ----
+                async loadRecovery() {
+                    this.recovery.loading = true
+                    this.recovery.error = ''
+                    try {
+                        const { data } = await _api.get('/api/recovery')
+                        this.recovery.list = data.entries || []
+                        if (!data.encryption_ready) this.recovery.error = 'SESSION_ENCRYPTION_KEY is not set on the server, so recovery data cannot be saved yet.'
+                    } catch (e) {
+                        this.recovery.error = e.response?.data?.detail || 'Could not load recovery records.'
+                    } finally {
+                        this.recovery.loading = false
+                    }
+                },
+                startRecoveryEdit(entry) {
+                    this.recovery.editing = entry?.account_id || this.recovery.editing || ''
+                    if (entry) this.recovery.editing = entry.account_id
+                    this.recovery.form = { login_email: '', email_password: '', twofa_password: '', otp_secret: '', backup_codes: '', note: '' }
+                },
+                cancelRecoveryEdit() {
+                    this.recovery.editing = ''
+                    this.recovery.form = { login_email: '', email_password: '', twofa_password: '', otp_secret: '', backup_codes: '', note: '' }
+                },
+                async saveRecovery() {
+                    const accountId = (this.recovery.editing || '').trim()
+                    if (!accountId) { this.showToast('Choose the account this record belongs to.', true); return }
+                    if (!this.accounts.some(a => a.account_id === accountId)) { this.showToast('Pick an account that exists in this workspace.', true); return }
+                    const form = this.recovery.form
+                    if (!Object.values(form).some(value => String(value || '').trim())) { this.showToast('Fill at least one recovery field.', true); return }
+                    this.recovery.busy = accountId
+                    try {
+                        await _api.put(`/api/recovery/${encodeURIComponent(accountId)}`, {
+                            login_email: form.login_email, email_password: form.email_password,
+                            twofa_password: form.twofa_password, otp_secret: form.otp_secret,
+                            backup_codes: form.backup_codes, note: form.note, clear: [],
+                        }, { timeout: 45000 })
+                        this.showToast('Recovery record saved encrypted.')
+                        this.cancelRecoveryEdit()
+                        await this.loadRecovery()
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not save the recovery record.', true)
+                    } finally {
+                        this.recovery.busy = ''
+                    }
+                },
+                async deleteRecovery(accountId) {
+                    if (!window.confirm(`Delete the recovery record for ${accountId}?`)) return
+                    try {
+                        await _api.delete(`/api/recovery/${encodeURIComponent(accountId)}`)
+                        this.showToast('Recovery record deleted.')
+                        await this.loadRecovery()
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not delete the record.', true)
+                    }
+                },
+                async generateRecoveryOtp(accountId) {
+                    try {
+                        const { data } = await _api.post(`/api/recovery/${encodeURIComponent(accountId)}/otp`)
+                        this.recovery.otp = { ...this.recovery.otp, [accountId]: data }
+                        setTimeout(() => {
+                            const next = { ...this.recovery.otp }
+                            delete next[accountId]
+                            this.recovery.otp = next
+                        }, Math.max(5, Number(data.seconds_remaining) || 30) * 1000)
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not generate an OTP.', true)
+                    }
+                },
+                // ---- AI providers ----
+                async loadAiSettings() {
+                    this.ai.loading = true
+                    this.ai.error = ''
+                    try {
+                        const { data } = await _api.get('/api/ai/settings')
+                        this.ai.providers = data.providers || []
+                        this.ai.provider = data.provider || 'open_connect'
+                        this.ai.baseUrl = data.base_url || ''
+                        this.ai.model = data.model || ''
+                        this.ai.hasKey = !!data.has_key
+                        this.ai.keyHint = (data.configured_providers || []).join(', ')
+                        if (!data.encryption_ready) this.ai.error = 'SESSION_ENCRYPTION_KEY is not set; API keys cannot be stored yet.'
+                    } catch (e) {
+                        this.ai.error = e.response?.data?.detail || 'Could not load AI settings.'
+                    } finally {
+                        this.ai.loading = false
+                    }
+                },
+                applyProviderPreset() {
+                    const preset = this.ai.providers.find(item => item.id === this.ai.provider)
+                    if (preset) {
+                        this.ai.baseUrl = preset.base_url || ''
+                        this.ai.model = (preset.models && preset.models[0]) || ''
+                    } else {
+                        this.ai.baseUrl = ''
+                        this.ai.model = ''
+                    }
+                    this.ai.message = ''
+                },
+                async saveAiSettings() {
+                    if (this.ai.saving) return
+                    this.ai.saving = true
+                    this.ai.message = ''
+                    this.ai.error = ''
+                    try {
+                        const body = { provider: this.ai.provider, base_url: this.ai.baseUrl, model: this.ai.model }
+                        if (this.ai.apiKey.trim()) body.api_key = this.ai.apiKey.trim()
+                        const { data } = await _api.put('/api/ai/settings', body)
+                        this.ai.hasKey = !!data.has_key
+                        this.ai.keyHint = (data.configured_providers || []).join(', ')
+                        this.ai.apiKey = ''
+                        this.ai.message = 'AI provider saved.'
+                        this.showToast('AI provider saved.')
+                    } catch (e) {
+                        this.ai.error = e.response?.data?.detail || 'Could not save AI settings.'
+                    } finally {
+                        this.ai.saving = false
+                    }
+                },
+                async clearAiKey() {
+                    if (!window.confirm('Remove the stored API key for this provider?')) return
+                    try {
+                        await _api.put('/api/ai/settings', { provider: this.ai.provider, base_url: this.ai.baseUrl, model: this.ai.model, clear_key: true })
+                        this.ai.hasKey = false
+                        this.showToast('API key removed.')
+                        await this.loadAiSettings()
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not remove the key.', true)
+                    }
+                },
+                async testAiProvider() {
+                    if (this.ai.testing) return
+                    this.ai.testing = true
+                    this.ai.error = ''
+                    this.ai.message = ''
+                    try {
+                        const { data } = await _api.post('/api/ai/test', {
+                            provider: this.ai.provider, base_url: this.ai.baseUrl, model: this.ai.model,
+                            api_key: this.ai.apiKey.trim() || null,
+                        }, { timeout: 45000 })
+                        this.ai.message = data.detail || 'Provider accepted the key.'
+                    } catch (e) {
+                        this.ai.error = e.response?.data?.detail || 'Provider check failed.'
+                    } finally {
+                        this.ai.testing = false
+                    }
+                },
+                async rewriteTemplateWithAi(tpl) {
+                    const id = tpl.template_id || tpl.id
+                    if (!id || this.templateAiBusy) return
+                    this.templateAiBusy = id
+                    try {
+                        const { data } = await _api.post('/api/ai/rewrite', {
+                            text: this.templateEdit.id === id ? this.templateEdit.content : tpl.content,
+                            instruction: 'Make it concise, friendly and ready to send.',
+                        }, { timeout: 60000 })
+                        if (this.templateEdit.id === id) this.templateEdit.content = data.text
+                        await _api.put(`/api/templates/${encodeURIComponent(id)}`, { content: data.text })
+                        this.showToast('Template regenerated with AI.')
+                        await this.loadTemplates()
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'AI rewrite failed. Check Settings → AI providers.', true)
+                    } finally {
+                        this.templateAiBusy = ''
+                    }
+                },
+                // ---- Notification settings ----
+                async loadNotificationSettings() {
+                    this.notificationSettings.loading = true
+                    try {
+                        const { data } = await _api.get('/api/notifications/settings')
+                        this.notificationSettings.enabled = !!data.enabled
+                        this.notificationSettings.chatId = data.chat_id || ''
+                        this.notificationSettings.topicId = data.topic_id || ''
+                        this.notificationSettings.events = data.events || []
+                        this.notificationSettings.hasToken = !!data.has_token
+                        this.notificationSettings.catalog = [
+                            ['factory.run.accepted', 'Account Factory accepted a run'],
+                            ['factory.run.failed', 'Account Factory run failed'],
+                            ['join.job.completed', 'Auto Join finished'],
+                            ['join.job.failed', 'Auto Join finished with failures'],
+                            ['join.job.stopped', 'Auto Join stopped'],
+                            ['outreach.job.completed', 'Outreach job finished'],
+                            ['outreach.job.failed', 'Outreach job finished with failures'],
+                            ['outreach.job.stopped', 'Outreach job stopped'],
+                        ]
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not load notification settings.', true)
+                    } finally {
+                        this.notificationSettings.loading = false
+                    }
+                },
+                async saveNotificationSettings() {
+                    if (this.notificationSettings.saving) return
+                    this.notificationSettings.saving = true
+                    try {
+                        const body = {
+                            enabled: this.notificationSettings.enabled,
+                            chat_id: this.notificationSettings.chatId,
+                            topic_id: this.notificationSettings.topicId,
+                            events: this.notificationSettings.events,
+                        }
+                        if (this.notificationSettings.token.trim()) body.bot_token = this.notificationSettings.token.trim()
+                        const { data } = await _api.put('/api/notifications/settings', body)
+                        this.notificationSettings.hasToken = !!data.has_token
+                        this.notificationSettings.token = ''
+                        this.showToast('Notification settings saved.')
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not save notification settings.', true)
+                    } finally {
+                        this.notificationSettings.saving = false
+                    }
+                },
+                async sendTestNotification() {
+                    if (this.notificationSettings.testing) return
+                    this.notificationSettings.testing = true
+                    try {
+                        await _api.post('/api/notifications/test', {}, { timeout: 30000 })
+                        this.showToast('Test message sent to Telegram.')
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not send the test message.', true)
+                    } finally {
+                        this.notificationSettings.testing = false
+                    }
+                },
+                // ---- Integrations ----
+                async loadIntegrations() {
+                    this.integrations.loading = true
+                    this.integrations.error = ''
+                    try {
+                        const { data } = await _api.get('/api/integrations/mcp')
+                        this.integrations.list = data.integrations || []
+                        this.integrations.suggested = data.suggested || []
+                    } catch (e) {
+                        this.integrations.error = e.response?.data?.detail || 'Could not load integrations.'
+                    } finally {
+                        this.integrations.loading = false
+                    }
+                },
+                async saveIntegration() {
+                    if (this.integrations.busy) return
+                    if (!this.integrations.form.name.trim() || !this.integrations.form.url.trim()) {
+                        this.showToast('Name and URL are required.', true)
+                        return
+                    }
+                    this.integrations.busy = 'save'
+                    try {
+                        const body = { name: this.integrations.form.name.trim(), base_url: this.integrations.form.url.trim(), transport: this.integrations.form.transport }
+                        if (this.integrations.form.token.trim()) body.api_key = this.integrations.form.token.trim()
+                        await _api.put('/api/integrations/mcp', body)
+                        this.integrations.form = { name: '', url: '', transport: 'http', token: '' }
+                        this.showToast('Integration saved.')
+                        await this.loadIntegrations()
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not save the integration.', true)
+                    } finally {
+                        this.integrations.busy = ''
+                    }
+                },
+                async testIntegration(item) {
+                    if (this.integrations.busy) return
+                    this.integrations.busy = item.id
+                    try {
+                        const { data } = await _api.post(`/api/integrations/mcp/${encodeURIComponent(item.id)}/test`, {}, { timeout: 30000 })
+                        this.showToast(data.detail || 'Endpoint reachable.', !data.success)
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Integration is unreachable.', true)
+                    } finally {
+                        this.integrations.busy = ''
+                    }
+                },
+                async deleteIntegration(item) {
+                    if (!window.confirm(`Remove ${item.name}?`)) return
+                    try {
+                        await _api.delete(`/api/integrations/mcp/${encodeURIComponent(item.id)}`)
+                        this.showToast('Integration removed.')
+                        await this.loadIntegrations()
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not remove the integration.', true)
+                    }
+                },
+                // ---- Feature toggles ----
+                async loadFeatures() {
+                    this.features.loading = true
+                    try {
+                        const { data } = await _api.get('/api/platform/features')
+                        this.features.automation_enabled = !!data.automation_enabled
+                        this.features.factory_enabled = !!data.factory_enabled
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not load platform settings.', true)
+                    } finally {
+                        this.features.loading = false
+                    }
+                },
+                async saveFeature(name, value) {
+                    if (this.features.saving) return
+                    const previous = this.features[name]
+                    this.features[name] = value
+                    this.features.saving = name
+                    try {
+                        await _api.put('/api/platform/features', { [name]: value })
+                        this.showToast(value ? 'Turned on.' : 'Turned off.')
+                    } catch (e) {
+                        this.features[name] = previous
+                        this.showToast(e.response?.data?.detail || 'Could not save that setting.', true)
+                    } finally {
+                        this.features.saving = ''
+                    }
+                },
+                // ---- Free proxies ----
+                async importFreeProxies() {
+                    if (this.freeProxies.loading) return
+                    this.freeProxies.loading = true
+                    try {
+                        const { data } = await _api.post('/api/proxies/import-free', { count: Number(this.freeProxies.count) || 3 }, { timeout: 180000 })
+                        this.showToast(data.detail || 'Free proxy import finished.', !data.success)
+                        await this.loadProxies()
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not import free proxies.', true)
+                    } finally {
+                        this.freeProxies.loading = false
+                    }
+                },
+                // ---- Template editing ----
+                startTemplateEdit(tpl) {
+                    this.templateEdit = { id: tpl.template_id || tpl.id, name: tpl.name || '', content: tpl.content || '', busy: false }
+                },
+                cancelTemplateEdit() {
+                    this.templateEdit = { id: '', name: '', content: '', busy: false }
+                },
+                async saveTemplateEdit() {
+                    if (!this.templateEdit.id || this.templateEdit.busy) return
+                    if (!this.templateEdit.content.trim()) { this.showToast('Template text cannot be empty.', true); return }
+                    this.templateEdit.busy = true
+                    try {
+                        await _api.put(`/api/templates/${encodeURIComponent(this.templateEdit.id)}`, {
+                            name: this.templateEdit.name.trim(), content: this.templateEdit.content,
+                        })
+                        this.showToast('Template updated.')
+                        this.cancelTemplateEdit()
+                        await this.loadTemplates()
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not update the template.', true)
+                    } finally {
+                        this.templateEdit.busy = false
+                    }
+                },
+                // ---- Bulk sender contacts ----
+                async loadBulkContacts() {
+                    const accountId = this.bulksend.rotationMode === 'round_robin' ? (this.bulksend.accountIds[0] || '') : this.bulksend.accountId
+                    if (!accountId) { this.showToast('Choose an account first.', true); return }
+                    this.bulkContacts.loading = true
+                    this.bulkContacts.error = ''
+                    try {
+                        const { data } = await _api.get(`/api/accounts/${encodeURIComponent(accountId)}/contacts`, { timeout: 60000 })
+                        this.bulkContacts.list = (data.contacts || []).filter(contact => contact.username)
+                        this.bulkContacts.selected = []
+                    } catch (e) {
+                        this.bulkContacts.error = e.response?.data?.detail || 'Could not load contacts for this account.'
+                    } finally {
+                        this.bulkContacts.loading = false
+                    }
+                },
+                toggleBulkContact(contact) {
+                    const username = contact.username
+                    const selected = new Set(this.bulkContacts.selected)
+                    if (selected.has(username)) selected.delete(username)
+                    else selected.add(username)
+                    this.bulkContacts.selected = [...selected]
+                },
+                useBulkContacts() {
+                    if (!this.bulkContacts.selected.length) { this.showToast('Select at least one contact.', true); return }
+                    const existing = new Set((this.bulksend.targets || '').split(/\r\n|\r|\n/).map(line => line.trim().replace(/^@/, '').toLowerCase()).filter(Boolean))
+                    for (const username of this.bulkContacts.selected) existing.add(username.toLowerCase())
+                    this.bulksend.targets = [...existing].join('\n')
+                    this.showToast(`${this.bulkContacts.selected.length} contacts added to recipients.`)
+                },
+                // ---- Adder: detected group picker ----
+                applyDetectedGroups(context) {
+                    const state = this.groups[context]
+                    if (!state || !this.adder.detectedSelected.length) return
+                    const existing = new Set((this.adder.usernames || '').split(/\r\n|\r|\n/).map(line => line.trim().replace(/^@/, '').toLowerCase()).filter(Boolean))
+                    for (const username of this.adder.detectedSelected) existing.add(username)
+                    this.adder.usernames = [...existing].join('\n')
+                    this.adder.detectedSelected = []
+                    this.showToast('Selected group usernames added as recipients.')
+                },
                 copyExport() {
                     navigator.clipboard.writeText(this.exportData.session)
                         .then(() => this.showToast('Copied to clipboard'))
@@ -5697,6 +6858,11 @@
                 }
             },
             mounted() {
+                try {
+                    const savedWidth = Number(localStorage.getItem('ot_sidebar_width'))
+                    if (savedWidth >= 196 && savedWidth <= 420) this.sidebarWidth = savedWidth
+                    this.inboxLastRead = localStorage.getItem('ot_inbox_read') || ''
+                } catch (e) {}
                 this.initAuth()
                 this.jobsPoll = setInterval(() => this.loadOutreachJobs(), 2000)
                 this.dashboardPoll = setInterval(() => {

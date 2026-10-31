@@ -78,6 +78,7 @@ class ScrapeRequest(BaseModel):
     limit: int = Field(default=200, ge=1, le=10000, strict=True)  # scan cap before filtering
     filter_bots: bool = True # exclude bots
     activity_filter: ActivityFilter = "all"
+    admin_filter: Literal["include", "exclude"] = "include"
 
 
 class ChannelScrapeRequest(BaseModel):
@@ -335,10 +336,26 @@ async def scrape_members(request: ScrapeRequest):
 
         participants = await client.get_participants(entity, limit=request.limit)
 
+        admin_ids = set()
+        if request.admin_filter == "exclude":
+            try:
+                admins = await client(functions.channels.GetParticipantsRequest(
+                    channel=entity,
+                    filter=types.ChannelParticipantsAdmins(),
+                    offset=0,
+                    limit=100,
+                    hash=0,
+                ))
+                admin_ids = {user.id for user in admins.users}
+            except Exception:
+                admin_ids = set()
+
         members = []
         now = datetime.now(timezone.utc)
         for p in participants:
             if request.filter_bots and p.bot:
+                continue
+            if p.id in admin_ids:
                 continue
             if not matches_activity(p, request.activity_filter, now):
                 continue
