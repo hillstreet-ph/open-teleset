@@ -1702,6 +1702,86 @@
                 </div>
             </div>
 
+            <!-- Copilot -->
+            <div v-show="tab === 'copilot'">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>Ops Copilot</h3>
+                        <span class="badge badge-info">Draft only</span>
+                    </div>
+                    <p class="muted small" style="margin-bottom: 16px;">Describe a template, schedule or opt-in send in plain language. The Copilot returns a draft and never sends anything — you review it, and the existing approval and consent checks still apply.</p>
+                    <div class="form-group">
+                        <label for="copilot-instruction">What do you want to set up?</label>
+                        <textarea id="copilot-instruction" class="form-control" rows="4" v-model="copilot.instruction" @keydown.ctrl.enter="draftCopilot" placeholder="Create a template named Welcome that says: Hi {name}, thanks for reaching out."></textarea>
+                        <small>Press Ctrl+Enter to draft. Account creation, number purchase, auto-join and cold outreach are not available.</small>
+                    </div>
+                    <div style="display:flex; gap:10px; flex-wrap:wrap;">
+                        <button class="btn btn-primary" @click="draftCopilot" :disabled="copilot.loading || !copilot.instruction.trim()">
+                            {{ copilot.loading ? 'Drafting…' : 'Draft' }}
+                        </button>
+                        <button class="btn btn-outline" @click="clearCopilot" :disabled="copilot.loading">Clear</button>
+                    </div>
+                    <p v-if="copilot.error" role="alert" style="color: var(--danger); margin-top: 12px;">{{ copilot.error }}</p>
+                </div>
+
+                <div v-if="copilot.draft" class="card">
+                    <div class="card-header">
+                        <h3>{{ copilot.draft.title }}</h3>
+                        <span class="badge" :class="copilot.draft.action === 'unsupported' ? 'badge-danger' : 'badge-info'">{{ copilot.draft.action }}</span>
+                    </div>
+                    <p class="muted small" style="margin-bottom: 14px;">{{ copilot.draft.summary }}</p>
+                    <ul v-if="copilot.draft.warnings?.length" style="margin: 0 0 14px 18px; color: var(--warning);">
+                        <li v-for="(warning, i) in copilot.draft.warnings" :key="i">{{ warning }}</li>
+                    </ul>
+
+                    <div v-if="copilot.draft.action === 'template'" style="background: rgba(0,0,0,0.2); padding: 12px; border-radius: 8px;">
+                        <p><strong>Name:</strong> {{ copilot.draft.payload.name }}</p>
+                        <p><strong>Category:</strong> {{ copilot.draft.payload.category }}</p>
+                        <div style="white-space: pre-wrap; margin-top: 8px;">{{ copilot.draft.payload.content || '—' }}</div>
+                    </div>
+
+                    <div v-else-if="copilot.draft.action === 'schedule'" style="background: rgba(0,0,0,0.2); padding: 12px; border-radius: 8px;">
+                        <p><strong>Message:</strong> <span style="white-space: pre-wrap;">{{ copilot.draft.payload.message || '—' }}</span></p>
+                        <p><strong>Repeat:</strong> {{ copilot.draft.payload.repeat }} · <strong>Time:</strong> {{ String(copilot.draft.payload.hour).padStart(2, '0') }}:{{ String(copilot.draft.payload.minute).padStart(2, '0') }} · <strong>Interval:</strong> {{ formatInterval(copilot.draft.payload.interval) }}</p>
+                        <p><strong>Approval:</strong> {{ copilot.draft.payload.approvalId || 'Required in the form' }}</p>
+                        <p><strong>Recipients:</strong> {{ copilot.draft.payload.recipients.length }}<span v-if="copilot.draft.payload.recipients.length"> · {{ copilot.draft.payload.recipients.map(r => '@' + r).join(', ') }}</span></p>
+                    </div>
+
+                    <div v-else-if="copilot.draft.action === 'task'" style="background: rgba(0,0,0,0.2); padding: 12px; border-radius: 8px;">
+                        <p><strong>Message:</strong> <span style="white-space: pre-wrap;">{{ copilot.draft.payload.message || '—' }}</span></p>
+                        <p><strong>Recipients:</strong> {{ copilot.draft.payload.targets.length }}<span v-if="copilot.draft.payload.targets.length"> · {{ copilot.draft.payload.targets.map(r => '@' + r).join(', ') }}</span></p>
+                        <p class="muted small">Consent stays unchecked. Nothing runs until you press Start BulkSend.</p>
+                    </div>
+
+                    <div v-else-if="copilot.draft.examples?.length" style="background: rgba(0,0,0,0.2); padding: 12px; border-radius: 8px;">
+                        <p><strong>Try one of these:</strong></p>
+                        <ul style="margin: 8px 0 0 18px;">
+                            <li v-for="(example, i) in copilot.draft.examples" :key="i">{{ example }}</li>
+                        </ul>
+                    </div>
+
+                    <div v-if="copilot.draft.requires_confirmation" style="display:flex; gap:10px; margin-top: 16px; flex-wrap:wrap;">
+                        <button class="btn btn-primary" @click="applyCopilotDraft">{{ copilot.draft.action === 'template' ? 'Save template' : (copilot.draft.action === 'schedule' ? 'Open schedule form' : 'Open BulkSend') }}</button>
+                        <span class="muted small" style="align-self:center;">You confirm in the destination form; the Copilot does not run it.</span>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header"><h3>Presets</h3></div>
+                    <p class="muted small" style="margin-bottom: 14px;">Start from a ready-made draft, then review and adjust it.</p>
+                    <div v-if="!copilot.presets.length" class="empty-state"><p>Presets load when you open this page.</p></div>
+                    <div v-else style="display:grid; gap:10px;">
+                        <div v-for="preset in copilot.presets" :key="preset.id" class="proxy-item" style="align-items:center;">
+                            <div class="proxy-info" style="flex:1;">
+                                <h4>{{ preset.title }} <span class="badge badge-info">{{ preset.group }}</span></h4>
+                                <p>{{ preset.description }}</p>
+                            </div>
+                            <button class="btn btn-sm btn-outline" @click="useCopilotPreset(preset)">Use preset</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Templates -->
             <div v-show="tab === 'templates'">
                 <div class="card">
@@ -2938,6 +3018,7 @@
             send: '<path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4z"/>',
             globe: '<circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>',
             zap: '<path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>',
+            copilot: '<path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9z"/>',
             factory: '<path d="M2 20a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8l-7 5V8l-7 5V4a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2z"/><path d="M17 18h1M12 18h1M7 18h1"/>',
             plug: '<path d="M12 22v-5"/><path d="M9 8V2"/><path d="M15 8V2"/><path d="M18 8v3a6 6 0 0 1-12 0V8z"/>',
             activity: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
@@ -3010,6 +3091,7 @@
                             label: 'Workspace',
                             items: [
                                 { tab: 'overview', label: 'Dashboard', icon: 'dashboard' },
+                                { tab: 'copilot', label: 'Copilot', icon: 'copilot' },
                                 { tab: 'tasks', label: 'Tasks', icon: 'tasks', badge: 'jobs' },
                                 { tab: 'schedule', label: 'Schedule', icon: 'calendar' },
                                 { tab: 'templates', label: 'Templates', icon: 'message' }
@@ -3277,6 +3359,9 @@
                     exportData: { id: '', session: '' },
                     exportAllData: '',
 
+                    // Copilot (draft-only: never sends)
+                    copilot: { instruction: '', loading: false, draft: null, presets: [], error: '' },
+
                     // Template Modal
                     showTemplateModal: false,
                     templates: [],
@@ -3415,6 +3500,7 @@
                 pageMeta() {
                     const pages = {
                         overview: ['Dashboard', 'A live view of accounts, automation and recent activity.'],
+                        copilot: ['Copilot', 'Draft templates, schedules and opt-in sends in plain language.'],
                         tasks: ['Tasks', 'Factory runs, outreach jobs and scheduled work in one queue.'],
                         schedule: ['Schedule', 'Plan messages and account actions ahead of time.'],
                         templates: ['Templates', 'Reusable messages for outreach and scheduling.'],
@@ -3548,6 +3634,7 @@
                     } else {
                         clearTimeout(this.automation.poll)
                     }
+                    if (tab === 'copilot') this.loadCopilot()
                     if (tab === 'tasks') this.loadOutreachJobs()
                     if (tab === 'schedule') this.loadSchedules()
                     if (tab === 'logs') this.loadLogs()
@@ -4973,6 +5060,113 @@
                     const newState = { ...this.proxyPasswordVisible }
                     newState[proxyId] = !newState[proxyId]
                     this.proxyPasswordVisible = newState
+                },
+
+                // Copilot (draft only — every apply path stops at a form gate)
+                async loadCopilot() {
+                    if (this.copilot.presets.length) return
+                    try {
+                        const res = await _api.post('/api/copilot/draft', { instruction: '' })
+                        this.copilot.presets = res.data.presets || []
+                        this.copilot.error = ''
+                    } catch (e) {
+                        this.copilot.error = e.response?.data?.detail || 'Could not load Copilot presets.'
+                    }
+                },
+
+                async draftCopilot() {
+                    if (!this.copilot.instruction.trim()) return
+                    this.copilot.loading = true
+                    this.copilot.error = ''
+                    try {
+                        const res = await _api.post('/api/copilot/draft', { instruction: this.copilot.instruction })
+                        this.copilot.draft = res.data.draft || null
+                        if (res.data.presets?.length) this.copilot.presets = res.data.presets
+                    } catch (e) {
+                        this.copilot.draft = null
+                        this.copilot.error = e.response?.data?.detail || 'Could not build a draft.'
+                    }
+                    this.copilot.loading = false
+                },
+
+                useCopilotPreset(preset) {
+                    this.copilot.instruction = preset.instruction
+                    return this.draftCopilot()
+                },
+
+                clearCopilot() {
+                    this.copilot.instruction = ''
+                    this.copilot.draft = null
+                    this.copilot.error = ''
+                },
+
+                async applyCopilotDraft() {
+                    const draft = this.copilot.draft
+                    if (!draft?.requires_confirmation) return
+                    const payload = draft.payload || {}
+
+                    if (draft.action === 'template') {
+                        if (!payload.content) {
+                            this.showToast('Add the message text before saving this template.', true)
+                            return
+                        }
+                        const template_id = 'tpl_' + Date.now()
+                        try {
+                            await _api.post('/api/templates', {
+                                template_id,
+                                name: payload.name || 'Copilot template',
+                                content: payload.content,
+                                category: payload.category || 'Copilot',
+                                variables: []
+                            })
+                            this.showToast('Template saved.')
+                            this.copilot.draft = null
+                            await this.loadTemplates()
+                            this.go('templates')
+                        } catch (e) {
+                            this.showToast(e.response?.data?.detail || 'Could not save the template.', true)
+                        }
+                        return
+                    }
+
+                    if (draft.action === 'schedule') {
+                        const recipients = payload.recipients || []
+                        this.newSchedule = {
+                            ...this.newSchedule,
+                            messageSource: 'input',
+                            message: payload.message || '',
+                            templateId: '',
+                            repeat: payload.repeat || 'once',
+                            hour: Number.isInteger(payload.hour) ? payload.hour : this.newSchedule.hour,
+                            minute: Number.isInteger(payload.minute) ? payload.minute : this.newSchedule.minute,
+                            strangerUsernames: recipients.join('\n'),
+                            interval: Math.max(Number(payload.interval) || 3000, 3000),
+                            approvalId: payload.approvalId || '',
+                            autoDedup: true,
+                            validateUsernames: true
+                        }
+                        this.scheduleStep = 1
+                        this.tab = 'schedule'
+                        this.sidebarOpen = false
+                        this.showScheduleModal = true
+                        this.showToast('Schedule form prefilled. Review it and press Add.')
+                        return
+                    }
+
+                    if (draft.action === 'task') {
+                        this.bulksend = {
+                            ...this.bulksend,
+                            message: payload.message || '',
+                            targets: (payload.targets || []).join('\n'),
+                            consentConfirmed: false,
+                            delay: Math.max(Number(payload.delay) || 0, 0)
+                        }
+                        this.go('bulksend')
+                        this.showToast('BulkSend prefilled. Confirm consent and press Start BulkSend.')
+                        return
+                    }
+
+                    this.showToast('This draft has nothing to apply.')
                 },
 
                 // Templates
