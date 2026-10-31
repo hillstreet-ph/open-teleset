@@ -186,7 +186,7 @@ def _approval(text: str) -> str:
         return ""
     tail = text[match.end():].lstrip()
     for prefix in ("id", "reference"):
-        if tail.lower().startswith(prefix):
+        if tail.lower().startswith(prefix) and (len(tail) == len(prefix) or not tail[len(prefix)].isalnum()):
             tail = tail[len(prefix):].lstrip()
             break
     if tail[:1] in (":", "=", "-"):

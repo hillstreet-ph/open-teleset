@@ -55,6 +55,14 @@ def test_schedule_reads_approval_and_recipients_without_touching_the_message():
     assert payload["interval"] >= 3000
 
 
+def test_schedule_reads_approval_id_and_reference_prefixes():
+    for label in ("approval id: OPS-42", "approval reference: OPS-42"):
+        draft = copilot.build_draft(
+            f"Schedule a daily message at 10:00 {label} recipients: @alice_1 saying: Hi."
+        )
+        assert draft["payload"]["approvalId"] == "OPS-42", label
+
+
 def test_schedule_approval_survives_whitespace_without_backtracking():
     draft = copilot.build_draft(
         "Schedule a daily message at 10:00 approval" + (" " * 500) +
