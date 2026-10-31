@@ -2524,7 +2524,7 @@
                         </div>
                         <div v-if="phoneError" style="color: var(--danger); margin-bottom: 15px;">{{ phoneError }}</div>
                         <button class="btn btn-primary" @click="sendPhoneCode" :disabled="!phoneData.countryCode || !phoneData.phone || phoneLoading" style="width: 100%;">
-                            {{ phoneLoading ? 'SendMed...' : 'Send code' }}
+                            {{ phoneLoading ? 'Sending…' : 'Send code' }}
                         </button>
                         <button class="btn btn-outline" @click="closeQrModal" style="margin-top: 10px; width: 100%;">Cancel</button>
                     </div>
