@@ -43,3 +43,6 @@ ignore = ["E501"]
 
 [tool.pytest.ini_options]
 pythonpath = [".", "src"]
+# Root-level test_*.py files are credential-dependent manual scripts; keep
+# automatic discovery on the real suite so a bare `pytest` stays green.
+testpaths = ["tests"]
