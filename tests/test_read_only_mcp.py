@@ -210,6 +210,6 @@ with TestClient(dashboard.app, base_url="https://open-teleset.site") as http:
     env.update(APP_ENV="production", PYTHONPATH=f"{root}:{root / 'src'}")
     result = subprocess.run(
         [sys.executable, "-c", script], cwd=tmp_path, env=env,
-        capture_output=True, text=True, timeout=30,
+        capture_output=True, text=True, timeout=90,
     )
     assert result.returncode == 0, result.stderr

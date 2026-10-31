@@ -152,7 +152,7 @@ test('Member Adder retains invalid rows for skipped history while queuing valid 
   assert.equal(summary.targets.length,10);
   assert.deepEqual(Array.from(summary.invalidLines),[11]);
   await state.runAdder();
-  assert.match(state.adder.resultMsg,/1 invalid entries will be skipped/);
+  assert.match(state.adder.resultMsg,/Queued 11 recipients\. 1 invalid entry and 0 duplicate lines will be skipped/);
   assert.equal(payload.usernames.length,11);
   assert.equal(payload.consent_confirmed,true);
 });
