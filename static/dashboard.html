@@ -5139,6 +5139,7 @@
                             repeat: payload.repeat || 'once',
                             hour: Number.isInteger(payload.hour) ? payload.hour : this.newSchedule.hour,
                             minute: Number.isInteger(payload.minute) ? payload.minute : this.newSchedule.minute,
+                            second: 0,
                             strangerUsernames: recipients.join('\n'),
                             interval: Math.max(Number(payload.interval) || 3000, 3000),
                             approvalId: payload.approvalId || '',

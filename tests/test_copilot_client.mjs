@@ -131,6 +131,7 @@ test('schedule draft prefills the approval-gated form without creating it', asyn
   assert.equal(state.newSchedule.repeat, 'daily');
   assert.equal(state.newSchedule.hour, 10);
   assert.equal(state.newSchedule.minute, 30);
+  assert.equal(state.newSchedule.second, 0);
   assert.equal(state.newSchedule.interval, 3000, 'interval below 3s is raised to the gate');
   assert.equal(state.newSchedule.approvalId, 'APR-9');
   assert.equal(state.newSchedule.autoDedup, true);
