@@ -36,6 +36,7 @@ from copilot import router as copilot_router
 from dashboard_features import router as dashboard_features_router
 from cloud_browser import router as cloud_browser_router
 from auto_reply import router as auto_reply_router, worker as auto_reply_worker
+from inbox import detach_all as inbox_detach_all, router as inbox_router
 from knowledge import router as knowledge_router
 from patterns import router as patterns_router
 from open_teleset.security import SupabaseAuthMiddleware
@@ -78,6 +79,8 @@ async def lifespan(app: FastAPI):
     finally:
         await outreach_worker.stop()
         await auto_reply_worker.stop()
+        # The inbox holds live update handlers on open clients; drop them before the clients go.
+        inbox_detach_all()
 
     # 关闭时执行
     proxy_task.cancel()
@@ -122,6 +125,7 @@ app.include_router(copilot_router)
 app.include_router(dashboard_features_router)
 app.include_router(cloud_browser_router)
 app.include_router(auto_reply_router)
+app.include_router(inbox_router)
 app.include_router(knowledge_router)
 app.include_router(patterns_router)
 

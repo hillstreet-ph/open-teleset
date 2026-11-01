@@ -6,6 +6,7 @@ process, so a container restart costs a re-read rather than leaving a corpus beh
 """
 
 import asyncio
+import json
 import time
 from types import SimpleNamespace
 
@@ -208,6 +209,8 @@ class FakeClient:
         self.handlers = []
         self.fail_add = fail_add
         self.removed = []
+        self.sent = []
+        self.read = 0
 
     def add_event_handler(self, handler, *args, **kwargs):
         if self.fail_add:
@@ -217,6 +220,25 @@ class FakeClient:
     def remove_event_handler(self, handler, *args, **kwargs):
         self.removed.append(handler)
         self.handlers = [entry for entry in self.handlers if entry[0] is not handler]
+
+    async def iter_dialogs(self, limit=None):
+        for index in range(3):
+            yield SimpleNamespace(entity=a_user(pid=100 + index, first=f"Peer{index}", last=""),
+                                  name="", message=None, date=time.time() - index,
+                                  unread_count=0)
+        yield SimpleNamespace(entity=SimpleNamespace(id=999), name="a chat we cannot file",
+                              message=None, date=time.time(), unread_count=0)
+
+    async def get_messages(self, peer, limit=50, offset_id=0):
+        return [SimpleNamespace(id=index, raw_text=f"line {index}", date=time.time(),
+                                out=False, sender=None) for index in range(min(limit, 5))]
+
+    async def send_message(self, peer, text):
+        self.sent.append((peer, text))
+        return SimpleNamespace(id=99, raw_text=text, date=time.time(), out=True, sender=None)
+
+    async def mark_read(self, entity):
+        self.read += 1
 
 
 @pytest.fixture
@@ -445,3 +467,173 @@ def test_a_slow_subscriber_is_dropped_and_the_others_keep_receiving(accounts):
     assert drained[0] == {"type": "ping", "i": 1}          # the oldest frame was discarded
     assert drained[-1] == {"type": "state", "state": "slowed"}
     inbox.HUB._queues.clear()
+
+
+@pytest.fixture
+def api(workspace, accounts):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    app = FastAPI()
+    app.include_router(inbox.router)
+
+    @app.middleware("http")
+    async def as_operator(request, call_next):
+        request.state.user = SimpleNamespace(id="op-1", role="project_admin")
+        return await call_next(request)
+
+    an_account, clients = accounts
+    account_id = an_account()
+    holder = {"account": account_id, "clients": clients}
+    test_client = TestClient(app)
+    test_client.inbox_account = holder
+    return test_client
+
+
+def opted_in_api(api):
+    account_id = api.inbox_account["account"]
+    api.put(f"/api/inbox/accounts/{account_id}", json={"enabled": True})
+    return account_id
+
+
+def test_every_route_refuses_while_the_switch_is_off(api):
+    operator_store.set_features({"inbox_enabled": False})
+    for method, path in [("get", "/api/inbox/config"), ("get", "/api/inbox/chats"),
+                         ("post", "/api/inbox/refresh"), ("delete", "/api/inbox/cache"),
+                         ("get", "/api/inbox/stream")]:
+        response = getattr(api, method)(path)
+        assert response.status_code == 403, path
+        assert response.json()["detail"] == inbox.OFF_MESSAGE
+
+
+def test_config_and_opt_in_round_trip(api):
+    account_id = api.inbox_account["account"]
+    body = api.get("/api/inbox/config").json()
+    assert body["enabled"] is True and body["accounts"] == []
+    assert body["labels"]["no-session"] == inbox.STATE_LABELS["no-session"]
+
+    assert api.put(f"/api/inbox/accounts/{account_id}", json={"enabled": True}).status_code == 200
+    assert api.get("/api/inbox/config").json()["accounts"] == [account_id]
+    assert api.get("/api/inbox/config").json()["state"][account_id] == "live"
+
+    assert api.put(f"/api/inbox/accounts/{account_id}", json={"enabled": False}).status_code == 200
+    assert api.get("/api/inbox/config").json()["accounts"] == []
+
+
+def test_opting_out_detaches_that_account(api):
+    account_id = opted_in_api(api)
+    assert account_id in inbox.watched()
+    api.put(f"/api/inbox/accounts/{account_id}", json={"enabled": False})
+    assert inbox.watched() == []
+
+
+def test_an_unknown_account_and_a_bad_bucket_are_refused_with_our_sentences(api):
+    assert api.put("/api/inbox/accounts/ghost", json={"enabled": True}).status_code == 404
+    opted_in_api(api)
+    refusal = api.get("/api/inbox/chats", params={"bucket": "everything"})
+    assert refusal.status_code == 400
+    assert "personal" in refusal.json()["detail"]
+
+
+def test_the_wall_reads_back_with_the_bucket_and_no_peer_id(api):
+    account_id = opted_in_api(api)
+    asyncio.run(inbox.note(account_id, an_event(peer=4242, text="ship it")))
+    rows = api.get("/api/inbox/chats", params={"bucket": "personal"}).json()["chats"]
+    assert len(rows) == 1
+    assert rows[0]["bucket"] == "personal" and rows[0]["unread"] == 1
+    assert "peer" not in rows[0] and "username" not in rows[0]
+    assert "4242" not in str(rows[0])
+    assert api.get("/api/inbox/chats", params={"bucket": "channel"}).json()["chats"] == []
+
+
+def test_a_thread_page_and_marking_read_zero_the_badge(api):
+    account_id = opted_in_api(api)
+    asyncio.run(inbox.note(account_id, an_event()))
+    ref = inbox.WALLS["op-1"].rows()[0]["ref"]
+
+    page = api.get(f"/api/inbox/chats/{ref}/messages", params={"limit": 10}).json()
+    assert page["state"] == "live" and page["messages"][0]["text"].startswith("line")
+
+    assert api.post(f"/api/inbox/chats/{ref}/read").status_code == 200
+    assert inbox.counters("op-1") == {}
+    assert api.get("/api/inbox/chats").json()["chats"][0]["unread"] == 0
+    assert api.post("/api/inbox/chats/short/read").status_code == 404
+    assert api.inbox_account["clients"][account_id].read == 1
+
+
+def test_a_reply_is_sent_as_typed_and_a_refusal_stays_ours(api):
+    account_id = opted_in_api(api)
+    asyncio.run(inbox.note(account_id, an_event(peer=4242)))
+    ref = inbox.WALLS["op-1"].rows()[0]["ref"]
+    fake = api.inbox_account["clients"][account_id]
+
+    answer = api.post(f"/api/inbox/chats/{ref}/messages", json={"text": "on it"})
+    assert answer.status_code == 200
+    assert fake.sent == [(4242, "on it")]
+    assert answer.json()["message"]["outgoing"] is True
+
+    assert api.post(f"/api/inbox/chats/{ref}/messages", json={"text": " "}).status_code == 400
+    too_long = api.post(f"/api/inbox/chats/{ref}/messages", json={"text": "x" * (inbox.REPLY_MAX + 1)})
+    assert too_long.status_code in (400, 422)
+
+
+def test_a_reply_to_someone_asked_not_to_be_messaged_is_blocked(api, monkeypatch):
+    account_id = opted_in_api(api)
+    asyncio.run(inbox.note(account_id, an_event(entity=a_user(username="asked_me_to_stop"))))
+    ref = inbox.WALLS["op-1"].rows()[0]["ref"]
+    monkeypatch.setattr(inbox.outreach_policy, "is_suppressed", lambda subject: True)
+    blocked = api.post(f"/api/inbox/chats/{ref}/messages", json={"text": "hello?"})
+    assert blocked.status_code == 409
+    assert "asked not to be messaged" in blocked.json()["detail"]
+    assert api.inbox_account["clients"][account_id].sent == []
+
+
+def test_a_telegram_refusal_returns_our_sentence_and_no_exception_text(api, monkeypatch):
+    account_id = opted_in_api(api)
+    asyncio.run(inbox.note(account_id, an_event()))
+    ref = inbox.WALLS["op-1"].rows()[0]["ref"]
+    fake = api.inbox_account["clients"][account_id]
+
+    async def explode(peer, text):
+        raise RuntimeError("FLOOD_WAIT_42 with session ABCDEFGHIJKLMNOPQRSTUVWXYZ012345")
+
+    monkeypatch.setattr(fake, "send_message", explode)
+    refused = api.post(f"/api/inbox/chats/{ref}/messages", json={"text": "hi"})
+    assert refused.status_code == 400
+    assert refused.json()["detail"] == inbox.SEND_FAILED
+    assert "FLOOD" not in refused.text and "ABCDEFGH" not in refused.text
+
+
+def test_refresh_snapshots_dialogs_and_reports_what_was_passed_over(api):
+    account_id = opted_in_api(api)
+    result = api.post("/api/inbox/refresh").json()
+    assert result["chats"] == 3 and result["accounts"] == [account_id]
+    assert result["skipped_unknown"] == 1
+    assert api.get("/api/inbox/chats").json()["chats"]
+
+    clear = api.delete("/api/inbox/cache").json()
+    assert clear["cleared"] is True and api.get("/api/inbox/chats").json()["chats"] == []
+    assert inbox.opted_in_accounts("op-1") == [account_id]
+
+
+def test_the_stream_opens_ready_then_the_wall_then_live_events(api):
+    account_id = opted_in_api(api)
+    asyncio.run(inbox.note(account_id, an_event(peer=4242)))
+    inbox.HUB._queues.clear()
+
+    async def pull():
+        queue = inbox.HUB.subscribe("op-1")
+        source = inbox.event_source("op-1", queue)
+        frames = [await anext(source), await anext(source)]
+        inbox.HUB.publish("op-1", {"type": "ping"})
+        frames.append(await anext(source))
+        await source.aclose()
+        return frames
+
+    ready, bootstrap, live = [json.loads(f[len("data: "):].strip())
+                              for f in asyncio.run(pull())]
+    assert ready["type"] == "ready" and ready["state"]["accounts"] == [account_id]
+    assert bootstrap["type"] == "chat" and bootstrap["chat"]["unread"] == 1
+    assert "peer" not in bootstrap["chat"]
+    assert live["type"] == "ping"
+    assert inbox.HUB.subscribers("op-1") == 0

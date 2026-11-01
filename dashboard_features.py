@@ -29,6 +29,7 @@ from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFil
 from pydantic import BaseModel, Field
 from telethon import functions, types
 
+import inbox
 from account_manager import account_manager
 from log_manager import log_manager
 from open_teleset.operator_store import (
@@ -560,7 +561,12 @@ class FeatureUpdate(BaseModel):
 
 @router.put("/api/platform/features")
 async def update_platform_features(body: FeatureUpdate):
-    return set_features(body.model_dump(exclude_none=True))
+    updates = body.model_dump(exclude_none=True)
+    saved = set_features(updates)
+    if updates.get("inbox_enabled") is False:
+        # The routes 403 on their own; this stops the handlers still collecting behind them.
+        inbox.detach_all()
+    return saved
 
 
 # ============ MCP / app integrations ============

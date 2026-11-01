@@ -13,22 +13,31 @@ moment, and it honours the opt-out ledger.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from collections import OrderedDict
 from typing import Any, Callable, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 
 from log_manager import log_manager
-from open_teleset.operator_store import read_secret, secret_key_available, write_secret
-from outreach_policy import hash_identifier
+from open_teleset.operator_store import feature_enabled, read_secret, secret_key_available, write_secret
+from outreach_policy import hash_identifier, outreach_policy
 
 router = APIRouter(tags=["inbox"])
 log = logging.getLogger(__name__)
 
 STORE = "inbox"
 OFF_MESSAGE = "Inbox is switched off. Turn it on under Integrations > Platform switches."
+SEND_FAILED = "Telegram did not deliver that reply. Try again or answer in your own client."
+SUPPRESSED = "That person asked not to be messaged. The reply is blocked."
+NO_REF = "That chat is not on this screen any more. Use Refresh now."
+NO_ACCOUNT = "No account here answers to that id."
+TOO_MANY_SUBSCRIBERS = "Four tabs already have this inbox open."
+EMPTY_REPLY = "Type a reply before sending it."
 BUCKETS = ("personal", "group", "channel", "bot")
 
 MAX_WATCHED = 8
@@ -161,6 +170,7 @@ def _record(operator: str) -> dict:
         "accounts": accounts,
         "counters": {str(k): int(v) for k, v in _mapping(entry.get("counters")).items()},
         "seen": {str(k): float(v) for k, v in _mapping(entry.get("seen")).items()},
+        "skipped_unknown": int(entry.get("skipped_unknown") or 0),
     }
 
 
@@ -354,9 +364,11 @@ def message_shape(event: Any) -> dict:
     }
 
 
-def _display_name(entity: Any) -> str:
-    name = " ".join(part for part in (getattr(entity, "first_name", None),
-                                      getattr(entity, "last_name", None)) if part).strip()
+def _display_name(entity: Any, dialog_name: str = "") -> str:
+    name = str(dialog_name or "").strip()
+    if not name:
+        name = " ".join(part for part in (getattr(entity, "first_name", None),
+                                          getattr(entity, "last_name", None)) if part).strip()
     if not name:
         name = str(getattr(entity, "title", "") or "").strip()
     if not name:
@@ -366,8 +378,8 @@ def _display_name(entity: Any) -> str:
 
 
 def _public(row: dict) -> dict:
-    """The browser sees a ref, never the raw peer id Telegram gave us."""
-    return {key: value for key, value in row.items() if key != "peer"}
+    """The browser sees a ref and a display name, never the identifiers we hold."""
+    return {key: value for key, value in row.items() if key not in ("peer", "username")}
 
 
 def _record_owners(account_id: str) -> list:
@@ -427,3 +439,267 @@ async def note(account_id: str, event: Any) -> dict:
         published += HUB.publish(operator, {"type": "chat", "chat": _public(row)})
         published += HUB.publish(operator, {"type": "message", "ref": ref, "message": message})
     return {"stored": True, "published": published, "reason": ""}
+
+
+async def snapshot(operator: str) -> dict:
+    """Read every dialog on the opted-in accounts. The non-realtime path, always available."""
+    accounts = opted_in_accounts(operator)
+    states = await attach(operator, accounts) if accounts else {}
+    wall = WALLS.setdefault(operator, Wall())
+    record = _record(operator)
+    chats, skipped = 0, 0
+    for account_id in accounts:
+        client = _CLIENTS.get(account_id)
+        if client is None:
+            continue
+        try:
+            async for dialog in client.iter_dialogs(limit=MAX_CHATS):
+                entity = getattr(dialog, "entity", None)
+                kind = bucket_of(entity)
+                peer = getattr(entity, "id", None)
+                if kind == "unknown" or peer is None:
+                    skipped += 1
+                    continue
+                ref = peer_ref(operator, account_id, peer)
+                last = getattr(dialog, "message", None)
+                row = {
+                    "ref": ref,
+                    "account_id": account_id,
+                    "peer": peer,
+                    "username": str(getattr(entity, "username", "") or ""),
+                    "bucket": kind,
+                    "name": _display_name(entity, getattr(dialog, "name", "") or ""),
+                    "preview": str(getattr(last, "raw_text", "") or "")[:CHAT_PREVIEW_CHARS],
+                    "time": _seconds(getattr(dialog, "date", None)),
+                    "unread": record["counters"].get(ref, 0),
+                    "outgoing": bool(getattr(last, "out", False)),
+                }
+                wall.upsert(row)
+                chats += 1
+                HUB.publish(operator, {"type": "chat", "chat": _public(row)})
+        except Exception:
+            log.exception("Inbox snapshot failed")
+    set_skipped(operator, skipped)
+    return {"chats": chats, "skipped_unknown": skipped, "accounts": accounts, "state": states}
+
+
+def set_skipped(operator: str, count: int) -> None:
+    record = _record(operator)
+    record["skipped_unknown"] = int(count)
+    _save(operator, record)
+
+
+def _operator(request: Request) -> str:
+    user = getattr(request.state, "user", None)
+    if not user or not getattr(user, "id", None):
+        raise HTTPException(403, "Authenticated operator required")
+    return str(user.id)
+
+
+def _enabled() -> None:
+    if not feature_enabled("inbox"):
+        raise HTTPException(403, OFF_MESSAGE)
+
+
+def _label(operator: str) -> str:
+    return str(operator)[:8] if operator else "operator"
+
+
+def _suppress_key(row: dict) -> str:
+    return str(row.get("username") or row.get("peer") or "")
+
+
+def resolve(operator: str, ref: str) -> dict:
+    row = WALLS.get(operator, Wall()).get(ref)
+    if not row:
+        raise HTTPException(404, NO_REF)
+    return row
+
+
+def public_config(operator: str) -> dict:
+    accounts = opted_in_accounts(operator)
+    state = {}
+    for account_id in accounts:
+        if account_id in _HANDLERS:
+            state[account_id] = "live"
+        else:
+            blocked = state_of(account_id)
+            state[account_id] = blocked if blocked != "live" else "off"
+    return {
+        "success": True,
+        "enabled": feature_enabled("inbox"),
+        "accounts": accounts,
+        "limit": MAX_WATCHED,
+        "state": state,
+        "watched": watched(),
+        "chats": WALLS.get(operator, Wall()).size(),
+        "subscribers": HUB.subscribers(operator),
+        "skipped_unknown": _record(operator)["skipped_unknown"],
+        "labels": STATE_LABELS,
+        "buckets": BUCKETS,
+    }
+
+
+class OptIn(BaseModel):
+    enabled: bool
+
+
+class ReplyBody(BaseModel):
+    text: str = Field(min_length=1, max_length=REPLY_MAX)
+
+
+@router.get("/api/inbox/config")
+async def config(request: Request):
+    _enabled()
+    return public_config(_operator(request))
+
+
+@router.put("/api/inbox/accounts/{account_id}")
+async def opt_account(account_id: str, body: OptIn, request: Request):
+    _enabled()
+    from account_manager import account_manager
+
+    if account_id not in account_manager.accounts:
+        raise HTTPException(404, NO_ACCOUNT)
+    operator = _operator(request)
+    set_account_enabled(operator, account_id, body.enabled)
+    if body.enabled:
+        await attach(operator, [account_id])
+    else:
+        detach(account_id)
+    log_manager.add_log("Inbox", _label(operator),
+                        f"Watching {account_id}" if body.enabled else f"Stopped watching {account_id}",
+                        "info")
+    return {"success": True, **public_config(operator)}
+
+
+@router.get("/api/inbox/chats")
+async def chats(request: Request, bucket: str = "", account: str = "", q: str = ""):
+    _enabled()
+    operator = _operator(request)
+    if bucket and bucket not in BUCKETS:
+        raise HTTPException(400, f"Choose a bucket from {', '.join(BUCKETS)}.")
+    wall = WALLS.setdefault(operator, Wall())
+    unread = _record(operator)["counters"]
+    rows = wall.filter_chats(bucket=bucket, account=account, query=q)
+    return {"success": True,
+            "chats": [{**_public(row), "unread": unread.get(row["ref"], row["unread"])} for row in rows]}
+
+
+@router.get("/api/inbox/chats/{ref}/messages")
+async def thread(ref: str, request: Request, before: int = 0, limit: int = PAGE_MESSAGES):
+    _enabled()
+    operator = _operator(request)
+    row = resolve(operator, ref)
+    wall = WALLS[operator]
+    client = _CLIENTS.get(row["account_id"])
+    if client is None:
+        return {"success": True, "messages": wall.messages(ref), "state": "lost"}
+    try:
+        items = await client.get_messages(row["peer"], limit=max(1, min(limit, PAGE_MESSAGES)),
+                                          offset_id=max(0, before))
+    except Exception:
+        log.exception("Inbox could not read a thread")
+        return {"success": True, "messages": wall.messages(ref), "state": "lost"}
+    page = [message_shape(item) for item in items or []]
+    wall.put_messages(ref, page)
+    return {"success": True, "messages": page, "state": "live"}
+
+
+@router.post("/api/inbox/chats/{ref}/read")
+async def mark_read(ref: str, request: Request):
+    _enabled()
+    operator = _operator(request)
+    row = resolve(operator, ref)
+    zero_counter(operator, ref)
+    stored = WALLS[operator].get(ref)
+    if stored:
+        stored["unread"] = 0
+    client = _CLIENTS.get(row["account_id"])
+    if client is not None:
+        try:
+            await client.mark_read(row["peer"])
+        except Exception:
+            log.info("Inbox could not mark a chat read on Telegram")
+    HUB.publish(operator, {"type": "read", "ref": ref, "unread": 0})
+    return {"success": True}
+
+
+@router.post("/api/inbox/chats/{ref}/messages")
+async def reply(ref: str, body: ReplyBody, request: Request):
+    """Send what the operator typed. This is the only write path in the inbox."""
+    _enabled()
+    operator = _operator(request)
+    row = resolve(operator, ref)
+    text = (body.text or "").strip()
+    if not text:
+        raise HTTPException(400, EMPTY_REPLY)
+    if outreach_policy.is_suppressed(_suppress_key(row)):
+        raise HTTPException(409, SUPPRESSED)
+    client = _CLIENTS.get(row["account_id"])
+    if client is None:
+        raise HTTPException(400, SEND_FAILED)
+    try:
+        await client.send_message(row["peer"], text)
+    except Exception:
+        log.exception("Inbox reply failed")
+        raise HTTPException(400, SEND_FAILED) from None
+    message = {"id": None, "text": text[:STORED_MESSAGE_CHARS], "time": time.time(),
+               "outgoing": True, "sender": ""}
+    WALLS[operator].upsert({**row, "preview": text[:CHAT_PREVIEW_CHARS], "time": message["time"],
+                            "outgoing": True})
+    HUB.publish(operator, {"type": "message", "ref": ref, "message": message})
+    log_manager.add_log("Inbox", _label(operator), "Sent a reply you typed", "info")
+    return {"success": True, "message": message}
+
+
+@router.post("/api/inbox/refresh")
+async def refresh(request: Request):
+    _enabled()
+    operator = _operator(request)
+    result = await snapshot(operator)
+    log_manager.add_log("Inbox", _label(operator), f"Refreshed {result['chats']} chats", "info")
+    return {"success": True, **result}
+
+
+@router.delete("/api/inbox/cache")
+async def clear_cache(request: Request):
+    """Forget this screen. Telegram is not contacted and the opt-ins stay."""
+    _enabled()
+    operator = _operator(request)
+    WALLS.pop(operator, None)
+    return {"success": True, "cleared": True}
+
+
+def _sse(payload: dict) -> str:
+    return f"data: {json.dumps(payload, separators=(',', ':'), default=str)}\n\n"
+
+
+async def event_source(operator: str, queue: asyncio.Queue):
+    """ready, then the wall it starts from, then whatever Telegram pushes. Heartbeat keeps it warm."""
+    try:
+        yield _sse({"type": "ready", "state": public_config(operator)})
+        for row in WALLS.get(operator, Wall()).rows():
+            yield _sse({"type": "chat", "chat": _public(row)})
+        while True:
+            try:
+                payload = await asyncio.wait_for(queue.get(), timeout=HEARTBEAT_SECONDS)
+            except TimeoutError:
+                payload = {"type": "ping"}
+            yield _sse(payload)
+    finally:
+        HUB.unsubscribe(operator, queue)
+
+
+@router.get("/api/inbox/stream")
+async def stream(request: Request):
+    operator = _operator(request)
+    _enabled()
+    account_ids = opted_in_accounts(operator)
+    if account_ids:
+        await attach(operator, account_ids)
+    queue = HUB.subscribe(operator)
+    if queue is None:
+        raise HTTPException(429, TOO_MANY_SUBSCRIBERS)
+    return StreamingResponse(event_source(operator, queue), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})

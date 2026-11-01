@@ -82,6 +82,21 @@ async def test_the_features_endpoint_carries_the_inbox_switch():
 
 
 @pytest.mark.asyncio
+async def test_turning_the_inbox_switch_off_detaches_every_handler(monkeypatch):
+    """Off has to mean off: hiding the routes would leave the handlers collecting messages."""
+    import inbox
+
+    calls = []
+    monkeypatch.setattr(inbox, "detach_all", lambda: calls.append("detached") or 0)
+
+    await features.update_platform_features(features.FeatureUpdate(inbox_enabled=True))
+    assert calls == []
+
+    await features.update_platform_features(features.FeatureUpdate(inbox_enabled=False))
+    assert calls == ["detached"]
+
+
+@pytest.mark.asyncio
 async def test_ai_settings_never_return_the_api_key():
     saved = await features.update_ai_settings(
         features.AISettingsUpdate(
