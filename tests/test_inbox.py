@@ -5,6 +5,7 @@ gave it, and nothing a third party said is ever written to disk. The wall lives 
 process, so a container restart costs a re-read rather than leaving a corpus behind.
 """
 
+import asyncio
 import time
 from types import SimpleNamespace
 
@@ -195,3 +196,136 @@ def test_a_corrupt_record_falls_back_to_nothing_watched(workspace):
     operator_store.write_secret("inbox", {"op-1": {"accounts": "not-a-dict", "counters": [1]}})
     assert inbox.opted_in_accounts("op-1") == []
     assert inbox.counters("op-1") == {}
+
+
+class FakeClient:
+    """Stands a Telethon client in at the seams the inbox actually touches."""
+
+    def __init__(self, account_id="acct-0", fail_add=False):
+        self.account_id = account_id
+        self.handlers = []
+        self.fail_add = fail_add
+        self.removed = []
+
+    def add_event_handler(self, handler, *args, **kwargs):
+        if self.fail_add:
+            raise RuntimeError("Telethon refused to register the handler")
+        self.handlers.append((handler, args, kwargs))
+
+    def remove_event_handler(self, handler, *args, **kwargs):
+        self.removed.append(handler)
+        self.handlers = [entry for entry in self.handlers if entry[0] is not handler]
+
+
+@pytest.fixture
+def accounts(monkeypatch, workspace):
+    from account_manager import account_manager
+
+    clients = {}
+
+    def an_account(account_id="acct-0", session="saved-session"):
+        account_manager.accounts[account_id] = {"id": account_id, "session_string": session}
+        clients.setdefault(account_id, FakeClient(account_id))
+        return account_id
+
+    async def get_client(account_id="default", proxy=None):
+        return clients.get(account_id)
+
+    monkeypatch.setattr(account_manager, "accounts", {})
+    monkeypatch.setattr(account_manager, "get_client", get_client)
+    monkeypatch.setattr(account_manager, "saved_proxy", lambda account_id: {"proxy_type": 0})
+    monkeypatch.setattr(account_manager, "_paused_by_cooldown", lambda account_id: False)
+    inbox._CLIENTS.clear()
+    inbox._HANDLERS.clear()
+    yield an_account, clients
+    inbox._CLIENTS.clear()
+    inbox._HANDLERS.clear()
+
+
+def test_state_of_reads_the_blockers_it_can_see_before_connecting(accounts):
+    an_account, _ = accounts
+    from account_manager import account_manager
+
+    account_id = an_account()
+    assert inbox.state_of(account_id) == "live"
+    assert inbox.state_of("does-not-exist") == "no-account"
+
+    monkey = account_manager
+    monkey._paused_by_cooldown = lambda account_id: True
+    assert inbox.state_of(account_id) == "cooldown"
+
+    monkey._paused_by_cooldown = lambda account_id: False
+    monkey.accounts[account_id]["session_string"] = ""
+    assert inbox.state_of(account_id) == "no-session"
+
+    monkey.accounts[account_id]["session_string"] = "saved-session"
+
+    def broken_proxy(_account_id):
+        raise ValueError("the saved proxy is gone")
+
+    monkey.saved_proxy = broken_proxy
+    assert inbox.state_of(account_id) == "proxy-unavailable"
+
+
+def test_attach_registers_one_handler_per_account_not_per_operator(accounts):
+    an_account, clients = accounts
+    account_id = an_account()
+    first = asyncio.run(inbox.attach("op-1", [account_id]))
+    second = asyncio.run(inbox.attach("op-2", [account_id]))
+    assert first == second == {account_id: "live"}
+    assert len(clients[account_id].handlers) == 1
+    assert inbox.watched() == [account_id]
+
+
+def test_a_re_attach_does_not_stack_a_second_handler(accounts):
+    an_account, clients = accounts
+    account_id = an_account()
+    asyncio.run(inbox.attach("op-1", [account_id]))
+    asyncio.run(inbox.attach("op-1", [account_id]))
+    assert len(clients[account_id].handlers) == 1
+
+
+def test_attach_reports_a_connection_we_could_not_make(accounts):
+    an_account, _ = accounts
+    from account_manager import account_manager
+
+    account_id = an_account()
+    account_manager.accounts[account_id]["session_string"] = ""
+    assert asyncio.run(inbox.attach("op-1", [account_id])) == {account_id: "no-session"}
+    assert inbox.watched() == []
+
+
+def test_attach_reports_a_client_that_telethon_would_not_give_back(accounts):
+    an_account, clients = accounts
+    account_id = an_account()
+    clients[account_id].fail_add = True
+    assert asyncio.run(inbox.attach("op-1", [account_id])) == {account_id: "connection-unavailable"}
+    assert inbox.watched() == []
+    assert inbox._CLIENTS == {}
+
+
+def test_detach_removes_the_handler_exactly_once(accounts):
+    an_account, clients = accounts
+    account_id = an_account()
+    asyncio.run(inbox.attach("op-1", [account_id]))
+    assert inbox.detach(account_id) is True
+    assert clients[account_id].removed and not clients[account_id].handlers
+    assert inbox.detach(account_id) is False
+    assert inbox.detach_all() == 0
+
+
+def test_switching_off_detaches_everything(accounts):
+    an_account, _ = accounts
+    asyncio.run(inbox.attach("op-1", [an_account(), an_account("acct-1")]))
+    assert len(inbox.watched()) == 2
+    assert inbox.detach_all() == 2
+    assert inbox.watched() == []
+
+
+def test_the_hub_caps_subscribers_and_survives_a_slow_tab(accounts):
+    assert inbox.HUB.subscribe("op-9") is not None
+    for _ in range(inbox.MAX_SUBSCRIBERS - 1):
+        inbox.HUB.subscribe("op-9")
+    assert inbox.HUB.subscribe("op-9") is None
+    assert inbox.HUB.subscribers("op-9") == inbox.MAX_SUBSCRIBERS
+    inbox.HUB._queues.pop("op-9", None)

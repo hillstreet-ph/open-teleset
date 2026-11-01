@@ -12,10 +12,11 @@ moment, and it honours the opt-out ledger.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections import OrderedDict
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from fastapi import APIRouter, HTTPException
 
@@ -130,6 +131,8 @@ class Wall:
 
 
 WALLS: dict[str, Wall] = {}
+_CLIENTS: dict[str, Any] = {}
+_HANDLERS: dict[str, Callable] = {}
 
 
 def _all() -> dict:
@@ -193,3 +196,135 @@ def zero_counter(operator: str, ref: str) -> None:
 
 def counters(operator: str) -> dict:
     return _record(operator)["counters"]
+
+
+class Hub:
+    """Fan-out to one operator's browser tabs. A handler must never await a browser."""
+
+    def __init__(self):
+        self._queues: dict[str, list[asyncio.Queue]] = {}
+
+    def subscribe(self, operator: str) -> Optional[asyncio.Queue]:
+        queues = self._queues.setdefault(operator, [])
+        if len(queues) >= MAX_SUBSCRIBERS:
+            return None
+        queue: asyncio.Queue = asyncio.Queue(maxsize=QUEUE_MAXSIZE)
+        queues.append(queue)
+        return queue
+
+    def unsubscribe(self, operator: str, queue: asyncio.Queue) -> None:
+        queues = self._queues.get(operator) or []
+        if queue in queues:
+            queues.remove(queue)
+        if not queues:
+            self._queues.pop(operator, None)
+
+    def subscribers(self, operator: str) -> int:
+        return len(self._queues.get(operator) or [])
+
+    def publish(self, operator: str, payload: dict) -> int:
+        delivered = 0
+        for queue in list(self._queues.get(operator) or []):
+            try:
+                queue.put_nowait(payload)
+                delivered += 1
+            except asyncio.QueueFull:
+                self._drop_stalled(operator, queue)
+        return delivered
+
+    def _drop_stalled(self, operator: str, queue: asyncio.Queue) -> None:
+        """A tab that cannot keep up is closed, never allowed to stall Telegram."""
+        try:
+            queue.get_nowait()               # make room for exactly one last notice
+        except asyncio.QueueEmpty:
+            pass
+        try:
+            queue.put_nowait({"type": "state", "state": "slowed"})
+        except asyncio.QueueFull:
+            pass
+        self.unsubscribe(operator, queue)
+
+
+HUB = Hub()
+
+
+def state_of(account_id: str) -> str:
+    """The blockers this module can see for itself, as fixed codes - never our own prose."""
+    from account_manager import account_manager
+
+    account = account_manager.accounts.get(account_id)
+    if account is None:
+        return "no-account"
+    if account_manager._paused_by_cooldown(account_id):
+        return "cooldown"
+    if not str(account.get("session_string") or "").strip():
+        return "no-session"
+    try:
+        account_manager.saved_proxy(account_id)
+    except ValueError:
+        return "proxy-unavailable"
+    return "live"
+
+
+def _build_handler(account_id: str) -> Callable:
+    async def handle(event):
+        try:
+            await note(account_id, event)
+        except Exception:
+            # One unreadable chat must not close the wall for anybody watching it.
+            log.exception("Inbox could not file an update from %s", account_id)
+    return handle
+
+
+async def attach(operator: str, account_ids: list[str]) -> dict:
+    """Connect and register one handler per account, process-wide. Returns {id: state code}."""
+    from account_manager import account_manager
+
+    outcome: dict[str, str] = {}
+    for account_id in account_ids[:MAX_WATCHED]:
+        blocked = state_of(account_id)
+        if blocked != "live":
+            outcome[account_id] = blocked
+            continue
+        if account_id in _HANDLERS:
+            outcome[account_id] = "live"
+            continue
+        client = _CLIENTS.get(account_id) or await account_manager.get_client(account_id)
+        if client is None:
+            outcome[account_id] = "connection-unavailable"
+            continue
+        _CLIENTS[account_id] = client
+        handler = _build_handler(account_id)
+        try:
+            from telethon import events
+
+            client.add_event_handler(handler, events.NewMessage(incoming=True, outgoing=True))
+        except Exception:
+            log.exception("Inbox could not register a handler for %s", account_id)
+            _CLIENTS.pop(account_id, None)
+            outcome[account_id] = "connection-unavailable"
+            continue
+        _HANDLERS[account_id] = handler
+        outcome[account_id] = "live"
+    return outcome
+
+
+def detach(account_id: str) -> bool:
+    """Drop one account's handler. Called on opt-out, on the switch going off, and on shutdown."""
+    handler = _HANDLERS.pop(account_id, None)
+    client = _CLIENTS.pop(account_id, None)
+    if handler is None:
+        return False
+    try:
+        client.remove_event_handler(handler)
+    except Exception:
+        log.exception("Inbox could not remove a handler for %s", account_id)
+    return True
+
+
+def detach_all() -> int:
+    return sum(1 for account_id in list(_HANDLERS) if detach(account_id))
+
+
+def watched() -> list:
+    return sorted(_HANDLERS)
