@@ -19,6 +19,7 @@ class _State:
 
 class _Request:
     state = _State()
+    base_url = "https://open-teleset.site/"
 
 
 @pytest.fixture(autouse=True)

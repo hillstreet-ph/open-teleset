@@ -15,12 +15,14 @@ import hashlib
 import hmac
 import io
 import json
+import os
 import re
 import struct
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from secrets import token_urlsafe
 from typing import List, Literal, Optional
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 import httpx
 from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFile
@@ -561,14 +563,48 @@ async def update_platform_features(body: FeatureUpdate):
 
 # ============ MCP / app integrations ============
 
+# A sign-in URL is good for ten minutes, and a bearer is renewed a minute before the
+# authorization server says it dies, so a scheduled call never races an expiring token.
+OAUTH_PENDING_SECONDS = 600
+OAUTH_REFRESH_LEEWAY_SECONDS = 60
 
-def _public_integration(item: dict) -> dict:
-    return {key: item.get(key) for key in ("id", "name", "base_url", "transport", "has_token", "created_at")}
+# Tests stand a fake authorization server in here; production leaves it None.
+_OAUTH_TRANSPORT = None
+
+OAUTH_SCOPES_SHOWN = 8
+
+
+def _public_integration(item: dict, entry: Optional[dict] = None) -> dict:
+    """What the panel may show about a server. Never an address secret or a token."""
+    if entry is None:
+        entry = _oauth_entry(str(item.get("id") or ""))
+    tokens = entry.get("tokens") or {}
+    return {
+        "id": item.get("id"),
+        "name": item.get("name"),
+        "base_url": item.get("base_url"),
+        "transport": item.get("transport"),
+        "has_token": bool(item.get("has_token")),
+        "created_at": item.get("created_at"),
+        "auth_mode": item.get("auth_mode") or "token",
+        "authorized": bool(tokens.get("access_token")),
+        "expires_at": tokens.get("expires_at"),
+        "scopes": str(item.get("scopes") or ""),
+        "granted_scopes": str(tokens.get("scope") or ""),
+        "has_client": bool(entry.get("client_id")),
+    }
 
 
 def _integrations() -> list:
     items = read_json("integrations", [])
     return items if isinstance(items, list) else []
+
+
+def _integration_or_404(integration_id: str) -> dict:
+    item = next((entry for entry in _integrations() if entry.get("id") == integration_id), None)
+    if not item:
+        raise HTTPException(404, "Integration does not exist")
+    return item
 
 
 class IntegrationInput(BaseModel):
@@ -577,12 +613,18 @@ class IntegrationInput(BaseModel):
     base_url: str = Field(min_length=8, max_length=500)
     transport: Literal["http", "sse"] = "http"
     api_key: Optional[str] = Field(default=None, max_length=800)
+    auth_mode: Literal["token", "oauth"] = "token"
+    client_id: Optional[str] = Field(default=None, max_length=200)
+    client_secret: Optional[str] = Field(default=None, max_length=400)
+    scopes: Optional[str] = Field(default=None, max_length=300)
 
 
 @router.get("/api/integrations/mcp")
 async def list_integrations(request: Request):
     return {
         "integrations": [_public_integration(item) for item in _integrations()],
+        # The one address the operator has to whitelist with a hand-registered client.
+        "redirect_uri": _redirect_uri(request),
         "suggested": [
             {"name": "Open Connect", "base_url": "https://open-connect.site/mcp"},
             {"name": "Composio", "base_url": "https://mcp.composio.dev"},
@@ -608,6 +650,8 @@ async def save_integration(body: IntegrationInput, request: Request):
         "base_url": base_url,
         "transport": body.transport,
         "has_token": bool(existing and existing.get("has_token")),
+        "auth_mode": body.auth_mode,
+        "scopes": (body.scopes or "").strip()[:300],
         "created_at": (existing or {}).get("created_at") or datetime.now(timezone.utc).isoformat(),
     }
     if body.api_key is not None:
@@ -624,7 +668,23 @@ async def save_integration(body: IntegrationInput, request: Request):
     else:
         items.append(record)
     write_json("integrations", items[:40])
+    _apply_oauth_settings(integration_id, body)
     return {"success": True, "integration": _public_integration(record)}
+
+
+def _apply_oauth_settings(integration_id: str, body: IntegrationInput) -> None:
+    """Keep the sign-in record in step with the mode the panel just chose."""
+    entry = _oauth_entry(integration_id)
+    if body.auth_mode != "oauth":
+        if entry:
+            _save_oauth_entry(integration_id, None)
+        return
+    if body.client_id is not None and body.client_id.strip():
+        entry["client_id"] = body.client_id.strip()[:200]
+    if body.client_secret is not None:
+        # Blank clears it, absent keeps it — the same rule as a static token.
+        entry["client_secret"] = body.client_secret.strip()[:400] if body.client_secret else ""
+    _save_oauth_entry(integration_id, entry)
 
 
 @router.delete("/api/integrations/mcp/{integration_id}")
@@ -637,18 +697,20 @@ async def delete_integration(integration_id: str):
     tokens = read_secret("integration_tokens", {}) or {}
     if tokens.pop(integration_id, None) is not None:
         write_secret("integration_tokens", tokens)
+    _save_oauth_entry(integration_id, None)
     return {"success": True}
 
 
 @router.post("/api/integrations/mcp/{integration_id}/test")
 async def test_integration(integration_id: str):
-    item = next((entry for entry in _integrations() if entry.get("id") == integration_id), None)
-    if not item:
-        raise HTTPException(404, "Integration does not exist")
-    token = (read_secret("integration_tokens", {}) or {}).get(integration_id, "")
+    item = _integration_or_404(integration_id)
     headers = {"Accept": "application/json, text/event-stream"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
+    if (item.get("auth_mode") or "token") == "oauth":
+        headers.update(await integration_auth_headers(integration_id))
+    else:
+        token = (read_secret("integration_tokens", {}) or {}).get(integration_id, "")
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
     try:
         async with httpx.AsyncClient(timeout=12, follow_redirects=False) as client:
             response = await client.get(item["base_url"], headers=headers)
@@ -657,6 +719,300 @@ async def test_integration(integration_id: str):
     ok = response.status_code < 500
     return {"success": ok, "status": response.status_code,
             "detail": "Endpoint reachable." if ok else f"Endpoint returned HTTP {response.status_code}."}
+
+
+# --------------------------------------------------------------- MCP OAuth sign-in
+#
+# A hosted MCP server usually wants the same OAuth login its website uses. The dashboard
+# behaves as a public client: it asks the server where its authorization server is, asks
+# that for its endpoints, registers itself when allowed, and sends the operator through
+# their browser. Only the code ever comes back, and it is spent against the token
+# endpoint with the verifier that never left this process.
+
+
+def _oauth_store() -> dict:
+    return read_secret("integration_oauth", {}) or {}
+
+
+def _oauth_entry(integration_id: str) -> dict:
+    entry = _oauth_store().get(integration_id)
+    return entry if isinstance(entry, dict) else {}
+
+
+def _save_oauth_entry(integration_id: str, entry: Optional[dict]) -> None:
+    secrets = _oauth_store()
+    if entry is None:
+        if integration_id not in secrets:
+            return
+        secrets.pop(integration_id, None)
+    else:
+        secrets[integration_id] = entry
+    write_secret("integration_oauth", secrets)
+
+
+def _redirect_uri(request: Request) -> str:
+    """Where the operator's browser lands with the code — the dashboard itself."""
+    base = os.getenv("APP_BASE_URL", "").strip().rstrip("/") or str(request.base_url).rstrip("/")
+    return f"{base}/dashboard"
+
+
+def _origin(url: str) -> str:
+    parts = urlsplit(url)
+    return f"{parts.scheme}://{parts.netloc}"
+
+
+def _checked_url(value: object) -> str:
+    """An address we are about to request on somebody else's say-so."""
+    try:
+        return _validate_url(str(value or ""))
+    except ValueError:
+        raise HTTPException(502, "That server pointed its sign-in at an address we will not use.") from None
+
+
+def _oauth_client(timeout: float = 12.0) -> httpx.AsyncClient:
+    return httpx.AsyncClient(timeout=timeout, follow_redirects=False, transport=_OAUTH_TRANSPORT)
+
+
+async def _get_metadata(url: str) -> dict:
+    try:
+        async with _oauth_client() as client:
+            response = await client.get(_checked_url(url), headers={"Accept": "application/json"})
+    except httpx.HTTPError:
+        return {}
+    if response.status_code != 200:
+        return {}
+    try:
+        body = response.json()
+    except ValueError:
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
+async def _discover_issuer(base_url: str) -> str:
+    """The MCP endpoint names its own authorization server; otherwise it is its own."""
+    document = await _get_metadata(f"{_origin(base_url)}/.well-known/oauth-protected-resource")
+    servers = document.get("authorization_servers")
+    if isinstance(servers, list) and servers and isinstance(servers[0], str):
+        return _checked_url(servers[0].rstrip("/"))
+    return _origin(base_url)
+
+
+async def _oauth_endpoints(base_url: str) -> dict:
+    issuer = await _discover_issuer(base_url)
+    for suffix in ("/.well-known/oauth-authorization-server", "/.well-known/openid-configuration"):
+        document = await _get_metadata(f"{issuer}{suffix}")
+        if document.get("authorization_endpoint") and document.get("token_endpoint"):
+            return {
+                "authorize": _checked_url(document["authorization_endpoint"]),
+                "token": _checked_url(document["token_endpoint"]),
+                "register": _checked_url(document["registration_endpoint"]) if document.get("registration_endpoint") else "",
+                # Shown to the operator so they know what to type; never sent unless they ask for it.
+                "scopes_supported": [str(s)[:60] for s in document.get("scopes_supported") or [] if isinstance(s, str)][:OAUTH_SCOPES_SHOWN],
+            }
+    raise HTTPException(502, "That server does not advertise an OAuth sign-in we can use.")
+
+
+async def _register_client(metadata: dict, redirect_uri: str, client_name: str) -> str:
+    if not metadata["register"]:
+        raise HTTPException(400, "That server does not register its own clients. Add its Client ID first.")
+    payload = {
+        "client_name": client_name[:60],
+        "redirect_uris": [redirect_uri],
+        "grant_types": ["authorization_code", "refresh_token"],
+        "response_types": ["code"],
+        # The dashboard is a browser-side app; a secret it holds is not a secret.
+        "token_endpoint_auth_method": "none",
+    }
+    try:
+        async with _oauth_client() as client:
+            response = await client.post(metadata["register"], json=payload)
+    except httpx.HTTPError:
+        raise HTTPException(502, "The sign-in server did not answer. Try again.") from None
+    if response.status_code >= 400:
+        raise HTTPException(502, "The sign-in server refused to register this dashboard.") from None
+    try:
+        client_id = str(response.json().get("client_id") or "")
+    except (ValueError, AttributeError):
+        client_id = ""
+    if not client_id:
+        raise HTTPException(502, "The sign-in server registered a client without an id.") from None
+    return client_id
+
+
+@router.post("/api/integrations/mcp/{integration_id}/oauth/start")
+async def start_mcp_oauth(integration_id: str, request: Request):
+    item = _integration_or_404(integration_id)
+    if (item.get("auth_mode") or "token") != "oauth":
+        raise HTTPException(400, "Switch that server to OAuth sign-in first.")
+    if not secret_key_available():
+        raise HTTPException(503, "SESSION_ENCRYPTION_KEY is not configured; tokens cannot be stored safely.")
+    entry = _oauth_entry(integration_id)
+    redirect_uri = _redirect_uri(request)
+    metadata = await _oauth_endpoints(item["base_url"])
+    client_id = str(entry.get("client_id") or "").strip() or await _register_client(
+        metadata, redirect_uri, str(item.get("name") or "Open Teleset")
+    )
+    verifier = token_urlsafe(48)
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
+    state = token_urlsafe(24)
+    params = {
+        "response_type": "code",
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "state": state,
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+    }
+    # Only scopes the operator typed: a server's full list can include rights this job never uses.
+    wanted = str(item.get("scopes") or "").strip()
+    if wanted:
+        params["scope"] = wanted
+    authorization_url = "{}?{}".format(metadata["authorize"], urlencode(params))
+    entry.update({
+        "client_id": client_id,
+        "token_endpoint": metadata["token"],
+        "pending": {"verifier": verifier, "state": state, "at": time.time(), "redirect_uri": redirect_uri},
+    })
+    _save_oauth_entry(integration_id, entry)
+    log_manager.add_log("Integrations", str(item.get("name") or integration_id), "Started a sign-in request", "info")
+    return {
+        "authorization_url": authorization_url,
+        "redirect_uri": redirect_uri,
+        "state": state,
+        "scopes_supported": metadata["scopes_supported"],
+    }
+
+
+class OAuthCallback(BaseModel):
+    code: str = Field(min_length=1, max_length=2048)
+    state: str = Field(min_length=1, max_length=200)
+
+
+@router.post("/api/integrations/mcp/oauth/callback")
+async def finish_mcp_oauth(body: OAuthCallback, request: Request):
+    """Spend the code the operator's browser brought back; the state names the server."""
+    store = _oauth_store()
+    integration_id = next((
+        key for key, value in store.items()
+        if isinstance(value, dict) and isinstance(value.get("pending"), dict)
+        and hmac.compare_digest(str(value["pending"].get("state") or ""), body.state)
+    ), None)
+    if not integration_id:
+        raise HTTPException(409, "That sign-in did not start from this dashboard. Try again.")
+    item = _integration_or_404(integration_id)
+    entry = store[integration_id]
+    pending = entry["pending"]
+    entry["pending"] = None
+    if time.time() - float(pending.get("at") or 0) > OAUTH_PENDING_SECONDS:
+        _save_oauth_entry(integration_id, entry)
+        raise HTTPException(409, "That sign-in expired. Start again.")
+    try:
+        tokens = await _post_for_tokens(
+            entry,
+            {
+                "grant_type": "authorization_code",
+                "code": body.code,
+                "redirect_uri": str(pending.get("redirect_uri") or _redirect_uri(request)),
+                "code_verifier": str(pending.get("verifier") or ""),
+            },
+        )
+    finally:
+        # One attempt, spent whether the server liked the code or not.
+        _save_oauth_entry(integration_id, entry)
+    entry["tokens"] = tokens
+    _save_oauth_entry(integration_id, entry)
+    log_manager.add_log("Integrations", str(item.get("name") or integration_id), "Signed in to a server", "info")
+    return {"success": True, "integration": _public_integration(item, entry)}
+
+
+@router.post("/api/integrations/mcp/{integration_id}/oauth/refresh")
+async def refresh_mcp_oauth(integration_id: str):
+    item = _integration_or_404(integration_id)
+    entry = _oauth_entry(integration_id)
+    current = entry.get("tokens") if isinstance(entry.get("tokens"), dict) else {}
+    refresh = str(current.get("refresh_token") or "")
+    if not refresh:
+        raise HTTPException(409, "That sign-in can no longer be renewed. Sign in again.")
+    entry["tokens"] = await _post_for_tokens(entry, {"grant_type": "refresh_token", "refresh_token": refresh})
+    _save_oauth_entry(integration_id, entry)
+    return {"success": True, "integration": _public_integration(item, entry)}
+
+
+@router.delete("/api/integrations/mcp/{integration_id}/oauth")
+async def disconnect_mcp_oauth(integration_id: str):
+    item = _integration_or_404(integration_id)
+    # The registration survives: this is signing out, not unregistering.
+    entry = _oauth_entry(integration_id)
+    entry["tokens"] = None
+    entry["pending"] = None
+    _save_oauth_entry(integration_id, entry)
+    log_manager.add_log("Integrations", str(item.get("name") or integration_id), "Signed out of a server", "info")
+    return {"success": True, "integration": _public_integration(item, entry)}
+
+
+async def _post_for_tokens(entry: dict, form: dict) -> dict:
+    """Spend a code or renew a token. The server's own words never reach the panel."""
+    client_id = str(entry.get("client_id") or "")
+    data = {"client_id": client_id, **form}
+    secret = str(entry.get("client_secret") or "")
+    if secret:
+        data["client_secret"] = secret
+    try:
+        async with _oauth_client() as client:
+            response = await client.post(
+                _checked_url(entry.get("token_endpoint")),
+                data=data,
+                headers={"Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded"},
+            )
+    except httpx.HTTPError:
+        raise HTTPException(502, "The sign-in server did not answer. Sign in again.") from None
+    if response.status_code >= 400:
+        raise HTTPException(502, "The sign-in server refused these credentials. Sign in again.") from None
+    try:
+        body = response.json()
+    except ValueError:
+        body = {}
+    if not isinstance(body, dict) or not body.get("access_token"):
+        raise HTTPException(502, "The sign-in server refused these credentials. Sign in again.") from None
+    current = entry.get("tokens") if isinstance(entry.get("tokens"), dict) else {}
+    try:
+        lifetime = int(body.get("expires_in") or 0)
+    except (TypeError, ValueError):
+        lifetime = 0
+    return {
+        "access_token": str(body["access_token"]),
+        # A server that does not hand out a new refresh token means "keep using the old one".
+        "refresh_token": str(body.get("refresh_token") or current.get("refresh_token") or ""),
+        "expires_at": (datetime.now(timezone.utc) + timedelta(seconds=lifetime)).isoformat() if lifetime else None,
+        "scope": str(body.get("scope") or ""),
+    }
+
+
+def _expires_soon(expires_at: object) -> bool:
+    try:
+        when = datetime.fromisoformat(str(expires_at))
+    except (TypeError, ValueError):
+        return False
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return (when - datetime.now(timezone.utc)).total_seconds() <= OAUTH_REFRESH_LEEWAY_SECONDS
+
+
+async def integration_auth_headers(integration_id: str) -> dict:
+    """The Authorization header for a server, renewed just before it expires."""
+    entry = _oauth_entry(integration_id)
+    tokens = entry.get("tokens") if isinstance(entry.get("tokens"), dict) else None
+    if tokens and _expires_soon(tokens.get("expires_at")) and str(tokens.get("refresh_token") or ""):
+        try:
+            tokens = await _post_for_tokens(entry, {"grant_type": "refresh_token", "refresh_token": tokens["refresh_token"]})
+        except HTTPException:
+            tokens = None
+        else:
+            entry["tokens"] = tokens
+            _save_oauth_entry(integration_id, entry)
+    if not tokens or not tokens.get("access_token"):
+        return {}
+    return {"Authorization": f"Bearer {tokens['access_token']}"}
 
 
 # ============ Notifications ============

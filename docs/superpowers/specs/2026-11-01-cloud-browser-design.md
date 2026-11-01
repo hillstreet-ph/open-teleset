@@ -115,6 +115,40 @@ forgetting a browser you are not viewing leaves it alone.
 and logins live in the browser each address points at, which is exactly the separation the
 operator is paying the vendor for.
 
+## MCP sign-in: the decisions worth recording
+
+The same request also asked for an OAuth login flow on **Custom MCP servers**, so the
+dashboard can call a hosted MCP server that signs people in instead of handing out tokens.
+Four choices shaped it:
+
+**The code is routed by its state, not by an id.** The obvious design puts the integration
+id in the redirect (`/api/integrations/mcp/{id}/oauth/callback`), which needs a second
+public endpoint and lets anyone aim a code at a server of their choosing. Instead the
+callback looks the pending request up by matching the state with a constant-time comparison
+across the operator's own entries. Consequence worth having: one stable callback address per
+deployment for the whitelist, and no way to spend a code against the wrong server. Rejected:
+a state→id lookup endpoint (a table with the same information in a second place).
+
+**The sign-in finishes in the operator's tab.** The authorization server redirects to
+`/dashboard?code=…&state=…`, the panel strips both parameters out of the address bar before
+anything else runs, and the code is spent once — the pending attempt is cleared whether the
+token exchange succeeds or fails, so a refresh cannot replay it. Rejected: an iframe cockpit
+(the IdP refuses to be framed, and it would put the code inside our DOM) and a separate
+public callback path (a new unauthenticated surface).
+
+**Least privilege on scopes.** Only the scopes the operator typed go into the request; an
+empty field sends no `scope` parameter at all, and the server's `scopes_supported` list is
+returned for display, capped at 8 entries. A server's full list can include rights this job
+never uses. The panel keeps the two apart: `scopes` is what was asked for (and round-trips
+through the form), `granted_scopes` is what the server answered.
+
+**Every address the remote names is treated as hostile.** The issuer, the authorization
+endpoint, the token endpoint and the registration endpoint are each re-validated through the
+webhook URL rule — https, public host, no embedded credentials — before a single request
+goes out, redirects are not followed, and a refusal gets one fixed sentence rather than the
+identity provider's error body, which can carry secrets. This is the difference between
+"connect my MCP server" and "let my MCP server point my backend at my own network".
+
 ## Boundaries that are enforced by construction
 
 - **Telethon stays Telegram.** No Cloud Browser request model carries an `account_id`,
@@ -177,7 +211,20 @@ operator is paying the vendor for.
   opens a connection to that address, forgetting one leaves the survivor active, forgetting
   all leaves the panel asking for setup, and no stored address is ever shown as more than a
   host.
-- `node --test tests/*.mjs` and the full pytest suite stay green (634 passed).
+- `tests/test_mcp_oauth.py` — 22 tests against a mock authorization server, covering
+  discovery at the MCP origin, registration as a public client, the scope actually sent,
+  the PKCE verifier, single-use state and codes, renewal before expiry, write-only storage,
+  refusal of a private or credential-bearing endpoint, and no credential text in any error.
+- `tests/test_mcp_oauth_panel.mjs` — 10 tests on the panel's methods: the code stripped from
+  the address bar at boot, spent once, failures written into the list, and a save that never
+  resends a blank secret.
+- The harness also serves a fake authorization server and a fake MCP endpoint on the browser
+  port, so `ui_mcp_oauth.mjs` walks 43 button-level checks through the real panel: add an
+  OAuth server, see the callback address, sign in, read the consent page (it asks for exactly
+  the scope typed), approve, land with a clean address bar, test the bearer, watch a token
+  about to expire, renew it, meet a deliberately rude token endpoint, sign out, sign in again
+  on the same registration, rename, switch to a bearer and back, deny, and remove.
+- `node --test tests/*.mjs` and the full pytest suite stay green (89 node tests, 656 passed).
 
 ## What this is not
 

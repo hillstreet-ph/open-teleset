@@ -1442,34 +1442,52 @@
                         </section>
 
                         <section class="panel" style="margin-top:24px;">
-                            <div class="panel-head"><h3>Custom MCP servers</h3><span class="panel-sub">HTTPS or SSE</span></div>
-                            <p class="muted small">Connect an external MCP server (Open Connect, Composio, Airtable, n8n and similar). Tokens are encrypted and never returned.</p>
+                            <div class="panel-head"><h3>Custom MCP servers</h3><span class="panel-sub">HTTP, SSE or OAuth sign-in</span></div>
+                            <p class="muted small">Connect an external MCP server (Open Connect, Composio, Airtable, n8n and similar). A bearer token or an OAuth login is encrypted at rest and never returned to this page.</p>
                             <div class="form-row" style="align-items:flex-end;">
                                 <div class="form-group" style="flex:1;min-width:140px;"><label>Name</label><input class="form-control" v-model="integrations.form.name" maxlength="60" placeholder="Airtable"></div>
                                 <div class="form-group" style="flex:2;min-width:220px;"><label>Base URL</label><input class="form-control" v-model="integrations.form.url" placeholder="https://mcp.airtable.com/mcp"></div>
                             </div>
                             <div class="form-row" style="align-items:flex-end;">
-                                <div class="form-group" style="flex:1;min-width:120px;">
+                                <div class="form-group" style="flex:0 0 auto;min-width:110px;">
                                     <label>Transport</label>
                                     <select class="form-control" v-model="integrations.form.transport"><option value="http">HTTP</option><option value="sse">SSE</option></select>
                                 </div>
-                                <div class="form-group" style="flex:2;min-width:200px;"><label>Token (optional)</label><input class="form-control" type="password" v-model="integrations.form.token" autocomplete="new-password"></div>
-                                <div class="form-group" style="flex:0 0 auto;"><button class="btn btn-primary" @click="saveIntegration" :disabled="!!integrations.busy">{{ integrations.busy === 'save' ? 'Saving…' : 'Add server' }}</button></div>
+                                <div class="form-group" style="flex:0 0 auto;min-width:150px;">
+                                    <label>Sign-in</label>
+                                    <select class="form-control" v-model="integrations.form.auth_mode"><option value="token">Bearer token</option><option value="oauth">OAuth login</option></select>
+                                </div>
+                                <div v-if="integrations.form.auth_mode === 'token'" class="form-group" style="flex:2;min-width:200px;"><label>Token (optional)</label><input class="form-control" type="password" v-model="integrations.form.token" autocomplete="new-password"></div>
+                                <div class="form-group" style="flex:0 0 auto;"><button class="btn btn-primary" @click="saveIntegration" :disabled="!!integrations.busy">{{ integrations.busy === 'save' ? 'Saving…' : (integrations.editing ? 'Save changes' : 'Add server') }}</button></div>
+                                <div v-if="integrations.editing" class="form-group" style="flex:0 0 auto;"><button class="btn btn-outline" @click="cancelIntegrationEdit">Cancel</button></div>
                             </div>
+                            <template v-if="integrations.form.auth_mode === 'oauth'">
+                                <div class="form-row" style="align-items:flex-end;">
+                                    <div class="form-group" style="flex:1;min-width:160px;"><label>Client ID</label><input class="form-control" v-model="integrations.form.client_id" maxlength="200" placeholder="only if issued to you"></div>
+                                    <div class="form-group" style="flex:1;min-width:160px;"><label>Client secret</label><input class="form-control" type="password" v-model="integrations.form.client_secret" autocomplete="new-password"></div>
+                                    <div class="form-group" style="flex:1;min-width:140px;"><label>Scopes</label><input class="form-control" v-model="integrations.form.scopes" maxlength="300" placeholder="space-separated, optional"></div>
+                                </div>
+                                <p class="muted small">No Client ID means the dashboard registers itself with that server as a public client. A server that insists on an issued client must allow this callback address: <span class="mono">{{ integrations.redirectUri || 'loading…' }}</span></p>
+                            </template>
                             <div v-if="integrations.suggested.length" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;">
                                 <button v-for="item in integrations.suggested" :key="item.name" class="btn btn-outline btn-sm" @click="integrations.form.name = item.name; integrations.form.url = item.base_url">{{ item.name }}</button>
                             </div>
+                            <p v-if="integrations.notice" class="notice ok">{{ integrations.notice }}</p>
                             <p v-if="integrations.error" class="notice bad">{{ integrations.error }}</p>
                             <p v-if="integrations.loading" class="muted small">Loading servers…</p>
                             <p v-else-if="!integrations.list.length" class="empty-inline">No custom MCP servers yet.</p>
                             <div v-for="item in integrations.list" :key="item.id" style="padding:12px 0;border-top:1px solid var(--border);overflow-wrap:anywhere;">
                                 <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;">
                                     <strong style="font-size:13px;">{{ item.name }}</strong>
-                                    <span class="badge" :class="item.has_token ? 'badge-success' : 'badge-normal'">{{ item.has_token ? 'Token stored' : 'No token' }}</span>
+                                    <span class="badge" :class="integrationState(item).cls">{{ integrationState(item).text }}</span>
                                 </div>
-                                <p class="mono small" style="margin-top:4px;">{{ item.base_url }} · {{ item.transport.toUpperCase() }}</p>
+                                <p class="mono small" style="margin-top:4px;">{{ item.base_url }} · {{ item.transport.toUpperCase() }} · {{ item.auth_mode === 'oauth' ? 'OAuth' : 'Token' }}<template v-if="item.granted_scopes"> · {{ item.granted_scopes }}</template><template v-if="item.expires_at"> · expires {{ formatIntegrationExpiry(item.expires_at) }}</template></p>
                                 <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">
                                     <button class="btn btn-outline btn-sm" @click="testIntegration(item)" :disabled="!!integrations.busy">Test</button>
+                                    <button v-if="item.auth_mode === 'oauth' && !item.authorized" class="btn btn-primary btn-sm" @click="startIntegrationSignIn(item)" :disabled="!!integrations.busy">Sign in</button>
+                                    <button v-if="item.auth_mode === 'oauth' && item.authorized" class="btn btn-outline btn-sm" @click="renewIntegrationSignIn(item)" :disabled="!!integrations.busy">Renew now</button>
+                                    <button v-if="item.auth_mode === 'oauth' && item.authorized" class="btn btn-outline btn-sm" @click="signOutIntegration(item)" :disabled="!!integrations.busy">Sign out</button>
+                                    <button class="btn btn-outline btn-sm" @click="editIntegration(item)" :disabled="!!integrations.busy">Edit</button>
                                     <button class="btn btn-danger btn-sm" @click="deleteIntegration(item)" :disabled="!!integrations.busy">Remove</button>
                                 </div>
                             </div>
@@ -3761,8 +3779,11 @@
                         events: [], catalog: [], saving: false, testing: false,
                     },
                     integrations: {
-                        loading: false, list: [], suggested: [], error: '', busy: '', form: { name: '', url: '', transport: 'http', token: '' },
+                        loading: false, list: [], suggested: [], error: '', notice: '', busy: '', editing: '',
+                        redirectUri: '',
+                        form: { name: '', url: '', transport: 'http', token: '', auth_mode: 'token', client_id: '', client_secret: '', scopes: '' },
                     },
+                    pendingOAuthReturn: null,
                     features: { loading: false, automation_enabled: true, factory_enabled: true, cloud_browser_enabled: false, saving: '' },
                     cloudBrowser: {
                         config: { configured: false, host: '', has_token: false, updated_at: '', enabled: false, encryption_ready: false, keys: [], profiles: [], active: '', max_profiles: 12 },
@@ -5037,6 +5058,7 @@
                         this.verifiedRole = data.role
                         this.accessReady = true
                         this.loadProfile()
+                        this.spendOAuthReturn()
                         this.loadDashboardData()
                         this.loadOutreachJobs()
                         this.connectStatusSocket(revision)
@@ -6842,11 +6864,45 @@
                         const { data } = await _api.get('/api/integrations/mcp')
                         this.integrations.list = data.integrations || []
                         this.integrations.suggested = data.suggested || []
+                        this.integrations.redirectUri = data.redirect_uri || ''
                     } catch (e) {
                         this.integrations.error = e.response?.data?.detail || 'Could not load integrations.'
                     } finally {
                         this.integrations.loading = false
                     }
+                },
+                integrationState(item) {
+                    if (item.auth_mode !== 'oauth') {
+                        return item.has_token ? { cls: 'badge-success', text: 'Token stored' } : { cls: 'badge-normal', text: 'No token' }
+                    }
+                    if (!item.authorized) {
+                        return item.has_client ? { cls: 'badge-normal', text: 'Signed out' } : { cls: 'badge-normal', text: 'Needs sign-in' }
+                    }
+                    if (item.expires_at && new Date(item.expires_at).getTime() - Date.now() < 15 * 60 * 1000) {
+                        return { cls: 'badge-warning', text: 'Sign-in expiring' }
+                    }
+                    return { cls: 'badge-success', text: 'Signed in' }
+                },
+                formatIntegrationExpiry(value) {
+                    const when = new Date(value)
+                    return Number.isNaN(when.getTime()) ? '—' : when.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+                },
+                resetIntegrationForm() {
+                    this.integrations.form = { name: '', url: '', transport: 'http', token: '', auth_mode: 'token', client_id: '', client_secret: '', scopes: '' }
+                },
+                editIntegration(item) {
+                    this.integrations.editing = item.id
+                    this.integrations.notice = ''
+                    this.integrations.form = {
+                        name: item.name || '', url: item.base_url || '', transport: item.transport || 'http',
+                        token: '', auth_mode: item.auth_mode || 'token',
+                        client_id: '', client_secret: '', scopes: item.scopes || '',
+                    }
+                    this.showToast(`Editing ${item.name}.`)
+                },
+                cancelIntegrationEdit() {
+                    this.integrations.editing = ''
+                    this.resetIntegrationForm()
                 },
                 async saveIntegration() {
                     if (this.integrations.busy) return
@@ -6856,16 +6912,103 @@
                     }
                     this.integrations.busy = 'save'
                     try {
-                        const body = { name: this.integrations.form.name.trim(), base_url: this.integrations.form.url.trim(), transport: this.integrations.form.transport }
-                        if (this.integrations.form.token.trim()) body.api_key = this.integrations.form.token.trim()
+                        const form = this.integrations.form
+                        const body = {
+                            name: form.name.trim(), base_url: form.url.trim(),
+                            transport: form.transport, auth_mode: form.auth_mode,
+                        }
+                        if (this.integrations.editing) body.id = this.integrations.editing
+                        if (form.token.trim()) body.api_key = form.token.trim()
+                        if (form.auth_mode === 'oauth') {
+                            if (form.client_id.trim()) body.client_id = form.client_id.trim()
+                            if (form.client_secret) body.client_secret = form.client_secret
+                            if (form.scopes.trim()) body.scopes = form.scopes.trim()
+                        }
                         await _api.put('/api/integrations/mcp', body)
-                        this.integrations.form = { name: '', url: '', transport: 'http', token: '' }
+                        this.integrations.editing = ''
+                        this.resetIntegrationForm()
+                        this.integrations.notice = ''
                         this.showToast('Integration saved.')
                         await this.loadIntegrations()
                     } catch (e) {
-                        this.showToast(e.response?.data?.detail || 'Could not save the integration.', true)
+                        this.integrations.error = e.response?.data?.detail || 'Could not save the integration.'
                     } finally {
                         this.integrations.busy = ''
+                    }
+                },
+                async startIntegrationSignIn(item) {
+                    if (this.integrations.busy) return
+                    this.integrations.busy = item.id
+                    this.integrations.error = ''
+                    try {
+                        const { data } = await _api.post(`/api/integrations/mcp/${encodeURIComponent(item.id)}/oauth/start`, {}, { timeout: 30000 })
+                        // The sign-in happens in this tab; the code comes back to /dashboard.
+                        window.location.assign(data.authorization_url)
+                    } catch (e) {
+                        this.integrations.error = e.response?.data?.detail || 'That server could not start a sign-in.'
+                        this.integrations.busy = ''
+                    }
+                },
+                async renewIntegrationSignIn(item) {
+                    if (this.integrations.busy) return
+                    this.integrations.busy = item.id
+                    this.integrations.error = ''
+                    try {
+                        await _api.post(`/api/integrations/mcp/${encodeURIComponent(item.id)}/oauth/refresh`, {}, { timeout: 30000 })
+                        this.integrations.notice = `Signed in to ${item.name} again.`
+                        await this.loadIntegrations()
+                    } catch (e) {
+                        this.integrations.error = e.response?.data?.detail || 'Could not renew that sign-in.'
+                    } finally {
+                        this.integrations.busy = ''
+                    }
+                },
+                async signOutIntegration(item) {
+                    if (this.integrations.busy) return
+                    if (!window.confirm(`Sign out of ${item.name}? The server stays listed.`)) return
+                    this.integrations.busy = item.id
+                    try {
+                        await _api.delete(`/api/integrations/mcp/${encodeURIComponent(item.id)}/oauth`)
+                        this.integrations.notice = `Signed out of ${item.name}.`
+                        await this.loadIntegrations()
+                    } catch (e) {
+                        this.integrations.error = e.response?.data?.detail || 'Could not sign out.'
+                    } finally {
+                        this.integrations.busy = ''
+                    }
+                },
+                captureOAuthReturn() {
+                    // The sign-in server lands on /dashboard?code=…&state=… and a code is
+                    // spendable once, so take it out of the address bar before anything else runs.
+                    const params = new URLSearchParams(window.location.search)
+                    const code = params.get('code')
+                    const state = params.get('state')
+                    const error = params.get('error')
+                    if (!code && !error) return
+                    params.delete('code'); params.delete('state'); params.delete('error'); params.delete('error_description')
+                    const rest = params.toString()
+                    window.history.replaceState({}, '', window.location.pathname + (rest ? `?${rest}` : ''))
+                    if (code && state) this.pendingOAuthReturn = { code, state }
+                    if (error) this.showToast('The sign-in server refused the request. Start again.', true)
+                    if (code && !state) this.showToast('That sign-in came back without a state. Start again.', true)
+                },
+                async spendOAuthReturn() {
+                    const pending = this.pendingOAuthReturn
+                    if (!pending) return
+                    this.pendingOAuthReturn = null
+                    let failure = ''
+                    try {
+                        const { data } = await _api.post('/api/integrations/mcp/oauth/callback', pending)
+                        this.integrations.notice = `Signed in to ${data.integration?.name || 'that server'}.`
+                    } catch (e) {
+                        failure = e.response?.data?.detail || 'That sign-in could not be finished.'
+                    }
+                    // Land the operator where the result is visible, with the list re-read.
+                    if (this.tab === 'integrations') await this.loadIntegrations()
+                    else this.go('integrations')
+                    if (failure) {
+                        this.integrations.error = failure
+                        this.showToast(failure, true)
                     }
                 },
                 async testIntegration(item) {
@@ -6884,6 +7027,7 @@
                     if (!window.confirm(`Remove ${item.name}?`)) return
                     try {
                         await _api.delete(`/api/integrations/mcp/${encodeURIComponent(item.id)}`)
+                        if (this.integrations.editing === item.id) this.cancelIntegrationEdit()
                         this.showToast('Integration removed.')
                         await this.loadIntegrations()
                     } catch (e) {
@@ -7512,6 +7656,7 @@
                     if (savedWidth >= 196 && savedWidth <= 420) this.sidebarWidth = savedWidth
                     this.inboxLastRead = localStorage.getItem('ot_inbox_read') || ''
                 } catch (e) {}
+                this.captureOAuthReturn()
                 this.initAuth()
                 this.jobsPoll = setInterval(() => this.loadOutreachJobs(), 2000)
                 this.dashboardPoll = setInterval(() => {
