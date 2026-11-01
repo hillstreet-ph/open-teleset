@@ -930,6 +930,7 @@
                             <span class="nav-text">{{ item.label }}</span>
                             <span v-if="item.badge === 'accounts' && accounts.length" class="nav-count">{{ accounts.length }}</span>
                             <span v-else-if="item.badge === 'jobs' && openJobCount" class="nav-count">{{ openJobCount }}</span>
+                            <span v-else-if="item.badge === 'inbox' && mailboxUnread" class="nav-count">{{ mailboxUnread }}</span>
                         </button>
                     </div>
                 </nav>
@@ -1426,9 +1427,13 @@
                                 <div><strong style="font-size:13px;">Cloud Browser</strong><p class="muted small" style="margin-top:2px;">Lets you drive a hosted browser you own. Telegram sending, joining and scraping always stay on the Telethon accounts.</p></div>
                                 <button class="toggle" :class="{ on: features.cloud_browser_enabled }" role="switch" :aria-checked="features.cloud_browser_enabled ? 'true' : 'false'" :disabled="features.saving === 'cloud_browser_enabled'" @click="saveFeature('cloud_browser_enabled', !features.cloud_browser_enabled)"></button>
                             </div>
-                            <div class="toggle-row" style="border-bottom:0;">
+                            <div class="toggle-row">
                                 <div><strong style="font-size:13px;">Auto Reply</strong><p class="muted small" style="margin-top:2px;">Answers private chats that messaged an account first. Off until you switch it on and name the accounts.</p></div>
                                 <button class="toggle" :class="{ on: features.auto_reply_enabled }" role="switch" :aria-checked="features.auto_reply_enabled ? 'true' : 'false'" :disabled="features.saving === 'auto_reply_enabled'" @click="saveFeature('auto_reply_enabled', !features.auto_reply_enabled)"></button>
+                            </div>
+                            <div class="toggle-row" style="border-bottom:0;">
+                                <div><strong style="font-size:13px;">Inbox</strong><p class="muted small" style="margin-top:2px;">Shows the chats on the accounts you opt in and the messages they receive. Nothing is ever answered unless you type it.</p></div>
+                                <button class="toggle" :class="{ on: features.inbox_enabled }" role="switch" :aria-checked="features.inbox_enabled ? 'true' : 'false'" :disabled="features.saving === 'inbox_enabled'" @click="saveFeature('inbox_enabled', !features.inbox_enabled)"></button>
                             </div>
                             <p v-if="features.loading" class="muted small">Loading switches…</p>
                         </section>
@@ -2539,6 +2544,111 @@
                             </tr>
                         </tbody>
                     </table>
+                </div>
+            </div>
+
+            <!-- Inbox: the wall of chats on the accounts the operator opted in -->
+            <div v-show="tab === 'inbox'">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>Inbox</h3>
+                        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                            <span class="badge" :class="mailbox.live ? 'badge-success' : 'badge-normal'">{{ mailbox.live ? 'Live' : 'Not streaming' }}</span>
+                            <button class="btn btn-sm btn-outline" @click="refreshMailbox" :disabled="!!mailbox.busy || !mailbox.config.enabled">{{ mailbox.busy === 'refresh' ? 'Reading…' : 'Refresh now' }}</button>
+                            <button class="btn btn-sm btn-outline" @click="clearMailboxWall" :disabled="!mailbox.chats.length">Clear this screen</button>
+                        </div>
+                    </div>
+                    <p class="muted small">Every chat on the accounts you opt in, newest first.
+                        <strong>Only a reply you type here is sent</strong> — the inbox never answers on its own.
+                        Watching an account keeps collecting unread counts while this tab is closed.</p>
+                    <p v-if="mailbox.loading" class="muted small" style="margin-top:8px;">Loading the inbox…</p>
+                    <p v-if="!mailbox.config.enabled" role="alert" class="small" style="color:var(--warning);margin-top:8px;">
+                        Inbox is switched off. Turn it on under Integrations › Platform switches.
+                        <button class="btn btn-sm btn-outline" style="margin-left:8px;" @click="go('integrations')">Open Integrations</button>
+                    </p>
+                    <p v-if="mailbox.streamError" role="alert" class="small" style="color:var(--danger);margin-top:8px;">{{ mailbox.streamError }}</p>
+                    <p v-if="mailbox.error" role="alert" class="small" style="color:var(--danger);margin-top:8px;">{{ mailbox.error }}</p>
+                    <p v-if="mailbox.config.skipped_unknown" class="muted small" style="margin-top:8px;">
+                        {{ mailbox.config.skipped_unknown }} chats are not personal, group, channel or bot, so they are left out.</p>
+                    <div class="status-row" style="margin-top:10px;"><span class="status-key">Chats on this screen</span><span class="status-val">{{ mailbox.chats.length }}</span></div>
+                    <div class="status-row"><span class="status-key">Tabs watching live</span><span class="status-val">{{ mailbox.config.subscribers }}</span></div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h3>Watched accounts</h3>
+                        <span class="muted small">{{ mailbox.config.accounts.length }} of {{ mailbox.config.limit }}</span>
+                    </div>
+                    <p class="muted small" style="margin-bottom:14px;">Opt an account in to see its chats here. While it is opted in, Telegram pushes every new message straight to this screen.</p>
+                    <div v-if="!accounts.length" class="empty-state"><p>Add a Telegram account first.</p></div>
+                    <div v-else>
+                        <div v-for="acc in accounts" :key="acc.account_id" class="toggle-row">
+                            <div>
+                                <strong style="font-size:13px;">{{ accountDisplayName(acc) }}</strong>
+                                <p class="muted small mono" style="margin-top:2px;">{{ shortAccountId(acc.account_id) }}</p>
+                                <p v-if="isMailboxWatched(acc.account_id)" class="muted small" style="margin-top:4px;">{{ mailbox.config.labels[mailbox.config.state[acc.account_id]] || mailbox.config.labels.live }}</p>
+                            </div>
+                            <button class="toggle" :class="{ on: isMailboxWatched(acc.account_id) }" role="switch" :aria-checked="isMailboxWatched(acc.account_id) ? 'true' : 'false'" :disabled="!!mailbox.busy || !mailbox.config.enabled" @click="setMailboxAccount(acc.account_id, !isMailboxWatched(acc.account_id))"></button>
+                        </div>
+                    </div>
+                </div>
+
+                <div v-if="mailbox.config.enabled" class="card">
+                    <div class="card-header">
+                        <h3>Chats</h3>
+                        <span class="muted small">{{ mailbox.chats.length }} shown</span>
+                    </div>
+                    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px;">
+                        <button class="btn btn-sm" :class="mailbox.bucket === '' ? 'btn-primary' : 'btn-outline'" @click="setMailboxBucket('')">All</button>
+                        <button v-for="name in mailbox.config.buckets" :key="name" class="btn btn-sm" :class="mailbox.bucket === name ? 'btn-primary' : 'btn-outline'" @click="setMailboxBucket(name)">{{ mailboxBucketLabel(name) }}</button>
+                        <select class="form-control" style="max-width:210px;" v-model="mailbox.account" @change="loadMailbox" aria-label="Filter chats by account">
+                            <option value="">All accounts</option>
+                            <option v-for="acc in accounts" :key="acc.account_id" :value="acc.account_id">{{ accountDisplayName(acc) }}</option>
+                        </select>
+                        <input class="form-control" style="max-width:240px;" v-model="mailbox.query" @input="searchMailboxWall" placeholder="Search a chat by name" aria-label="Search chats by name">
+                    </div>
+                    <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.5fr);gap:16px;">
+                        <div>
+                            <div v-if="!mailbox.chats.length" class="empty-state" style="padding:28px 16px;">
+                                <p>No chats on this screen. Opt an account in above, then use Refresh now.</p>
+                            </div>
+                            <div v-else style="display:flex;flex-direction:column;gap:8px;max-height:520px;overflow:auto;">
+                                <button v-for="chat in mailbox.chats" :key="chat.ref" class="proxy-item" style="text-align:left;width:100%;cursor:pointer;" :style="{ borderColor: mailbox.ref === chat.ref ? 'var(--accent)' : 'var(--border)' }" @click="openMailboxChat(chat)">
+                                    <div class="proxy-info" style="flex:1;min-width:0;">
+                                        <h4 style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+                                            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ chat.name }}</span>
+                                            <span class="badge badge-info">{{ mailboxBucketLabel(chat.bucket) }}</span>
+                                            <span v-if="chat.unread" class="pill ok">{{ chat.unread }}</span>
+                                        </h4>
+                                        <p class="muted small" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ chat.preview || (chat.outgoing ? 'You last wrote here' : 'No text') }}</p>
+                                        <p class="muted small mono">{{ shortAccountId(chat.account_id) }} · {{ mailboxTime(chat.time) }}</p>
+                                    </div>
+                                </button>
+                            </div>
+                        </div>
+                        <div>
+                            <div v-if="!mailbox.ref" class="empty-state" style="padding:28px 16px;"><p>Pick a chat to read it.</p></div>
+                            <div v-else>
+                                <div style="display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:10px;flex-wrap:wrap;">
+                                    <strong style="font-size:14px;">{{ mailboxChatName }}</strong>
+                                    <button class="btn btn-sm btn-outline" @click="markMailboxRead(mailbox.ref)" :disabled="!mailboxActiveUnread">Mark read</button>
+                                </div>
+                                <div style="display:flex;flex-direction:column;gap:8px;max-height:420px;overflow:auto;">
+                                    <div v-if="!mailbox.messages.length" class="muted small" style="padding:16px 0;">Nothing to show yet. Refresh now asks Telegram for this chat again.</div>
+                                    <div v-for="(msg, index) in mailbox.messages" :key="index" style="background:rgba(0,0,0,0.2);padding:10px 12px;border-radius:8px;" :style="{ marginLeft: msg.outgoing ? '36px' : '0', marginRight: msg.outgoing ? '0' : '36px' }">
+                                        <p style="white-space:pre-wrap;word-break:break-word;">{{ msg.text }}</p>
+                                        <p class="muted small mono" style="margin-top:4px;">{{ msg.outgoing ? 'You' : (msg.sender || 'them') }} · {{ mailboxTime(msg.time) }}</p>
+                                    </div>
+                                </div>
+                                <div class="form-group" style="margin-top:14px;">
+                                    <label for="mailbox-reply">Reply</label>
+                                    <textarea id="mailbox-reply" class="form-control" rows="3" v-model="mailbox.reply" :maxlength="700" placeholder="Type what you want sent. Nothing leaves this box on its own."></textarea>
+                                    <small>{{ mailbox.reply.length }} / 700</small>
+                                </div>
+                                <button class="btn btn-primary" @click="sendMailboxReply" :disabled="!!mailbox.busy || !mailbox.reply.trim()">{{ mailbox.busy === 'send' ? 'Sending…' : 'Send this reply' }}</button>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -4058,6 +4168,7 @@
         // with fetch + ReadableStream. The abort handle lives outside Vue's reactive
         // state: a controller proxy would break the underlying connection.
         let _cloudStream = null
+        let _mailboxStream = null
         let _cloudClickTimer = null
 
         const { createApp } = Vue
@@ -4104,6 +4215,7 @@
             cloud: '<path d="M18 18H7a5 5 0 1 1 1.2-9.86A6 6 0 0 1 19.7 10.4 4 4 0 0 1 18 18z"/><path d="M12 12v6M9.5 15.5L12 18l2.5-2.5"/>',
             sparkles: '<path d="M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z"/><path d="M19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9z"/>',
             reply: '<path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 6 6v4"/>',
+            inbox: '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
             book: '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>',
             image: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/>'
         }
@@ -4185,7 +4297,7 @@
                         form: { name: '', url: '', transport: 'http', token: '', auth_mode: 'token', client_id: '', client_secret: '', scopes: '' },
                     },
                     pendingOAuthReturn: null,
-                    features: { loading: false, automation_enabled: true, factory_enabled: true, cloud_browser_enabled: false, auto_reply_enabled: false, saving: '' },
+                    features: { loading: false, automation_enabled: true, factory_enabled: true, cloud_browser_enabled: false, auto_reply_enabled: false, inbox_enabled: false, saving: '' },
                     cloudBrowser: {
                         config: { configured: false, host: '', has_token: false, updated_at: '', enabled: false, encryption_ready: false, keys: [], profiles: [], active: '', max_profiles: 12 },
                         endpoint: '', token: '', name: '', product: '', revision: '',
@@ -4222,6 +4334,7 @@
                         {
                             label: 'Outreach',
                             items: [
+                                { tab: 'inbox', label: 'Inbox', icon: 'inbox', badge: 'inbox' },
                                 { tab: 'scraper', label: 'Scraper', icon: 'search' },
                                 { tab: 'adder', label: 'Adder', icon: 'user-plus' },
                                 { tab: 'autojoin', label: 'Auto Join', icon: 'link' },
@@ -4487,6 +4600,14 @@
                         editingRule: '', test: { text: '', name: '', result: null, busy: false },
                     },
 
+                    // Inbox (the wall of Telegram chats; `mailbox` because notifications own `inbox`)
+                    mailbox: {
+                        config: { enabled: false, accounts: [], limit: 8, state: {}, watched: [], chats: 0, subscribers: 0, skipped_unknown: 0, labels: {}, buckets: [] },
+                        chats: [], bucket: '', account: '', query: '', ref: '',
+                        messages: [], reply: '', loading: false, busy: '', error: '',
+                        live: false, streamError: '', timer: '',
+                    },
+
                     // Knowledge base (the notes the dashboard's own AI may read)
                     knowledge: {
                         loading: false, busy: '', error: '', documents: [], settings: {}, capacity: { used: 0, limit: 0 },
@@ -4669,6 +4790,7 @@
                         adder: ['Adder', 'Add consenting recipients to a target group.'],
                         autojoin: ['Auto Join', 'Join channels and groups from invite links.'],
                         bulksend: ['BulkSend', 'Send messages across selected accounts.'],
+                        inbox: ['Inbox', 'Every chat on the accounts you opt in, newest first.'],
                         developer: ['Developer', 'Personal access tokens, MCP and API access.']
                     }
                     const [title, subtitle] = pages[this.tab] || pages.overview
@@ -4734,6 +4856,17 @@
                     const cutoff = Date.parse(this.inboxLastRead)
                     if (Number.isNaN(cutoff)) return this.inbox.length
                     return this.inbox.filter(item => Date.parse(item.time) > cutoff).length
+                },
+                mailboxUnread() {
+                    return this.mailbox.chats.reduce((total, chat) => total + (chat.unread || 0), 0)
+                },
+                mailboxChatName() {
+                    const chat = this.mailbox.chats.find(item => item.ref === this.mailbox.ref)
+                    return chat ? chat.name : 'this chat'
+                },
+                mailboxActiveUnread() {
+                    const chat = this.mailbox.chats.find(item => item.ref === this.mailbox.ref)
+                    return chat ? (chat.unread || 0) : 0
                 },
                 activeContactsAccount() {
                     return this.accounts.find(a => a.account_id === this.contacts.accountId)
@@ -4815,6 +4948,8 @@
                     if (tab === 'cloudphone') this.loadRecovery()
                     if (tab === 'cloudbrowser') this.loadCloudBrowser()
                     else this.stopCloudBrowserStream()
+                    if (tab === 'inbox') { this.loadMailbox(); this.startMailboxStream() }
+                    else this.stopMailboxStream()
                     if (tab === 'scraper' || tab === 'adder') this.loadGroups(tab)
                     if (tab === 'schedule') this.loadSchedules()
                     if (tab === 'logs') this.loadLogs()
@@ -4834,6 +4969,7 @@
                     if (this.tab === 'integrations') { this.loadWebhooks(); this.loadIntegrations(); this.loadAiSettings(); this.loadFeatures() }
                     if (this.tab === 'contacts') this.loadContacts()
                     if (this.tab === 'autoreply') this.loadAutoReply()
+                    if (this.tab === 'inbox') this.loadMailbox()
                     if (this.tab === 'knowledge') { this.loadKnowledge(); this.loadPatterns() }
                     if (this.tab === 'copilot') this.loadCopilotHistory()
                     if (this.tab === 'cloudphone') this.loadRecovery()
@@ -7529,6 +7665,181 @@
                         this.showToast(e.response?.data?.detail || 'Could not remove the integration.', true)
                     }
                 },
+                // ---- Inbox (the state key is `mailbox`: notifications already own `inbox`) ----
+                async loadMailbox() {
+                    this.mailbox.loading = true
+                    try {
+                        const { data } = await _api.get('/api/inbox/config')
+                        this.mailbox.config = data
+                        const { data: wall } = await _api.get('/api/inbox/chats', {
+                            params: { bucket: this.mailbox.bucket, account: this.mailbox.account, q: this.mailbox.query },
+                        })
+                        this.mailbox.chats = wall.chats || []
+                        this.mailbox.error = ''
+                    } catch (e) {
+                        this.mailbox.error = e.response?.data?.detail || 'Could not load the inbox.'
+                    }
+                    this.mailbox.loading = false
+                },
+                async setMailboxAccount(accountId, enabled) {
+                    this.mailbox.busy = accountId
+                    try {
+                        const { data } = await _api.put(`/api/inbox/accounts/${encodeURIComponent(accountId)}`, { enabled })
+                        this.mailbox.config = data
+                        await this.loadMailbox()
+                        this.showToast(enabled ? 'Watching this account.' : 'Stopped watching this account.')
+                    } catch (e) {
+                        this.mailbox.error = e.response?.data?.detail || 'Could not change that account.'
+                    }
+                    this.mailbox.busy = ''
+                },
+                async refreshMailbox() {
+                    this.mailbox.busy = 'refresh'
+                    try {
+                        const { data } = await _api.post('/api/inbox/refresh')
+                        this.showToast(data.skipped_unknown
+                            ? `${data.chats} chats loaded. ${data.skipped_unknown} left out as unclassifiable.`
+                            : `${data.chats} chats loaded.`)
+                        await this.loadMailbox()
+                    } catch (e) {
+                        this.mailbox.error = e.response?.data?.detail || 'Could not reach Telegram.'
+                    }
+                    this.mailbox.busy = ''
+                },
+                async openMailboxChat(chat) {
+                    this.mailbox.ref = chat.ref
+                    this.mailbox.messages = []
+                    try {
+                        const { data } = await _api.get(`/api/inbox/chats/${encodeURIComponent(chat.ref)}/messages`, { params: { limit: 50 } })
+                        this.mailbox.messages = (data.messages || []).slice().reverse()
+                        if (chat.unread) await this.markMailboxRead(chat.ref)
+                    } catch (e) {
+                        this.mailbox.error = e.response?.data?.detail || 'Could not open that chat.'
+                    }
+                },
+                async markMailboxRead(ref) {
+                    try {
+                        await _api.post(`/api/inbox/chats/${encodeURIComponent(ref)}/read`)
+                    } catch (e) {
+                        // Telegram may refuse the read marker; the chat stays on the wall either way.
+                        return
+                    }
+                    const row = this.mailbox.chats.find(item => item.ref === ref)
+                    if (row) row.unread = 0
+                },
+                async sendMailboxReply() {
+                    const text = this.mailbox.reply.trim()
+                    if (!text || !this.mailbox.ref) return
+                    this.mailbox.busy = 'send'
+                    try {
+                        const { data } = await _api.post(`/api/inbox/chats/${encodeURIComponent(this.mailbox.ref)}/messages`, { text })
+                        this.mailbox.messages.push(data.message)
+                        this.mailbox.reply = ''
+                        this.showToast('Sent.')
+                    } catch (e) {
+                        this.mailbox.error = e.response?.data?.detail || 'Telegram did not deliver that reply.'
+                    }
+                    this.mailbox.busy = ''
+                },
+                async clearMailboxWall() {
+                    await _api.delete('/api/inbox/cache').catch(() => {})
+                    this.mailbox.chats = []
+                    this.mailbox.ref = ''
+                    this.mailbox.messages = []
+                },
+                setMailboxBucket(name) {
+                    this.mailbox.bucket = this.mailbox.bucket === name ? '' : name
+                    this.loadMailbox()
+                },
+                searchMailboxWall() {
+                    clearTimeout(this.mailbox.timer)
+                    this.mailbox.timer = setTimeout(() => this.loadMailbox(), 300)
+                },
+                isMailboxWatched(accountId) {
+                    return (this.mailbox.config.accounts || []).includes(accountId)
+                },
+                mailboxBucketLabel(name) {
+                    return { personal: 'Personal', group: 'Groups', channel: 'Channels', bot: 'Bots' }[name] || name || 'Other'
+                },
+                mailboxTime(seconds) {
+                    if (!seconds) return '—'
+                    return this.formatTime(new Date(seconds * 1000))
+                },
+                async startMailboxStream() {
+                    if (this.mailbox.live || _mailboxStream) return
+                    if (!this.mailbox.config.enabled) return
+                    const controller = new AbortController()
+                    _mailboxStream = controller
+                    this.mailbox.streamError = ''
+                    try {
+                        const url = new URL('/api/inbox/stream', _apiOrigin)
+                        const response = await fetch(url, {
+                            headers: { Authorization: 'Bearer ' + this.session.access_token },
+                            signal: controller.signal,
+                        })
+                        if (!response.ok) throw new Error(await response.text())
+                        this.mailbox.live = true
+                        const reader = response.body.getReader()
+                        const decoder = new TextDecoder()
+                        let buffer = ''
+                        while (true) {
+                            const { value, done } = await reader.read()
+                            if (done) break
+                            buffer += decoder.decode(value, { stream: true })
+                            const frames = buffer.split('\n\n')
+                            buffer = frames.pop() || ''
+                            for (const frame of frames) {
+                                if (!frame.startsWith('data: ')) continue
+                                this.applyMailboxEvent(JSON.parse(frame.slice(6)))
+                            }
+                        }
+                    } catch (e) {
+                        if (_mailboxStream === controller && e?.name !== 'AbortError') {
+                            this.mailbox.streamError = 'The live inbox stopped. Use Refresh now.'
+                        }
+                    } finally {
+                        if (_mailboxStream === controller) {
+                            _mailboxStream = null
+                            this.mailbox.live = false
+                        }
+                    }
+                },
+                stopMailboxStream() {
+                    if (_mailboxStream) {
+                        _mailboxStream.abort()
+                        _mailboxStream = null
+                    }
+                    this.mailbox.live = false
+                },
+                applyMailboxEvent(event) {
+                    if (event.type === 'ping') return
+                    if (event.type === 'ready') {
+                        this.mailbox.config = event.state
+                        return
+                    }
+                    if (event.type === 'state') {
+                        if (event.state === 'slowed') {
+                            this.mailbox.streamError = 'This tab fell behind, so it stopped. Use Refresh now.'
+                            this.stopMailboxStream()
+                        }
+                        return
+                    }
+                    if (event.type === 'read') {
+                        const row = this.mailbox.chats.find(item => item.ref === event.ref)
+                        if (row) row.unread = 0
+                        return
+                    }
+                    if (event.type === 'chat') {
+                        const index = this.mailbox.chats.findIndex(item => item.ref === event.chat.ref)
+                        if (index === -1) this.mailbox.chats.unshift(event.chat)
+                        else this.mailbox.chats.splice(index, 1, { ...event.chat, unread: event.chat.unread })
+                        this.mailbox.chats = this.mailbox.chats.slice(0, 200)
+                        return
+                    }
+                    if (event.type === 'message' && event.ref === this.mailbox.ref) {
+                        this.mailbox.messages.push(event.message)
+                    }
+                },
                 // ---- Feature toggles ----
                 async loadFeatures() {
                     this.features.loading = true
@@ -7538,6 +7849,7 @@
                         this.features.factory_enabled = !!data.factory_enabled
                         this.features.cloud_browser_enabled = !!data.cloud_browser_enabled
                         this.features.auto_reply_enabled = !!data.auto_reply_enabled
+                        this.features.inbox_enabled = !!data.inbox_enabled
                     } catch (e) {
                         this.showToast(e.response?.data?.detail || 'Could not load platform settings.', true)
                     } finally {
