@@ -1799,20 +1799,35 @@
                             <input v-model="cloudBrowser.endpoint" class="form-control mono" placeholder="wss://browser.example.com/session/abc?token=…" autocomplete="off" spellcheck="false">
                         </div>
                         <div class="form-group">
+                            <label>Name</label>
+                            <input v-model="cloudBrowser.name" class="form-control" placeholder="Login browser" maxlength="60" autocomplete="off" spellcheck="false">
+                        </div>
+                        <div class="form-group">
                             <label>Access token</label>
                             <input v-model="cloudBrowser.token" type="password" class="form-control" :placeholder="cloudBrowser.config.has_token ? 'Stored — leave blank to keep' : 'Optional'" autocomplete="new-password">
                         </div>
                     </div>
                     <div style="display:flex;gap:8px;flex-wrap:wrap;">
                         <button class="btn btn-primary" @click="saveCloudBrowserEndpoint" :disabled="!!cloudBrowser.busy || !cloudBrowser.config.enabled">{{ cloudBrowser.busy === 'save' ? 'Saving…' : 'Save address' }}</button>
+                        <button class="btn btn-outline" @click="addCloudBrowserProfile" :disabled="!!cloudBrowser.busy || !cloudBrowser.config.enabled">{{ cloudBrowser.busy === 'profile' ? 'Adding…' : (cloudBrowser.config.profiles.length ? 'Add another browser' : 'Add a named browser') }}</button>
                         <button class="btn btn-outline" @click="checkCloudBrowser" :disabled="!!cloudBrowser.busy || !cloudBrowser.config.configured || !cloudBrowser.config.enabled">{{ cloudBrowser.busy === 'check' ? 'Checking…' : 'Check connection' }}</button>
-                        <button class="btn btn-danger" @click="clearCloudBrowserEndpoint" :disabled="!!cloudBrowser.busy || !cloudBrowser.config.configured">Forget</button>
+                        <button class="btn btn-danger" @click="clearCloudBrowserEndpoint" :disabled="!!cloudBrowser.busy || !cloudBrowser.config.configured">Forget all</button>
                     </div>
                     <div style="margin-top:14px;">
+                        <div class="status-row"><span class="status-key">In use</span><span class="status-val">{{ activeCloudBrowserLabel || '—' }}</span></div>
                         <div class="status-row"><span class="status-key">Host</span><span class="status-val mono">{{ cloudBrowser.config.host || '—' }}</span></div>
                         <div class="status-row"><span class="status-key">Access token</span><span class="status-val">{{ cloudBrowser.config.has_token ? 'Stored' : 'None' }}</span></div>
                         <div class="status-row"><span class="status-key">Browser</span><span class="status-val mono">{{ cloudBrowser.product || 'Not checked' }}<span v-if="cloudBrowser.revision"> · {{ cloudBrowser.revision }}</span></span></div>
                         <div class="status-row"><span class="status-key">Saved</span><span class="status-val">{{ cloudBrowser.config.updated_at ? formatTime(cloudBrowser.config.updated_at) : '—' }}</span></div>
+                    </div>
+                    <p v-if="cloudBrowser.config.profiles.length" class="muted small" style="margin-top:14px;">Each named browser is a separate one: its own cookies, its own signed-in pages. Switching never copies a session between them.</p>
+                    <div v-for="profile in cloudBrowser.config.profiles" :key="profile.id" class="contact-row">
+                        <div style="flex:1;min-width:180px;">
+                            <div>{{ profile.label }}<span v-if="profile.id === cloudBrowser.config.active" class="badge badge-info" style="margin-left:8px;">In use</span></div>
+                            <div class="mono small muted">{{ profile.host }} · {{ profile.has_token ? 'token stored' : 'no token' }}</div>
+                        </div>
+                        <button v-if="profile.id !== cloudBrowser.config.active" class="btn btn-sm btn-outline" @click="useCloudBrowserProfile(profile)" :disabled="!!cloudBrowser.busy">{{ cloudBrowser.busy === profile.id ? 'Opening…' : 'Use this browser' }}</button>
+                        <button class="btn btn-sm btn-danger" @click="forgetCloudBrowserProfile(profile)" :disabled="!!cloudBrowser.busy">Forget</button>
                     </div>
                 </div>
 
@@ -1852,15 +1867,24 @@
                 <div class="card" style="margin-top:18px;" v-if="cloudBrowser.selected">
                     <div class="card-header">
                         <div>
-                            <h3>Page view</h3>
-                            <p class="muted small" style="margin-top:4px;">A still frame from the browser. Click Refresh view after the page changes.</p>
+                            <h3>Live cockpit</h3>
+                            <p class="muted small" style="margin-top:4px;">The page painted live from the browser. Click, scroll and type into it - the commands go over DevTools to the browser you own.</p>
                         </div>
-                        <button class="btn btn-outline btn-sm" @click="refreshCloudBrowserView" :disabled="!!cloudBrowser.busy">{{ cloudBrowser.busy === 'view' ? 'Capturing…' : 'Refresh view' }}</button>
+                        <span class="badge" :class="cloudBrowser.live ? 'badge-info' : 'badge-warning'">{{ cloudBrowser.live ? 'Live · ' + cloudBrowser.frames + ' frames' : 'Still view' }}</span>
                     </div>
-                    <div v-if="cloudBrowser.view" style="border:1px solid var(--border);border-radius:10px;overflow:hidden;background:var(--surface-2);">
-                        <img :src="cloudBrowser.view" alt="Screenshot of the selected page in the hosted browser" style="display:block;width:100%;max-height:520px;object-fit:contain;">
+                    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">
+                        <button v-if="!cloudBrowser.live" class="btn btn-primary" @click="startCloudBrowserStream" :disabled="!!cloudBrowser.busy">{{ cloudBrowser.busy === 'stream' ? 'Opening…' : 'Start live view' }}</button>
+                        <button v-else class="btn btn-outline" @click="stopCloudBrowserStream">Stop live view</button>
+                        <button class="btn btn-outline" @click="refreshCloudBrowserView" :disabled="!!cloudBrowser.busy">{{ cloudBrowser.busy === 'view' ? 'Capturing…' : 'Take a still' }}</button>
+                        <button class="btn btn-outline" @click="toggleCloudBrowserReel" :disabled="!!cloudBrowser.busy || !cloudBrowser.live">{{ cloudBrowser.recording ? 'Stop recording' : 'Record frames' }}</button>
+                        <button class="btn btn-outline" @click="downloadCloudBrowserReel" :disabled="!!cloudBrowser.busy || !cloudBrowser.reel_frames">Download reel<span v-if="cloudBrowser.reel_frames"> ({{ cloudBrowser.reel_frames }})</span></button>
                     </div>
-                    <p v-else class="muted small">No frame captured yet.</p>
+                    <div style="border:1px solid var(--border);border-radius:10px;overflow:hidden;background:var(--surface-2);">
+                        <img v-if="cloudBrowser.view" :src="cloudBrowser.view" alt="Live view of the selected page in the hosted browser" style="display:block;width:100%;height:auto;cursor:crosshair;" @click="cloudBrowserClick" @dblclick="cloudBrowserDoubleClick" @contextmenu.prevent="cloudBrowserRightClick" @wheel.prevent="cloudBrowserScroll">
+                        <p v-else class="empty-state" style="margin:0;"><span>{{ cloudBrowser.busy === 'stream' ? 'Opening the live view…' : 'No frame yet — start the live view or take a still.' }}</span></p>
+                    </div>
+                    <p class="muted small" style="margin-top:8px;">Clicks land where you click; the browser decides the coordinates from its own viewport. {{ cloudBrowser.watchers > 1 ? cloudBrowser.watchers + ' tabs are watching this view.' : 'Recording keeps recent frames in memory only - the server stores nothing after a restart.' }}</p>
+                    <p v-if="cloudBrowser.streamError" class="small" style="color:var(--danger);">{{ cloudBrowser.streamError }}</p>
                     <div class="form-group" style="margin-top:14px;">
                         <label>Go to</label>
                         <div style="display:flex;gap:8px;flex-wrap:wrap;">
@@ -1876,8 +1900,12 @@
                         </div>
                         <p class="muted small" style="margin-top:6px;">Cleared from this form as soon as it is sent. Nothing typed here is stored or logged.</p>
                     </div>
-                    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;">
-                        <button v-for="key in ['Enter','Tab','Escape','Backspace']" :key="key" class="btn btn-outline btn-sm" @click="pressCloudBrowserKey(key)" :disabled="!!cloudBrowser.busy">{{ key }}</button>
+                    <div class="form-group">
+                        <label>Keys the browser accepts</label>
+                        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                            <button v-for="key in cloudBrowser.config.keys" :key="key" class="btn btn-outline btn-sm" @click="pressCloudBrowserKey(key)" :disabled="!!cloudBrowser.busy">{{ key }}</button>
+                        </div>
+                        <p class="muted small" style="margin-top:6px;">Enter, arrows, space and editing keys. Letters and digits go through the type field so a key press can never carry a secret into the logs.</p>
                     </div>
                     <div class="form-row" style="align-items:flex-end;">
                         <div class="form-group">
@@ -3609,6 +3637,12 @@
             return config
         })
 
+        // EventSource cannot carry a bearer token, so the live browser view is read
+        // with fetch + ReadableStream. The abort handle lives outside Vue's reactive
+        // state: a controller proxy would break the underlying connection.
+        let _cloudStream = null
+        let _cloudClickTimer = null
+
         const { createApp } = Vue
 
         // Small inline icon set (stroke style). Keeps the shell dependency-free
@@ -3731,10 +3765,11 @@
                     },
                     features: { loading: false, automation_enabled: true, factory_enabled: true, cloud_browser_enabled: false, saving: '' },
                     cloudBrowser: {
-                        config: { configured: false, host: '', has_token: false, updated_at: '', enabled: false, encryption_ready: false },
-                        endpoint: '', token: '', product: '', revision: '',
+                        config: { configured: false, host: '', has_token: false, updated_at: '', enabled: false, encryption_ready: false, keys: [], profiles: [], active: '', max_profiles: 12 },
+                        endpoint: '', token: '', name: '', product: '', revision: '',
                         pages: [], selected: '', url: '', navigateUrl: '', text: '', otpAccount: '',
                         view: '', busy: '', error: '', message: '',
+                        live: false, frames: 0, watchers: 0, recording: false, reel_frames: 0, reel_bytes: 0, streamError: '',
                     },
                     freeProxies: { count: 5, loading: false },
                     templateEdit: { id: '', name: '', content: '', busy: false },
@@ -4166,6 +4201,11 @@
                 }
             },
             computed: {
+                activeCloudBrowserLabel() {
+                    const profiles = this.cloudBrowser.config.profiles
+                    const active = profiles.find(item => item.id === this.cloudBrowser.config.active)
+                    return active ? active.label : ''
+                },
                 pageMeta() {
                     const pages = {
                         overview: ['Dashboard', 'A live view of accounts, automation and recent activity.'],
@@ -4331,6 +4371,7 @@
                     if (tab === 'contacts') { if (!this.contacts.accountId && this.accounts.length) this.contacts.accountId = this.accounts[0].account_id; this.loadContacts() }
                     if (tab === 'cloudphone') this.loadRecovery()
                     if (tab === 'cloudbrowser') this.loadCloudBrowser()
+                    else this.stopCloudBrowserStream()
                     if (tab === 'scraper' || tab === 'adder') this.loadGroups(tab)
                     if (tab === 'schedule') this.loadSchedules()
                     if (tab === 'logs') this.loadLogs()
@@ -6174,22 +6215,32 @@
                         updated_at: data.updated_at || '',
                         enabled: !!data.enabled,
                         encryption_ready: !!data.encryption_ready,
+                        keys: Array.isArray(data.keys) ? data.keys : [],
+                        profiles: Array.isArray(data.profiles) ? data.profiles : [],
+                        active: data.active || '',
+                        max_profiles: data.max_profiles || 12,
                     }
                     if ('enabled' in data) this.features.cloud_browser_enabled = !!data.enabled
                 },
                 resetCloudBrowserView() {
+                    this.stopCloudBrowserStream()
                     this.cloudBrowser.pages = []
                     this.cloudBrowser.selected = ''
                     this.cloudBrowser.view = ''
                     this.cloudBrowser.product = ''
                     this.cloudBrowser.revision = ''
                     this.cloudBrowser.message = ''
+                    this.cloudBrowser.frames = 0
+                    this.cloudBrowser.reel_frames = 0
+                    this.cloudBrowser.reel_bytes = 0
+                    this.cloudBrowser.streamError = ''
                 },
                 async loadCloudBrowser() {
                     this.cloudBrowser.error = ''
                     try {
                         const { data } = await _api.get('/api/cloud-browser/config')
                         this.applyCloudBrowserConfig(data)
+                        this.syncCloudBrowserName()
                         if (data.configured && data.enabled) await this.checkCloudBrowser()
                         if (data.enabled && !this.recovery.list.length) await this.loadRecovery()
                     } catch (e) {
@@ -6218,21 +6269,33 @@
                         this.cloudBrowser.busy = ''
                     }
                 },
-                async saveCloudBrowserEndpoint() {
-                    const endpoint = this.cloudBrowser.endpoint.trim()
+                cloudBrowserAddressOk(endpoint) {
                     if (!/^wss?:\/\//i.test(endpoint)) {
                         this.showToast('Use the ws:// or wss:// debugger address of your hosted browser.', true)
-                        return
+                        return false
                     }
                     if (/@/.test(endpoint)) {
                         this.showToast('Keep the token out of the address — put it in the access-token field.', true)
-                        return
+                        return false
                     }
+                    return true
+                },
+                syncCloudBrowserName() {
+                    // The name field edits the browser in use, so it must show that
+                    // one after a switch rather than the name last typed.
+                    this.cloudBrowser.name = this.activeCloudBrowserLabel
+                },
+                async saveCloudBrowserEndpoint() {
+                    const endpoint = this.cloudBrowser.endpoint.trim()
+                    if (!this.cloudBrowserAddressOk(endpoint)) return
                     this.cloudBrowser.busy = 'save'
                     try {
-                        const { data } = await _api.put('/api/cloud-browser/config', { endpoint, token: this.cloudBrowser.token, clear: false })
+                        const { data } = await _api.put('/api/cloud-browser/config', {
+                            endpoint, token: this.cloudBrowser.token, label: this.cloudBrowser.name.trim(), clear: false,
+                        })
                         this.applyCloudBrowserConfig(data)
                         this.cloudBrowser.token = ''
+                        this.syncCloudBrowserName()
                         this.showToast('Browser address saved encrypted.')
                         await this.checkCloudBrowser()
                     } catch (e) {
@@ -6241,13 +6304,68 @@
                         this.cloudBrowser.busy = ''
                     }
                 },
-                async clearCloudBrowserEndpoint() {
-                    if (!window.confirm('Forget this browser address? The session itself stays with your provider.')) return
-                    this.cloudBrowser.busy = 'save'
+                async addCloudBrowserProfile() {
+                    const endpoint = this.cloudBrowser.endpoint.trim()
+                    if (!this.cloudBrowserAddressOk(endpoint)) return
+                    this.cloudBrowser.busy = 'profile'
                     try {
-                        const { data } = await _api.put('/api/cloud-browser/config', { endpoint: '', token: '', clear: true })
+                        const { data } = await _api.post('/api/cloud-browser/profiles', { endpoint, token: this.cloudBrowser.token, label: this.cloudBrowser.name.trim() })
+                        this.applyCloudBrowserConfig(data)
+                        // A new browser is now the one in use: its pages, frame and
+                        // version belong to a different browser than the panel showed.
+                        this.resetCloudBrowserView()
                         this.cloudBrowser.endpoint = ''
                         this.cloudBrowser.token = ''
+                        this.syncCloudBrowserName()
+                        this.showToast('Browser added and switched to.')
+                        await this.checkCloudBrowser()
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not add that browser.', true)
+                    } finally {
+                        this.cloudBrowser.busy = ''
+                    }
+                },
+                async useCloudBrowserProfile(profile) {
+                    this.cloudBrowser.busy = profile.id
+                    try {
+                        const { data } = await _api.post(`/api/cloud-browser/profiles/${profile.id}/activate`, {})
+                        this.applyCloudBrowserConfig(data)
+                        this.resetCloudBrowserView()
+                        this.cloudBrowser.endpoint = ''
+                        this.cloudBrowser.token = ''
+                        this.syncCloudBrowserName()
+                        if (data.configured) await this.checkCloudBrowser()
+                        else this.showToast('Switched to ' + profile.label + '.', true)
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not switch to that browser.', true)
+                    } finally {
+                        this.cloudBrowser.busy = ''
+                    }
+                },
+                async forgetCloudBrowserProfile(profile) {
+                    if (!window.confirm(`Forget ${profile.label}? Its address and access token are deleted; the browser session itself stays with your provider.`)) return
+                    this.cloudBrowser.busy = profile.id
+                    try {
+                        const { data } = await _api.delete(`/api/cloud-browser/profiles/${profile.id}`)
+                        this.applyCloudBrowserConfig(data)
+                        this.resetCloudBrowserView()
+                        this.syncCloudBrowserName()
+                        if (data.configured) await this.checkCloudBrowser()
+                        this.showToast('Browser forgotten.')
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not forget that browser.', true)
+                    } finally {
+                        this.cloudBrowser.busy = ''
+                    }
+                },
+                async clearCloudBrowserEndpoint() {
+                    if (!window.confirm('Forget every named browser and its address? The sessions themselves stay with your provider.')) return
+                    this.cloudBrowser.busy = 'save'
+                    try {
+                        const { data } = await _api.put('/api/cloud-browser/config', { endpoint: '', token: '', label: '', clear: true })
+                        this.cloudBrowser.endpoint = ''
+                        this.cloudBrowser.token = ''
+                        this.cloudBrowser.name = ''
                         this.applyCloudBrowserConfig({ ...data, configured: false, host: '', has_token: false })
                         this.resetCloudBrowserView()
                         this.showToast('Browser address forgotten.')
@@ -6294,6 +6412,7 @@
                     try {
                         await _api.delete(`/api/cloud-browser/pages/${encodeURIComponent(page.target_id)}`)
                         if (this.cloudBrowser.selected === page.target_id) {
+                            this.stopCloudBrowserStream()
                             this.cloudBrowser.selected = ''
                             this.cloudBrowser.view = ''
                         }
@@ -6305,10 +6424,18 @@
                     }
                 },
                 selectCloudBrowserPage(page) {
+                    const wasLive = this.cloudBrowser.live
+                    this.stopCloudBrowserStream()
                     this.cloudBrowser.selected = page.target_id
                     this.cloudBrowser.view = ''
+                    this.cloudBrowser.frames = 0
+                    this.cloudBrowser.reel_frames = 0
+                    this.cloudBrowser.streamError = ''
                     this.cloudBrowser.navigateUrl = page.url && page.url !== 'about:blank' ? page.url : ''
-                    this.refreshCloudBrowserView()
+                    // Moving to another page should not silently drop the view the
+                    // operator already asked for.
+                    if (wasLive) this.startCloudBrowserStream()
+                    else this.refreshCloudBrowserView()
                 },
                 async refreshCloudBrowserView() {
                     if (!this.cloudBrowser.selected) return
@@ -6377,6 +6504,178 @@
                         this.showToast(e.response?.data?.detail || 'Could not send the Cloud Phone code.', true)
                     } finally {
                         this.cloudBrowser.busy = ''
+                    }
+                },
+                // ---- live cockpit ----
+                _applyCloudStreamEvent(event) {
+                    const view = this.cloudBrowser
+                    if (event.type === 'ready') {
+                        view.watchers = event.watchers || 1
+                        view.frames = event.session || 0
+                    } else if (event.type === 'frame') {
+                        view.view = `data:image/jpeg;base64,${event.image}`
+                        view.frames += 1
+                    } else if (event.type === 'ping') {
+                        view.frames = event.frames ?? view.frames
+                    } else if (event.type === 'closed') {
+                        view.streamError = 'The hosted browser closed this view.'
+                        this.stopCloudBrowserStream()
+                    }
+                },
+                async startCloudBrowserStream() {
+                    if (!this.cloudBrowser.selected || _cloudStream) return
+                    const controller = new AbortController()
+                    _cloudStream = controller
+                    this.cloudBrowser.busy = 'stream'
+                    this.cloudBrowser.streamError = ''
+                    this.cloudBrowser.live = true
+                    try {
+                        const { data: { session } } = await _supabase.auth.getSession()
+                        if (!session?.access_token) throw new Error('Sign in to continue')
+                        const url = new URL(`/api/cloud-browser/pages/${encodeURIComponent(this.cloudBrowser.selected)}/stream`, _apiOrigin)
+                        const response = await fetch(url.toString(), {
+                            headers: { Authorization: 'Bearer ' + session.access_token },
+                            signal: controller.signal,
+                        })
+                        if (!response.ok) {
+                            const detail = await response.json().catch(() => null)
+                            throw new Error(detail?.detail || 'The live view could not be opened.')
+                        }
+                        // The connection is open: control stays enabled while frames
+                        // arrive, so a live page can still be clicked and typed into.
+                        this.cloudBrowser.busy = ''
+                        const reader = response.body.getReader()
+                        const decoder = new TextDecoder()
+                        let buffer = ''
+                        while (true) {
+                            const { done, value } = await reader.read()
+                            if (done) break
+                            buffer += decoder.decode(value, { stream: true })
+                            const blocks = buffer.split('\n\n')
+                            buffer = blocks.pop()
+                            for (const block of blocks) {
+                                if (!block.startsWith('data: ')) continue
+                                let event = null
+                                try { event = JSON.parse(block.slice(6)) } catch (_) { continue }
+                                if (this.cloudBrowser.selected) this._applyCloudStreamEvent(event)
+                            }
+                        }
+                    } catch (e) {
+                        if (!controller.signal.aborted) {
+                            this.cloudBrowser.streamError = e?.message || 'The live view stopped.'
+                        }
+                    } finally {
+                        // Only the stream that is still current may clear the panel:
+                        // a page switch aborts the old reader after the new one started.
+                        if (_cloudStream === controller) {
+                            _cloudStream = null
+                            this.cloudBrowser.live = false
+                            this.cloudBrowser.recording = false
+                            this.cloudBrowser.busy = ''
+                        }
+                    }
+                },
+                stopCloudBrowserStream() {
+                    if (_cloudStream) {
+                        _cloudStream.abort()
+                        _cloudStream = null
+                    }
+                    this.cloudBrowser.live = false
+                    this.cloudBrowser.recording = false
+                    this.cloudBrowser.watchers = 0
+                },
+                _cloudBrowserPoint(event) {
+                    const rect = event.target.getBoundingClientRect()
+                    if (!rect.width || !rect.height) return null
+                    // Fractions of the picture: the browser maps them onto its own
+                    // viewport, so the panel never has to guess the page size.
+                    const clamp = (value) => Math.min(1, Math.max(0, value))
+                    return {
+                        x: clamp((event.clientX - rect.left) / rect.width),
+                        y: clamp((event.clientY - rect.top) / rect.height),
+                    }
+                },
+                async _sendCloudMouse(body) {
+                    if (!this.cloudBrowser.selected || !body) return
+                    try {
+                        await _api.post(`/api/cloud-browser/pages/${encodeURIComponent(this.cloudBrowser.selected)}/mouse`, body)
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'That action did not reach the browser.', true)
+                    }
+                },
+                cloudBrowserClick(event) {
+                    const point = this._cloudBrowserPoint(event)
+                    if (!point) return
+                    // A double-click fires two clicks first; waiting a moment lets the
+                    // browser see one deliberate double rather than four presses.
+                    clearTimeout(_cloudClickTimer)
+                    _cloudClickTimer = setTimeout(() => this._sendCloudMouse({ ...point, action: 'click' }), 260)
+                },
+                cloudBrowserDoubleClick(event) {
+                    const point = this._cloudBrowserPoint(event)
+                    if (!point) return
+                    clearTimeout(_cloudClickTimer)
+                    this._sendCloudMouse({ ...point, action: 'double' })
+                },
+                cloudBrowserRightClick(event) {
+                    const point = this._cloudBrowserPoint(event)
+                    if (!point) return
+                    clearTimeout(_cloudClickTimer)
+                    this._sendCloudMouse({ ...point, action: 'right' })
+                },
+                cloudBrowserScroll(event) {
+                    const point = this._cloudBrowserPoint(event)
+                    const delta = Math.max(-4000, Math.min(4000, event.deltaY))
+                    if (!point || !delta) return
+                    this._sendCloudMouse({ ...point, action: 'scroll', delta_x: 0, delta_y: delta })
+                },
+                async toggleCloudBrowserReel() {
+                    const recording = !this.cloudBrowser.recording
+                    this.cloudBrowser.busy = 'reel'
+                    try {
+                        const { data } = await _api.post(`/api/cloud-browser/pages/${encodeURIComponent(this.cloudBrowser.selected)}/reel`, { recording })
+                        this.cloudBrowser.recording = !!data.recording
+                        this.cloudBrowser.reel_frames = data.reel_frames || 0
+                        this.cloudBrowser.reel_bytes = data.reel_bytes || 0
+                        this.cloudBrowser.frames = data.frames ?? this.cloudBrowser.frames
+                        this.cloudBrowser.watchers = data.watchers ?? this.cloudBrowser.watchers
+                        this.showToast(recording
+                            ? 'Recording frames — they stay in this server’s memory until you download them.'
+                            : `Recording stopped — ${data.reel_frames || 0} frames kept.`)
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not change the recording.', true)
+                    } finally {
+                        this.cloudBrowser.busy = ''
+                    }
+                },
+                async downloadCloudBrowserReel() {
+                    this.cloudBrowser.busy = 'reel'
+                    try {
+                        const response = await _api.get(
+                            `/api/cloud-browser/pages/${encodeURIComponent(this.cloudBrowser.selected)}/reel`,
+                            { responseType: 'blob', timeout: 60000 },
+                        )
+                        const href = URL.createObjectURL(response.data)
+                        const link = document.createElement('a')
+                        link.href = href
+                        link.download = 'cloud-browser-frames.zip'
+                        link.click()
+                        URL.revokeObjectURL(href)
+                        await this.discardCloudBrowserReel()
+                    } catch (e) {
+                        this.showToast('Could not download the recorded frames.', true)
+                    } finally {
+                        this.cloudBrowser.busy = ''
+                    }
+                },
+                async discardCloudBrowserReel() {
+                    try {
+                        const { data } = await _api.delete(`/api/cloud-browser/pages/${encodeURIComponent(this.cloudBrowser.selected)}/reel`)
+                        this.cloudBrowser.reel_frames = data.reel_frames || 0
+                        this.cloudBrowser.reel_bytes = data.reel_bytes || 0
+                        this.showToast('Recorded frames cleared.')
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not clear the recorded frames.', true)
                     }
                 },
                 // ---- AI providers ----
@@ -7222,6 +7521,7 @@
             beforeUnmount() {
                 this.authRevision++
                 this.disconnectStatusSocket()
+                this.stopCloudBrowserStream()
                 clearInterval(this.dashboardPoll)
                 clearInterval(this.jobsPoll)
                 clearTimeout(this.automation.poll)

@@ -91,6 +91,42 @@ assert http.get("/dashboard").status_code == 200
     assert result.returncode == 0, result.stderr
 
 
+def test_status_socket_refuses_callers_the_gate_cannot_verify(tmp_path):
+    """The live status channel carries every account, so it closes before accept."""
+    root = Path(__file__).resolve().parents[1]
+    shutil.copytree(root / "static", tmp_path / "static")
+    script = '''
+import os
+from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
+import dashboard
+
+client = TestClient(dashboard.app, base_url="https://open-teleset.site")
+for attempts in (
+    {"headers": {}},
+    {"headers": {"Authorization": "Bearer eyJ.synthetic.unsigned"}},
+    {"subprotocols": ["open-teleset.v1", "bearer.eyJ.synthetic.unsigned"]},
+    {"subprotocols": ["open-teleset.v1"]},
+):
+    try:
+        with client.websocket_connect("/ws", **attempts):
+            raise AssertionError(f"/ws accepted without verified admin auth: {attempts}")
+    except WebSocketDisconnect as closed:
+        assert closed.code == 1008
+assert dashboard.manager.active_connections == []
+assert os.environ.get("SUPABASE_SERVICE_ROLE_KEY") is None
+'''
+    env = {key: value for key, value in os.environ.items() if not key.startswith((
+        "SUPABASE_", "DATABASE_", "SENTRY_", "TELEGRAM_",
+    ))}
+    env.update(APP_ENV="production", PYTHONPATH=f"{root}:{root / 'src'}")
+    result = subprocess.run(
+        [sys.executable, "-c", script], cwd=tmp_path, env=env,
+        capture_output=True, text=True, timeout=90,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_websocket_disconnect_during_accept_is_clean(tmp_path):
     (tmp_path / "static").mkdir()
     root = Path(__file__).resolve().parents[1]
