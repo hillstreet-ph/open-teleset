@@ -32,12 +32,16 @@ def isolated_store(tmp_path, monkeypatch):
 def test_feature_toggles_default_on_and_persist():
     assert operator_store.get_features() == {
         "automation_enabled": True, "factory_enabled": True, "cloud_browser_enabled": False,
+        "auto_reply_enabled": False,
     }
-    updated = operator_store.set_features({"factory_enabled": False, "cloud_browser_enabled": True})
-    assert updated == {"automation_enabled": True, "factory_enabled": False, "cloud_browser_enabled": True}
+    updated = operator_store.set_features({"factory_enabled": False, "cloud_browser_enabled": True,
+                                           "auto_reply_enabled": True})
+    assert updated == {"automation_enabled": True, "factory_enabled": False, "cloud_browser_enabled": True,
+                       "auto_reply_enabled": True}
     assert operator_store.feature_enabled("factory") is False
     assert operator_store.feature_enabled("automation") is True
     assert operator_store.feature_enabled("cloud_browser") is True
+    assert operator_store.feature_enabled("auto_reply") is True
 
 
 def test_totp_matches_rfc_6238_vector():
@@ -51,6 +55,15 @@ def test_totp_accepts_otpauth_uri():
     secret = base64.b32encode(b"12345678901234567890").decode()
     code, _ = features._totp(f"otpauth://totp/Test?secret={secret}&digits=6&period=30", at=59)
     assert code == "287082"
+
+
+@pytest.mark.asyncio
+async def test_the_features_endpoint_carries_the_auto_reply_switch():
+    """The dashboard toggles this by name, so the endpoint must not drop it."""
+    saved = await features.update_platform_features(features.FeatureUpdate(auto_reply_enabled=True))
+
+    assert saved["auto_reply_enabled"] is True
+    assert operator_store.feature_enabled("auto_reply") is True
 
 
 @pytest.mark.asyncio

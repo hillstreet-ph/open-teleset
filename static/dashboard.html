@@ -1422,9 +1422,13 @@
                                 <div><strong style="font-size:13px;">Account Factory</strong><p class="muted small" style="margin-top:2px;">The factory run button is refused while this is off.</p></div>
                                 <button class="toggle" :class="{ on: features.factory_enabled }" role="switch" :aria-checked="features.factory_enabled ? 'true' : 'false'" :disabled="features.saving === 'factory_enabled'" @click="saveFeature('factory_enabled', !features.factory_enabled)"></button>
                             </div>
-                            <div class="toggle-row" style="border-bottom:0;">
+                            <div class="toggle-row">
                                 <div><strong style="font-size:13px;">Cloud Browser</strong><p class="muted small" style="margin-top:2px;">Lets you drive a hosted browser you own. Telegram sending, joining and scraping always stay on the Telethon accounts.</p></div>
                                 <button class="toggle" :class="{ on: features.cloud_browser_enabled }" role="switch" :aria-checked="features.cloud_browser_enabled ? 'true' : 'false'" :disabled="features.saving === 'cloud_browser_enabled'" @click="saveFeature('cloud_browser_enabled', !features.cloud_browser_enabled)"></button>
+                            </div>
+                            <div class="toggle-row" style="border-bottom:0;">
+                                <div><strong style="font-size:13px;">Auto Reply</strong><p class="muted small" style="margin-top:2px;">Answers private chats that messaged an account first. Off until you switch it on and name the accounts.</p></div>
+                                <button class="toggle" :class="{ on: features.auto_reply_enabled }" role="switch" :aria-checked="features.auto_reply_enabled ? 'true' : 'false'" :disabled="features.saving === 'auto_reply_enabled'" @click="saveFeature('auto_reply_enabled', !features.auto_reply_enabled)"></button>
                             </div>
                             <p v-if="features.loading" class="muted small">Loading switches…</p>
                         </section>
@@ -2286,6 +2290,34 @@
                 </div>
 
                 <div class="card">
+                    <div class="card-header">
+                        <h3>History</h3>
+                        <div style="display:flex; gap:8px;">
+                            <button class="btn btn-sm btn-outline" @click="loadCopilotHistory" :disabled="copilot.loading">Reload</button>
+                            <button class="btn btn-sm btn-outline" @click="clearCopilotHistory" :disabled="!copilot.history.length">Clear</button>
+                        </div>
+                    </div>
+                    <p class="muted small" style="margin-bottom: 14px;">Every draft you asked for, newest first. Marking one as applied offers its wording to the knowledge base; nothing is sent from here.</p>
+                    <div v-if="!copilot.history.length" class="empty-state"><p>No Copilot turns yet.</p></div>
+                    <div v-else>
+                        <div v-for="turn in copilot.history" :key="turn.id" class="proxy-item" style="align-items:flex-start;">
+                            <div class="proxy-info" style="flex:1;">
+                                <h4>{{ turn.title || turn.action || 'Draft' }}
+                                    <span class="badge" :class="turn.outcome === 'applied' ? 'badge-success' : (turn.outcome === 'discarded' ? 'badge-danger' : 'badge-info')">{{ turn.outcome || 'drafted' }}</span>
+                                </h4>
+                                <p>{{ turn.instruction }}</p>
+                                <p v-if="turn.text" style="margin-top:6px; white-space:pre-wrap;">{{ turn.text }}</p>
+                                <p class="muted small" style="margin-top:6px;">{{ turn.time }} · {{ turn.summary || '—' }}</p>
+                            </div>
+                            <div class="proxy-actions">
+                                <button class="btn btn-sm btn-outline" @click="markCopilotOutcome(turn, 'applied')" :disabled="turn.outcome === 'applied'">Applied</button>
+                                <button class="btn btn-sm btn-outline" @click="markCopilotOutcome(turn, 'discarded')" :disabled="turn.outcome === 'discarded'">Discarded</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
                     <div class="card-header"><h3>Presets</h3></div>
                     <p class="muted small" style="margin-bottom: 14px;">Start from a ready-made draft, then review and adjust it.</p>
                     <div v-if="!copilot.presets.length" class="empty-state"><p>Presets load when you open this page.</p></div>
@@ -2296,6 +2328,339 @@
                                 <p>{{ preset.description }}</p>
                             </div>
                             <button class="btn btn-sm btn-outline" @click="useCopilotPreset(preset)">Use preset</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Auto Reply -->
+            <div v-show="tab === 'autoreply'">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>Auto Reply</h3>
+                        <div style="display:flex;gap:8px;align-items:center;">
+                            <span v-if="autoReply.config" class="badge" :class="autoReply.config.enabled ? 'badge-success' : 'badge-normal'">{{ autoReply.config.enabled ? 'Running' : 'Paused' }}</span>
+                            <span v-if="autoReply.config" class="badge badge-info">{{ autoReply.config.mode === 'ai_approval' ? 'AI drafts for approval' : 'Rules send' }}</span>
+                        </div>
+                    </div>
+                    <p class="muted small" style="margin-bottom:16px;">Replies only ever go to a private chat whose newest message came from the other person — never a group, channel, bot or first message. Every send respects the account cooldown, the opt-out list and the daily limit.</p>
+                    <p v-if="autoReply.loading" class="muted small">Loading Auto Reply…</p>
+                    <template v-else-if="!autoReply.config">
+                        <p role="alert" style="color:var(--danger);">{{ autoReply.error }}</p>
+                        <button class="btn btn-outline" style="margin-top:10px;" @click="go('integrations')">Open Integrations</button>
+                    </template>
+                    <div v-else>
+                        <div class="toggle-row">
+                            <div><strong style="font-size:13px;">Answer automatically</strong><p class="muted small" style="margin-top:2px;">The background listener only polls while this is on and at least one account is watched.</p></div>
+                            <button class="toggle" :class="{ on: autoReply.config.enabled }" role="switch" :aria-checked="autoReply.config.enabled ? 'true' : 'false'" :disabled="autoReply.saving" @click="saveAutoReplyEnabled(!autoReply.config.enabled)"></button>
+                        </div>
+                        <div class="form-row" style="margin-top:16px;">
+                            <div class="form-group">
+                                <label for="ar-mode">Mode</label>
+                                <select id="ar-mode" class="form-control" v-model="autoReply.config.mode">
+                                    <option value="rules">Rules — your wording sends on its own</option>
+                                    <option value="ai_approval">AI drafts — nothing sends until you press Send</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="ar-poll">Check every (seconds)</label>
+                                <input id="ar-poll" class="form-control" type="number" min="30" max="900" step="30" v-model.number="autoReply.config.poll_seconds">
+                            </div>
+                            <div class="form-group">
+                                <label for="ar-cap">Daily limit</label>
+                                <input id="ar-cap" class="form-control" type="number" min="0" max="200" step="1" v-model.number="autoReply.config.daily_cap">
+                            </div>
+                        </div>
+                        <small class="muted">0 means nothing sends. Telegram is asked to wait 10 minutes between chats and 20 seconds between messages.</small>
+                        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px;">
+                            <button class="btn btn-primary" @click="saveAutoReplySettings" :disabled="autoReply.saving">{{ autoReply.saving ? 'Saving…' : 'Save settings' }}</button>
+                            <button class="btn btn-outline" @click="runAutoReplyNow" :disabled="!!autoReply.busy || !autoReply.config.enabled">Run one check now</button>
+                        </div>
+                        <p v-if="autoReply.message" class="muted small" style="margin-top:12px;">{{ autoReply.message }}</p>
+                        <p v-if="autoReply.error" role="alert" style="color:var(--danger);margin-top:12px;">{{ autoReply.error }}</p>
+                        <div style="margin-top:18px;">
+                            <div class="status-row"><span class="status-key">Replied today</span><span class="status-val">{{ autoReply.config.sent_today }} of {{ autoReply.config.daily_cap }}</span></div>
+                            <div class="status-row"><span class="status-key">Background listener</span><span class="status-val">{{ autoReply.config.worker?.running ? 'Running' : 'Not running in this worker' }}</span></div>
+                            <div class="status-row"><span class="status-key">Last check</span><span class="status-val mono">{{ autoReply.config.worker?.last_tick || '—' }}</span></div>
+                            <div class="status-row"><span class="status-key">Last error</span><span class="status-val">{{ autoReply.config.worker?.error || 'None' }}</span></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div v-if="autoReply.config?.feature_enabled" class="card">
+                    <div class="card-header">
+                        <h3>Watched accounts</h3>
+                        <span class="muted small">{{ autoReply.config.accounts.length }} of {{ autoReply.config.limits.max_accounts }}</span>
+                    </div>
+                    <p class="muted small" style="margin-bottom:14px;">Pick the accounts Auto Reply may speak for. It reads their private chats and answers on their behalf.</p>
+                    <div v-if="!accounts.length" class="empty-state"><p>Add a Telegram account first.</p></div>
+                    <div v-else>
+                        <div v-for="acc in accounts" :key="acc.account_id" class="toggle-row">
+                            <div><strong style="font-size:13px;">{{ accountDisplayName(acc) }}</strong><p class="muted small mono" style="margin-top:2px;">{{ shortAccountId(acc.account_id) }}</p></div>
+                            <button class="toggle" :class="{ on: isAccountWatched(acc.account_id) }" role="switch" :aria-checked="isAccountWatched(acc.account_id) ? 'true' : 'false'" :disabled="!!autoReply.busy" @click="watchAccount(acc.account_id, !isAccountWatched(acc.account_id))"></button>
+                        </div>
+                    </div>
+                </div>
+
+                <div v-if="autoReply.config?.feature_enabled" class="card">
+                    <div class="card-header">
+                        <h3>Rules</h3>
+                        <span class="muted small">{{ autoReply.config.rules.length }} of {{ autoReply.config.limits.max_rules }}</span>
+                    </div>
+                    <p class="muted small" style="margin-bottom:14px;">The first enabled rule whose keywords appear in the incoming message answers it. Placeholders: <span class="mono">{{ autoReply.config.placeholders.join(' , ') }}</span>.</p>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="ar-rule-name">Name</label>
+                            <input id="ar-rule-name" class="form-control" v-model="autoReply.ruleForm.name" :maxlength="autoReply.config.limits.name_max || 60" placeholder="Price question">
+                        </div>
+                        <div class="form-group">
+                            <label for="ar-rule-match">Match</label>
+                            <select id="ar-rule-match" class="form-control" v-model="autoReply.ruleForm.match">
+                                <option value="keyword">Contains a keyword</option>
+                                <option value="any">Anything (fallback)</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-group" v-if="autoReply.ruleForm.match === 'keyword'">
+                        <label for="ar-rule-keywords">Keywords (comma separated)</label>
+                        <input id="ar-rule-keywords" class="form-control" v-model="autoReply.ruleForm.keywords" placeholder="price, how much, cost">
+                    </div>
+                    <div class="form-group">
+                        <label for="ar-rule-reply">Reply</label>
+                        <textarea id="ar-rule-reply" class="form-control" rows="3" v-model="autoReply.ruleForm.reply" :maxlength="autoReply.config.limits.reply_max" placeholder="Hi {name}, thanks for asking."></textarea>
+                        <small>{{ autoReply.ruleForm.reply.length }} / {{ autoReply.config.limits.reply_max }}</small>
+                    </div>
+                    <label style="display:flex;align-items:center;gap:8px;margin-bottom:12px;font-size:12.5px;">
+                        <input type="checkbox" v-model="autoReply.ruleForm.enabled"> Enabled
+                    </label>
+                    <div style="display:flex;gap:10px;flex-wrap:wrap;">
+                        <button class="btn btn-primary" @click="saveAutoReplyRule" :disabled="!!autoReply.busy">{{ autoReply.editingRule ? 'Update rule' : 'Add rule' }}</button>
+                        <button v-if="autoReply.editingRule" class="btn btn-outline" @click="cancelRuleEdit">Cancel</button>
+                    </div>
+                    <div v-if="!autoReply.config.rules.length" class="empty-state" style="padding:24px;"><p>No rules yet. In AI mode the rules are not used.</p></div>
+                    <div v-else style="margin-top:16px;">
+                        <div v-for="rule in autoReply.config.rules" :key="rule.id" class="proxy-item" style="align-items:flex-start;">
+                            <div class="proxy-info" style="flex:1;">
+                                <h4>{{ rule.name }}
+                                    <span class="badge" :class="rule.enabled ? 'badge-success' : 'badge-normal'">{{ rule.enabled ? 'On' : 'Off' }}</span>
+                                    <span class="badge badge-info">{{ rule.match === 'any' ? 'anything' : rule.keywords.length + ' keywords' }}</span>
+                                </h4>
+                                <p v-if="rule.match === 'keyword'">{{ rule.keywords.join(', ') }}</p>
+                                <p style="white-space:pre-wrap;margin-top:4px;">{{ rule.reply }}</p>
+                            </div>
+                            <div class="proxy-actions">
+                                <button class="btn btn-sm btn-outline" @click="toggleAutoReplyRule(rule)" :disabled="!!autoReply.busy">{{ rule.enabled ? 'Pause' : 'Enable' }}</button>
+                                <button class="btn btn-sm btn-outline" @click="startRuleEdit(rule)">Edit</button>
+                                <button class="btn btn-sm btn-danger" @click="deleteAutoReplyRule(rule)" :disabled="!!autoReply.busy">Delete</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div v-if="autoReply.config?.feature_enabled" class="card">
+                    <div class="card-header"><h3>Test a message</h3></div>
+                    <p class="muted small" style="margin-bottom:14px;">See which rule would answer and what it would say. Nothing is sent.</p>
+                    <div class="form-row">
+                        <div class="form-group" style="flex:2;">
+                            <label for="ar-test-text">Incoming message</label>
+                            <input id="ar-test-text" class="form-control" v-model="autoReply.test.text" :maxlength="300" placeholder="How much does it cost?">
+                        </div>
+                        <div class="form-group">
+                            <label for="ar-test-name">Sender name</label>
+                            <input id="ar-test-name" class="form-control" v-model="autoReply.test.name" placeholder="Maria Lopez">
+                        </div>
+                    </div>
+                    <button class="btn btn-outline" @click="testAutoReply" :disabled="autoReply.test.busy || !autoReply.test.text.trim()">{{ autoReply.test.busy ? 'Checking…' : 'Check' }}</button>
+                    <div v-if="autoReply.test.result" style="background:rgba(0,0,0,0.2);padding:12px;border-radius:8px;margin-top:14px;">
+                        <p><strong>Would send:</strong> {{ autoReply.test.result.would_send ? 'Yes' : 'No' }}</p>
+                        <p v-if="autoReply.test.result.matched"><strong>Rule:</strong> {{ autoReply.test.result.matched.name }}</p>
+                        <p v-if="autoReply.test.result.reply"><strong>Reply:</strong> <span style="white-space:pre-wrap;">{{ autoReply.test.result.reply }}</span></p>
+                        <p v-if="autoReply.test.result.detail" class="muted small">{{ autoReply.test.result.detail }}</p>
+                    </div>
+                </div>
+
+                <div v-if="autoReply.config?.feature_enabled && autoReply.config.mode === 'ai_approval'" class="card">
+                    <div class="card-header">
+                        <h3>Waiting for approval</h3>
+                        <span class="badge badge-warning">{{ autoReply.config.outbox.length }} draft(s)</span>
+                    </div>
+                    <p class="muted small" style="margin-bottom:14px;">A model wrote these. Nothing reaches Telegram until you press Send on the one you want.</p>
+                    <div v-if="!autoReply.config.outbox.length" class="empty-state" style="padding:24px;"><p>No drafts waiting.</p></div>
+                    <div v-else>
+                        <div v-for="draft in autoReply.config.outbox" :key="draft.id" class="proxy-item" style="flex-direction:column;align-items:stretch;">
+                            <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
+                                <div class="proxy-info">
+                                    <h4>{{ draft.name || draft.peer_ref }} <span class="mono muted small">{{ shortAccountId(draft.account) }}</span></h4>
+                                    <p><strong>They said:</strong> <span style="white-space:pre-wrap;">{{ draft.inbound || '—' }}</span></p>
+                                </div>
+                                <span class="muted small">{{ draft.created }}</span>
+                            </div>
+                            <textarea class="form-control" rows="3" v-model="draft.reply" :maxlength="autoReply.config.limits.reply_max"></textarea>
+                            <div class="proxy-actions" style="margin-top:10px;">
+                                <button class="btn btn-sm btn-outline" @click="editOutboxDraft(draft)" :disabled="!!autoReply.busy">Save edit</button>
+                                <button class="btn btn-sm btn-primary" @click="sendOutboxDraft(draft)" :disabled="!!autoReply.busy">Send</button>
+                                <button class="btn btn-sm btn-danger" @click="discardOutboxDraft(draft)" :disabled="!!autoReply.busy">Discard</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div v-if="autoReply.config?.feature_enabled" class="card">
+                    <div class="card-header"><h3>Conversations</h3></div>
+                    <p class="muted small" style="margin-bottom:14px;">Once you answer a chat yourself, Auto Reply stops there. Resume it, or mute a conversation for good.</p>
+                    <div v-if="!autoReply.config.conversations.length" class="empty-state" style="padding:24px;"><p>No private conversations watched yet.</p></div>
+                    <div v-else>
+                        <div v-for="conv in autoReply.config.conversations" :key="conv.peer_ref" class="proxy-item" style="align-items:flex-start;">
+                            <div class="proxy-info" style="flex:1;">
+                                <h4>{{ conv.name || 'Unnamed' }}
+                                    <span class="badge" :class="conv.status === 'muted' ? 'badge-normal' : (conv.taken_over ? 'badge-warning' : 'badge-success')">{{ conv.taken_over ? 'You replied' : conv.status }}</span>
+                                </h4>
+                                <p>{{ conv.last_inbound || '—' }}</p>
+                                <p class="muted small mono">{{ conv.peer_ref }} · {{ shortAccountId(conv.account) }} · {{ conv.last_inbound_at || '' }}</p>
+                            </div>
+                            <div class="proxy-actions">
+                                <button class="btn btn-sm btn-outline" @click="setConversation('resume', conv)" :disabled="!!autoReply.busy">Resume</button>
+                                <button class="btn btn-sm btn-outline" @click="setConversation('mute', conv)" :disabled="!!autoReply.busy">Mute</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div v-if="autoReply.config?.feature_enabled" class="card">
+                    <div class="card-header"><h3>Recent activity</h3></div>
+                    <div v-if="!autoReply.config.activity.length" class="empty-state" style="padding:24px;"><p>Nothing has happened yet.</p></div>
+                    <table v-else>
+                        <thead><tr><th>Time</th><th>Account</th><th>What happened</th></tr></thead>
+                        <tbody>
+                            <tr v-for="(item, i) in autoReply.config.activity" :key="i">
+                                <td class="mono small">{{ item.time }}</td>
+                                <td class="mono small">{{ shortAccountId(item.account) }}</td>
+                                <td>{{ item.detail }}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Knowledge base and repeated wording -->
+            <div v-show="tab === 'knowledge'">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>Knowledge base</h3>
+                        <span class="muted small">{{ knowledge.capacity.used }} / {{ knowledge.capacity.limit }} entries</span>
+                    </div>
+                    <p class="muted small" style="margin-bottom:16px;">The notes the dashboard's own AI is allowed to read. Stored encrypted, scoped to you, and never holding a credential — anything that looks like a key, session string, phone number or password is masked on the way in.</p>
+                    <p v-if="knowledge.loading" class="muted small">Loading knowledge base…</p>
+                    <p v-else-if="knowledge.error && !knowledge.documents.length" role="alert" style="color:var(--danger);">{{ knowledge.error }}</p>
+                    <div v-else>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="kb-title">Title</label>
+                                <input id="kb-title" class="form-control" v-model="knowledge.form.title" maxlength="80" placeholder="Delivery times">
+                            </div>
+                            <div class="form-group">
+                                <label for="kb-tags">Tags (comma separated)</label>
+                                <input id="kb-tags" class="form-control" v-model="knowledge.form.tags" placeholder="ops, shipping">
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label for="kb-text">Note</label>
+                            <textarea id="kb-text" class="form-control" rows="4" v-model="knowledge.form.text" maxlength="4000" placeholder="Orders leave the warehouse within two working days."></textarea>
+                        </div>
+                        <div style="display:flex;gap:10px;flex-wrap:wrap;">
+                            <button class="btn btn-primary" @click="saveKnowledgeDocument" :disabled="!!knowledge.busy || !knowledge.form.text.trim()">{{ knowledge.editing ? 'Update entry' : 'Save entry' }}</button>
+                            <button v-if="knowledge.editing" class="btn btn-outline" @click="cancelKnowledgeEdit">Cancel</button>
+                        </div>
+                        <p v-if="knowledge.error" role="alert" style="color:var(--danger);margin-top:12px;">{{ knowledge.error }}</p>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h3>What the AI may collect</h3>
+                    </div>
+                    <p class="muted small" style="margin-bottom:14px;">Auto-collected entries are deduplicated and still masked before they are stored.</p>
+                    <div class="toggle-row">
+                        <div><strong style="font-size:13px;">Copilot drafts</strong><p class="muted small" style="margin-top:2px;">Marking a draft as applied offers its wording here.</p></div>
+                        <button class="toggle" :class="{ on: knowledge.settings.auto_collect_copilot }" role="switch" :aria-checked="knowledge.settings.auto_collect_copilot ? 'true' : 'false'" :disabled="!!knowledge.busy" @click="saveKnowledgeSetting('auto_collect_copilot', !knowledge.settings.auto_collect_copilot)"></button>
+                    </div>
+                    <div class="toggle-row">
+                        <div><strong style="font-size:13px;">Approved replies</strong><p class="muted small" style="margin-top:2px;">A reply you sent from the Auto Reply outbox is kept as a note.</p></div>
+                        <button class="toggle" :class="{ on: knowledge.settings.auto_collect_replies }" role="switch" :aria-checked="knowledge.settings.auto_collect_replies ? 'true' : 'false'" :disabled="!!knowledge.busy" @click="saveKnowledgeSetting('auto_collect_replies', !knowledge.settings.auto_collect_replies)"></button>
+                    </div>
+                    <div class="toggle-row" style="border-bottom:0;">
+                        <div><strong style="font-size:13px;">Include templates</strong><p class="muted small" style="margin-top:2px;">Search reads your message templates as well as these notes.</p></div>
+                        <button class="toggle" :class="{ on: knowledge.settings.include_templates }" role="switch" :aria-checked="knowledge.settings.include_templates ? 'true' : 'false'" :disabled="!!knowledge.busy" @click="saveKnowledgeSetting('include_templates', !knowledge.settings.include_templates)"></button>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h3>Entries</h3>
+                        <button class="btn btn-sm btn-danger" @click="clearKnowledge" :disabled="!!knowledge.busy || !knowledge.capacity.used">Remove all</button>
+                    </div>
+                    <div class="form-row" style="margin-bottom:14px;">
+                        <div class="form-group" style="flex:1;">
+                            <label for="kb-query">Search</label>
+                            <input id="kb-query" class="form-control" v-model="knowledge.query" placeholder="delivery days" @keyup.enter="searchKnowledge">
+                        </div>
+                        <div class="form-group" style="flex:0;align-self:flex-end;">
+                            <button class="btn btn-outline" @click="searchKnowledge" :disabled="!!knowledge.busy">Search</button>
+                        </div>
+                    </div>
+                    <div v-if="knowledge.matches" class="card" style="background:rgba(0,0,0,0.2);margin-bottom:16px;">
+                        <div v-if="!knowledge.matches.length" class="empty-state" style="padding:20px;"><p>No entry matched that search.</p></div>
+                        <div v-for="hit in knowledge.matches" :key="hit.id" style="margin-bottom:10px;">
+                            <p><strong>{{ hit.title }}</strong> <span class="badge badge-info">{{ hit.source }}</span> <span class="muted small">score {{ hit.score }}</span></p>
+                            <p class="muted small" style="white-space:pre-wrap;">{{ hit.preview }}</p>
+                        </div>
+                    </div>
+                    <div v-if="!knowledge.documents.length" class="empty-state"><p>Nothing stored yet. Write a note above, or mark a Copilot draft as applied.</p></div>
+                    <div v-else>
+                        <div v-for="doc in knowledge.documents" :key="doc.id" class="proxy-item" style="align-items:flex-start;">
+                            <div class="proxy-info" style="flex:1;">
+                                <h4>{{ doc.title }}
+                                    <span class="badge badge-info">{{ doc.source }}</span>
+                                    <span v-if="doc.masked" class="badge badge-warning">credential masked</span>
+                                </h4>
+                                <p style="white-space:pre-wrap;">{{ doc.preview }}<span v-if="doc.characters > doc.preview.length">…</span></p>
+                                <p class="muted small">{{ doc.characters }} characters · {{ doc.hits }} reads · {{ doc.updated || doc.created }}<span v-if="doc.tags.length"> · {{ doc.tags.join(', ') }}</span></p>
+                            </div>
+                            <div class="proxy-actions">
+                                <button class="btn btn-sm btn-outline" @click="startKnowledgeEdit(doc)" :disabled="!!knowledge.busy">Edit</button>
+                                <button class="btn btn-sm btn-danger" @click="deleteKnowledgeDocument(doc)" :disabled="!!knowledge.busy">Delete</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h3>Repeated wording</h3>
+                        <div style="display:flex;gap:8px;align-items:center;">
+                            <span class="muted small">{{ patterns.corpus }} items read</span>
+                            <button class="btn btn-sm btn-outline" @click="refreshPatterns" :disabled="patterns.loading">Detect again</button>
+                        </div>
+                    </div>
+                    <p class="muted small" style="margin-bottom:14px;">Phrases that keep coming back are proposed as something reusable — a template, an Auto Reply rule, a task or a process. Accepting saves nothing that sends; a rule lands switched off, and a task or process only prefills the form that still asks for consent.</p>
+                    <p v-if="patterns.loading" class="muted small">Scanning…</p>
+                    <p v-else-if="patterns.error" role="alert" style="color:var(--danger);">{{ patterns.error }}</p>
+                    <p v-else-if="patterns.detected_at" class="muted small" style="margin-bottom:14px;">Last detected {{ patterns.detected_at }}.</p>
+                    <div v-if="!patterns.suggestions.length" class="empty-state"><p>{{ patterns.empty_detail || 'No repeated wording yet.' }}</p></div>
+                    <div v-else>
+                        <div v-for="s in patterns.suggestions" :key="s.id" class="proxy-item" style="flex-direction:column;align-items:stretch;">
+                            <div style="margin-bottom:8px;">
+                                <h4>{{ s.title }}
+                                    <span class="badge badge-info">{{ s.kind }}</span>
+                                    <span class="muted small">seen {{ s.count }} times · {{ s.sources.join(', ') }}</span>
+                                </h4>
+                                <p style="white-space:pre-wrap;margin-top:6px;">{{ s.text }}</p>
+                                <p v-if="s.evidence?.length" class="muted small" style="margin-top:6px;">Evidence: <span v-for="(e, i) in s.evidence" :key="i">“{{ e }}”{{ i < s.evidence.length - 1 ? ' · ' : '' }}</span></p>
+                            </div>
+                            <div class="proxy-actions">
+                                <button class="btn btn-sm btn-primary" @click="acceptPattern(s)" :disabled="patterns.busy === s.id">{{ s.kind === 'template' ? 'Save template' : (s.kind === 'reply' ? 'Save rule (off)' : (s.kind === 'task' ? 'Open BulkSend' : 'Open Copilot')) }}</button>
+                                <button class="btn btn-sm btn-outline" @click="dismissPattern(s)" :disabled="!!patterns.busy">Dismiss</button>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -3738,6 +4103,8 @@
             contact: '<rect x="2" y="4" width="20" height="16" rx="2"/><circle cx="8.5" cy="10" r="2.5"/><path d="M4.5 18a4 4 0 0 1 8 0"/><path d="M15 9h5M15 13h5M15 17h3"/>',
             cloud: '<path d="M18 18H7a5 5 0 1 1 1.2-9.86A6 6 0 0 1 19.7 10.4 4 4 0 0 1 18 18z"/><path d="M12 12v6M9.5 15.5L12 18l2.5-2.5"/>',
             sparkles: '<path d="M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z"/><path d="M19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9z"/>',
+            reply: '<path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 6 6v4"/>',
+            book: '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>',
             image: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/>'
         }
         const AppIcon = {
@@ -3818,7 +4185,7 @@
                         form: { name: '', url: '', transport: 'http', token: '', auth_mode: 'token', client_id: '', client_secret: '', scopes: '' },
                     },
                     pendingOAuthReturn: null,
-                    features: { loading: false, automation_enabled: true, factory_enabled: true, cloud_browser_enabled: false, saving: '' },
+                    features: { loading: false, automation_enabled: true, factory_enabled: true, cloud_browser_enabled: false, auto_reply_enabled: false, saving: '' },
                     cloudBrowser: {
                         config: { configured: false, host: '', has_token: false, updated_at: '', enabled: false, encryption_ready: false, keys: [], profiles: [], active: '', max_profiles: 12 },
                         endpoint: '', token: '', name: '', product: '', revision: '',
@@ -3840,7 +4207,8 @@
                                 { tab: 'copilot', label: 'Copilot', icon: 'copilot' },
                                 { tab: 'tasks', label: 'Tasks', icon: 'tasks', badge: 'jobs' },
                                 { tab: 'schedule', label: 'Schedule', icon: 'calendar' },
-                                { tab: 'templates', label: 'Templates', icon: 'message' }
+                                { tab: 'templates', label: 'Templates', icon: 'message' },
+                                { tab: 'knowledge', label: 'Knowledge', icon: 'book' }
                             ]
                         },
                         {
@@ -3857,7 +4225,8 @@
                                 { tab: 'scraper', label: 'Scraper', icon: 'search' },
                                 { tab: 'adder', label: 'Adder', icon: 'user-plus' },
                                 { tab: 'autojoin', label: 'Auto Join', icon: 'link' },
-                                { tab: 'bulksend', label: 'BulkSend', icon: 'send' }
+                                { tab: 'bulksend', label: 'BulkSend', icon: 'send' },
+                                { tab: 'autoreply', label: 'Auto Reply', icon: 'reply' }
                             ]
                         },
                         {
@@ -4109,7 +4478,23 @@
                     exportAllData: '',
 
                     // Copilot (draft-only: never sends)
-                    copilot: { instruction: '', loading: false, draft: null, presets: [], error: '' },
+                    copilot: { instruction: '', loading: false, draft: null, presets: [], error: '', turnId: '', history: [] },
+
+                    // Auto Reply (inbound; answers only private chats that spoke first)
+                    autoReply: {
+                        loading: false, saving: false, busy: '', error: '', message: '',
+                        config: null, ruleForm: { name: '', match: 'keyword', keywords: '', reply: '', enabled: true },
+                        editingRule: '', test: { text: '', name: '', result: null, busy: false },
+                    },
+
+                    // Knowledge base (the notes the dashboard's own AI may read)
+                    knowledge: {
+                        loading: false, busy: '', error: '', documents: [], settings: {}, capacity: { used: 0, limit: 0 },
+                        form: { title: '', text: '', tags: '' }, editing: '', query: '', matches: null,
+                    },
+
+                    // Repeated-pattern suggestions detected from that knowledge
+                    patterns: { loading: false, busy: '', error: '', suggestions: [], corpus: 0, detected_at: '', empty_detail: '' },
 
                     // Template Modal
                     showTemplateModal: false,
@@ -4421,7 +4806,9 @@
                     } else {
                         clearTimeout(this.automation.poll)
                     }
-                    if (tab === 'copilot') this.loadCopilot()
+                    if (tab === 'copilot') { this.loadCopilot(); this.loadCopilotHistory() }
+                    if (tab === 'autoreply') this.loadAutoReply()
+                    if (tab === 'knowledge') { this.loadKnowledge(); this.loadPatterns() }
                     if (tab === 'tasks') this.loadOutreachJobs()
                     if (tab === 'integrations') { this.loadWebhooks(); this.loadIntegrations(); this.loadAiSettings(); this.loadFeatures() }
                     if (tab === 'contacts') { if (!this.contacts.accountId && this.accounts.length) this.contacts.accountId = this.accounts[0].account_id; this.loadContacts() }
@@ -4446,6 +4833,9 @@
                     this.loadOutreachJobs()
                     if (this.tab === 'integrations') { this.loadWebhooks(); this.loadIntegrations(); this.loadAiSettings(); this.loadFeatures() }
                     if (this.tab === 'contacts') this.loadContacts()
+                    if (this.tab === 'autoreply') this.loadAutoReply()
+                    if (this.tab === 'knowledge') { this.loadKnowledge(); this.loadPatterns() }
+                    if (this.tab === 'copilot') this.loadCopilotHistory()
                     if (this.tab === 'cloudphone') this.loadRecovery()
                     if (this.tab === 'scraper' || this.tab === 'adder') this.loadGroups(this.tab)
                     if (['overview', 'tasks', 'automation', 'factory'].includes(this.tab)) this.loadAutomationStatus()
@@ -7147,6 +7537,7 @@
                         this.features.automation_enabled = !!data.automation_enabled
                         this.features.factory_enabled = !!data.factory_enabled
                         this.features.cloud_browser_enabled = !!data.cloud_browser_enabled
+                        this.features.auto_reply_enabled = !!data.auto_reply_enabled
                     } catch (e) {
                         this.showToast(e.response?.data?.detail || 'Could not load platform settings.', true)
                     } finally {
@@ -7391,9 +7782,12 @@
                     try {
                         const res = await _api.post('/api/copilot/draft', { instruction: this.copilot.instruction })
                         this.copilot.draft = res.data.draft || null
+                        this.copilot.turnId = res.data.turn_id || ''
                         if (res.data.presets?.length) this.copilot.presets = res.data.presets
+                        this.loadCopilotHistory()
                     } catch (e) {
                         this.copilot.draft = null
+                        this.copilot.turnId = ''
                         this.copilot.error = e.response?.data?.detail || 'Could not build a draft.'
                     }
                     this.copilot.loading = false
@@ -7431,6 +7825,8 @@
                             })
                             this.showToast('Template saved.')
                             this.copilot.draft = null
+                            if (this.copilot.turnId) await this.markCopilotOutcome({ id: this.copilot.turnId }, 'applied')
+                            this.copilot.turnId = ''
                             await this.loadTemplates()
                             this.go('templates')
                         } catch (e) {
@@ -7479,6 +7875,442 @@
                     }
 
                     this.showToast('This draft has nothing to apply.')
+                },
+
+                // ---- Copilot history ----
+                async loadCopilotHistory() {
+                    try {
+                        const { data } = await _api.get('/api/copilot/history')
+                        this.copilot.history = data.turns || []
+                    } catch (e) {
+                        this.copilot.history = []
+                    }
+                },
+
+                async markCopilotOutcome(turn, outcome) {
+                    if (!turn?.id) return
+                    try {
+                        const { data } = await _api.post(`/api/copilot/history/${turn.id}/outcome`, { outcome })
+                        turn.outcome = outcome
+                        this.showToast(data.collected ? 'Marked applied and offered to the knowledge base.' : 'Marked as ' + outcome + '.')
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not mark that turn.', true)
+                    }
+                },
+
+                async clearCopilotHistory() {
+                    if (!window.confirm('Clear the Copilot history? The knowledge entries it already collected stay.')) return
+                    try {
+                        await _api.delete('/api/copilot/history')
+                        this.copilot.history = []
+                        this.showToast('History cleared.')
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not clear the history.', true)
+                    }
+                },
+
+                // ---- Auto Reply ----
+                async loadAutoReply() {
+                    this.autoReply.loading = true
+                    try {
+                        const { data } = await _api.get('/api/auto-reply/config')
+                        this.autoReply.config = data.config
+                        this.autoReply.error = ''
+                    } catch (e) {
+                        this.autoReply.config = null
+                        this.autoReply.error = e.response?.data?.detail || 'Could not load Auto Reply.'
+                    } finally {
+                        this.autoReply.loading = false
+                    }
+                },
+
+                async putAutoReplyConfig(body, message) {
+                    if (this.autoReply.saving) return
+                    this.autoReply.saving = true
+                    try {
+                        const { data } = await _api.put('/api/auto-reply/config', body)
+                        this.autoReply.config = data.config
+                        this.autoReply.message = message
+                        this.autoReply.error = ''
+                    } catch (e) {
+                        this.autoReply.error = e.response?.data?.detail || 'Could not save those settings.'
+                        await this.loadAutoReply()
+                    } finally {
+                        this.autoReply.saving = false
+                    }
+                },
+
+                saveAutoReplyEnabled(value) {
+                    return this.putAutoReplyConfig({ enabled: value }, value ? 'Auto Reply is on.' : 'Auto Reply is paused.')
+                },
+
+                saveAutoReplySettings() {
+                    const config = this.autoReply.config
+                    return this.putAutoReplyConfig(
+                        { mode: config.mode, poll_seconds: config.poll_seconds, daily_cap: config.daily_cap },
+                        'Settings saved.')
+                },
+
+                isAccountWatched(accountId) {
+                    return !!(this.autoReply.config?.accounts || []).find(item => item.id === accountId)?.enabled
+                },
+
+                async watchAccount(accountId, enabled) {
+                    this.autoReply.busy = accountId
+                    try {
+                        const { data } = await _api.put(`/api/auto-reply/accounts/${accountId}`, { enabled })
+                        this.autoReply.config = data.config
+                    } catch (e) {
+                        this.autoReply.error = e.response?.data?.detail || 'Could not change that account.'
+                    } finally {
+                        this.autoReply.busy = ''
+                    }
+                },
+
+                ruleFormBody() {
+                    return {
+                        name: this.autoReply.ruleForm.name.trim(),
+                        match: this.autoReply.ruleForm.match,
+                        keywords: this.autoReply.ruleForm.keywords.split(',').map(w => w.trim()).filter(Boolean),
+                        reply: this.autoReply.ruleForm.reply,
+                        enabled: this.autoReply.ruleForm.enabled,
+                    }
+                },
+
+                async saveAutoReplyRule() {
+                    const body = this.ruleFormBody()
+                    if (!body.reply.trim()) {
+                        this.showToast('Write the reply this rule should send.', true)
+                        return
+                    }
+                    this.autoReply.busy = 'rule'
+                    try {
+                        if (this.autoReply.editingRule) await _api.put(`/api/auto-reply/rules/${this.autoReply.editingRule}`, body)
+                        else await _api.post('/api/auto-reply/rules', body)
+                        this.showToast(this.autoReply.editingRule ? 'Rule updated.' : 'Rule added.')
+                        this.cancelRuleEdit()
+                        await this.loadAutoReply()
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not save the rule.', true)
+                    } finally {
+                        this.autoReply.busy = ''
+                    }
+                },
+
+                startRuleEdit(rule) {
+                    this.autoReply.editingRule = rule.id
+                    this.autoReply.ruleForm = {
+                        name: rule.name, match: rule.match, keywords: (rule.keywords || []).join(', '),
+                        reply: rule.reply, enabled: rule.enabled,
+                    }
+                },
+
+                cancelRuleEdit() {
+                    this.autoReply.editingRule = ''
+                    this.autoReply.ruleForm = { name: '', match: 'keyword', keywords: '', reply: '', enabled: true }
+                },
+
+                async toggleAutoReplyRule(rule) {
+                    this.autoReply.busy = rule.id
+                    try {
+                        await _api.put(`/api/auto-reply/rules/${rule.id}`, {
+                            name: rule.name, match: rule.match, keywords: rule.keywords,
+                            reply: rule.reply, enabled: !rule.enabled,
+                        })
+                        await this.loadAutoReply()
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not change the rule.', true)
+                    } finally {
+                        this.autoReply.busy = ''
+                    }
+                },
+
+                async deleteAutoReplyRule(rule) {
+                    if (!window.confirm(`Delete the rule “${rule.name}”?`)) return
+                    this.autoReply.busy = rule.id
+                    try {
+                        await _api.delete(`/api/auto-reply/rules/${rule.id}`)
+                        if (this.autoReply.editingRule === rule.id) this.cancelRuleEdit()
+                        await this.loadAutoReply()
+                        this.showToast('Rule deleted.')
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not delete the rule.', true)
+                    } finally {
+                        this.autoReply.busy = ''
+                    }
+                },
+
+                async testAutoReply() {
+                    this.autoReply.test.busy = true
+                    this.autoReply.test.result = null
+                    try {
+                        const { data } = await _api.post('/api/auto-reply/test', {
+                            text: this.autoReply.test.text, name: this.autoReply.test.name,
+                        })
+                        this.autoReply.test.result = data
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not test that message.', true)
+                    } finally {
+                        this.autoReply.test.busy = false
+                    }
+                },
+
+                async runAutoReplyNow() {
+                    this.autoReply.busy = 'run'
+                    this.autoReply.message = ''
+                    try {
+                        const { data } = await _api.post('/api/auto-reply/run-now', {}, { timeout: 120000 })
+                        this.autoReply.config = data.config
+                        const r = data.result || {}
+                        this.autoReply.message = `Checked ${r.checked || 0} account(s): ${r.replied || 0} replied, ${r.drafted || 0} drafted, ${r.paused || 0} paused.`
+                    } catch (e) {
+                        this.autoReply.error = e.response?.data?.detail || 'That check did not finish.'
+                    } finally {
+                        this.autoReply.busy = ''
+                    }
+                },
+
+                async editOutboxDraft(draft) {
+                    this.autoReply.busy = draft.id
+                    try {
+                        await _api.put(`/api/auto-reply/outbox/${draft.id}`, { reply: draft.reply })
+                        this.showToast('Draft saved.')
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not save that draft.', true)
+                    } finally {
+                        this.autoReply.busy = ''
+                    }
+                },
+
+                async sendOutboxDraft(draft) {
+                    if (!window.confirm('Send this reply to that person now?')) return
+                    this.autoReply.busy = draft.id
+                    try {
+                        const { data } = await _api.post(`/api/auto-reply/outbox/${draft.id}/send`, {})
+                        this.showToast(data.detail || 'Sent.')
+                        await this.loadAutoReply()
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Telegram did not accept the reply.', true)
+                    } finally {
+                        this.autoReply.busy = ''
+                    }
+                },
+
+                async discardOutboxDraft(draft) {
+                    this.autoReply.busy = draft.id
+                    try {
+                        await _api.post(`/api/auto-reply/outbox/${draft.id}/discard`, {})
+                        await this.loadAutoReply()
+                        this.showToast('Draft discarded.')
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not discard that draft.', true)
+                    } finally {
+                        this.autoReply.busy = ''
+                    }
+                },
+
+                async setConversation(action, conv) {
+                    this.autoReply.busy = conv.peer_ref
+                    try {
+                        await _api.post(`/api/auto-reply/conversations/${conv.peer_ref}/${action}`, {})
+                        await this.loadAutoReply()
+                        this.showToast(action === 'mute' ? 'Muted.' : 'Resumed.')
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not change that conversation.', true)
+                    } finally {
+                        this.autoReply.busy = ''
+                    }
+                },
+
+                // ---- Knowledge base ----
+                async loadKnowledge() {
+                    this.knowledge.loading = true
+                    try {
+                        const { data } = await _api.get('/api/knowledge/documents')
+                        this.knowledge.documents = data.documents || []
+                        this.knowledge.settings = data.settings || {}
+                        this.knowledge.capacity = data.capacity || { used: 0, limit: 0 }
+                        this.knowledge.error = ''
+                    } catch (e) {
+                        this.knowledge.error = e.response?.data?.detail || 'Could not load the knowledge base.'
+                    } finally {
+                        this.knowledge.loading = false
+                    }
+                },
+
+                async saveKnowledgeDocument() {
+                    const body = {
+                        title: this.knowledge.form.title.trim(),
+                        text: this.knowledge.form.text,
+                        tags: this.knowledge.form.tags.split(',').map(t => t.trim()).filter(Boolean),
+                    }
+                    this.knowledge.busy = 'save'
+                    try {
+                        if (this.knowledge.editing) await _api.put(`/api/knowledge/documents/${this.knowledge.editing}`, body)
+                        else await _api.post('/api/knowledge/documents', body)
+                        this.showToast(this.knowledge.editing ? 'Entry updated.' : 'Entry saved.')
+                        this.cancelKnowledgeEdit()
+                        await this.loadKnowledge()
+                    } catch (e) {
+                        this.knowledge.error = e.response?.data?.detail || 'Could not save that entry.'
+                    } finally {
+                        this.knowledge.busy = ''
+                    }
+                },
+
+                async startKnowledgeEdit(doc) {
+                    this.knowledge.busy = doc.id
+                    try {
+                        const { data } = await _api.get(`/api/knowledge/documents/${doc.id}`)
+                        this.knowledge.editing = doc.id
+                        this.knowledge.form = {
+                            title: data.document.title || '', text: data.document.text || '',
+                            tags: (data.document.tags || []).join(', '),
+                        }
+                    } catch (e) {
+                        this.knowledge.error = e.response?.data?.detail || 'Could not open that entry.'
+                    } finally {
+                        this.knowledge.busy = ''
+                    }
+                },
+
+                cancelKnowledgeEdit() {
+                    this.knowledge.editing = ''
+                    this.knowledge.form = { title: '', text: '', tags: '' }
+                },
+
+                async deleteKnowledgeDocument(doc) {
+                    if (!window.confirm(`Delete “${doc.title}” from the knowledge base?`)) return
+                    this.knowledge.busy = doc.id
+                    try {
+                        await _api.delete(`/api/knowledge/documents/${doc.id}`)
+                        if (this.knowledge.editing === doc.id) this.cancelKnowledgeEdit()
+                        await this.loadKnowledge()
+                        this.showToast('Entry deleted.')
+                    } catch (e) {
+                        this.knowledge.error = e.response?.data?.detail || 'Could not delete that entry.'
+                    } finally {
+                        this.knowledge.busy = ''
+                    }
+                },
+
+                async saveKnowledgeSetting(name, value) {
+                    this.knowledge.busy = name
+                    try {
+                        const { data } = await _api.put('/api/knowledge/settings', { [name]: value })
+                        this.knowledge.settings = data.settings
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not save that setting.', true)
+                    } finally {
+                        this.knowledge.busy = ''
+                    }
+                },
+
+                async searchKnowledge() {
+                    if (!this.knowledge.query.trim()) return
+                    this.knowledge.busy = 'search'
+                    try {
+                        const { data } = await _api.post('/api/knowledge/search', { query: this.knowledge.query, k: 5 })
+                        this.knowledge.matches = data.matches || []
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Search failed.', true)
+                    } finally {
+                        this.knowledge.busy = ''
+                    }
+                },
+
+                async clearKnowledge() {
+                    if (!window.confirm('Remove every knowledge entry? Your message templates are not touched.')) return
+                    this.knowledge.busy = 'clear'
+                    try {
+                        const { data } = await _api.post('/api/knowledge/clear', {})
+                        this.cancelKnowledgeEdit()
+                        this.knowledge.matches = null
+                        await this.loadKnowledge()
+                        this.showToast(`Removed ${data.removed} entry(ies).`)
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not clear the knowledge base.', true)
+                    } finally {
+                        this.knowledge.busy = ''
+                    }
+                },
+
+                // ---- Repeated wording ----
+                async loadPatterns() {
+                    this.patterns.loading = true
+                    try {
+                        const { data } = await _api.get('/api/patterns/suggestions')
+                        this.patterns.suggestions = data.suggestions || []
+                        this.patterns.corpus = data.corpus || 0
+                        this.patterns.detected_at = data.detected_at || ''
+                        this.patterns.empty_detail = data.empty_detail || ''
+                        this.patterns.error = ''
+                    } catch (e) {
+                        this.patterns.error = e.response?.data?.detail || 'Could not detect repeated wording.'
+                    } finally {
+                        this.patterns.loading = false
+                    }
+                },
+
+                async refreshPatterns() {
+                    this.patterns.loading = true
+                    try {
+                        const { data } = await _api.post('/api/patterns/refresh', {}, { timeout: 60000 })
+                        this.patterns.suggestions = data.suggestions || []
+                        this.patterns.corpus = data.corpus || 0
+                        this.patterns.detected_at = data.detected_at || ''
+                        this.patterns.empty_detail = data.empty_detail || ''
+                        this.patterns.error = ''
+                        this.showToast(`Detected ${this.patterns.suggestions.length} suggestion(s).`)
+                    } catch (e) {
+                        this.patterns.error = e.response?.data?.detail || 'Detection did not finish.'
+                    } finally {
+                        this.patterns.loading = false
+                    }
+                },
+
+                async acceptPattern(s) {
+                    this.patterns.busy = s.id
+                    try {
+                        const { data } = await _api.post(`/api/patterns/suggestions/${s.id}/accept`, {})
+                        const result = data.result || {}
+                        await this.loadPatterns()
+                        if (data.kind === 'template') {
+                            await this.loadTemplates()
+                            this.showToast(`Saved “${result.name}” as a template.`)
+                        } else if (data.kind === 'reply') {
+                            this.showToast(`Saved an Auto Reply rule, switched off.`)
+                        } else if (result.opens === 'bulksend') {
+                            const payload = result.payload || {}
+                            this.bulksend = {
+                                ...this.bulksend, messages: {}, message: payload.message || '',
+                                targets: (payload.targets || []).join('\n'), consentConfirmed: false,
+                            }
+                            this.go('bulksend')
+                            this.showToast('BulkSend prefilled. Confirm consent and press Start BulkSend.')
+                        } else {
+                            const payload = result.payload || {}
+                            this.copilot.instruction = payload.instruction || ''
+                            this.go('copilot')
+                            this.showToast('Copilot prefilled. Draft it, then review before anything is saved.')
+                        }
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not accept that suggestion.', true)
+                    } finally {
+                        this.patterns.busy = ''
+                    }
+                },
+
+                async dismissPattern(s) {
+                    this.patterns.busy = s.id
+                    try {
+                        await _api.post(`/api/patterns/suggestions/${s.id}/dismiss`, {})
+                        await this.loadPatterns()
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not dismiss that suggestion.', true)
+                    } finally {
+                        this.patterns.busy = ''
+                    }
                 },
 
                 // Templates

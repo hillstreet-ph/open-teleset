@@ -35,6 +35,9 @@ from webhooks import router as webhooks_router
 from copilot import router as copilot_router
 from dashboard_features import router as dashboard_features_router
 from cloud_browser import router as cloud_browser_router
+from auto_reply import router as auto_reply_router, worker as auto_reply_worker
+from knowledge import router as knowledge_router
+from patterns import router as patterns_router
 from open_teleset.security import SupabaseAuthMiddleware
 from open_teleset.observability import initialize_error_monitoring
 from open_teleset.read_only_mcp import create_read_only_mcp
@@ -67,11 +70,14 @@ async def lifespan(app: FastAPI):
     # Mounted ASGI applications do not start their own lifespan. Run the MCP
     # session manager here; stateless HTTP revalidates dashboard auth each request.
     outreach_worker.start()
+    # Inbound watcher: does nothing until the feature switch and an account are on.
+    auto_reply_worker.start()
     try:
         async with remote_mcp.session_manager.run():
             yield
     finally:
         await outreach_worker.stop()
+        await auto_reply_worker.stop()
 
     # 关闭时执行
     proxy_task.cancel()
@@ -115,6 +121,9 @@ app.include_router(webhooks_router)
 app.include_router(copilot_router)
 app.include_router(dashboard_features_router)
 app.include_router(cloud_browser_router)
+app.include_router(auto_reply_router)
+app.include_router(knowledge_router)
+app.include_router(patterns_router)
 
 
 @app.get("/api/auth/me")

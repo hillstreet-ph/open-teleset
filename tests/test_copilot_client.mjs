@@ -13,7 +13,7 @@ function methodSource(startMarker, endMarker) {
   return html.slice(start, end);
 }
 
-const copilotMethods = methodSource('async loadCopilot() {', '// Templates');
+const copilotMethods = methodSource('async loadCopilot() {', '// ---- Auto Reply ----');
 
 function harness(draftResponse) {
   const calls = [];
@@ -53,14 +53,16 @@ const FORBIDDEN = /send|bulk|outreach|autojoin|adder|\/api\/schedules/i;
 test('copilot navigation and page metadata are wired', () => {
   assert.ok(html.includes("{ tab: 'copilot', label: 'Copilot', icon: 'copilot' }"));
   assert.ok(html.includes("copilot: ['Copilot', 'Draft templates, schedules and opt-in sends in plain language.']"));
-  assert.ok(html.includes("if (tab === 'copilot') this.loadCopilot()"));
+  assert.match(html, /if \(tab === 'copilot'\) \{ this\.loadCopilot\(\); this\.loadCopilotHistory\(\) \}/);
   assert.ok(html.includes('v-show="tab === \'copilot\'"'));
 });
 
 test('copilot apply paths never call a send, schedule or outreach endpoint', () => {
   assert.ok(!copilotMethods.includes('runBulkSend('), 'apply must not start BulkSend');
   assert.ok(!copilotMethods.includes('addSchedule('), 'apply must not create schedules');
-  assert.ok(!copilotMethods.includes('_api.get('), 'apply must not fetch execution endpoints');
+  const endpoints = [...copilotMethods.matchAll(/_api\.(?:get|post|put|delete)\(\s*[`'"]([^`'"]+)/g)].map((m) => m[1]);
+  assert.ok(endpoints.length >= 3, 'the copilot methods should call their own endpoints');
+  for (const url of endpoints) assert.ok(!FORBIDDEN.test(url), `copilot must not reach ${url}`);
 });
 
 test('draftCopilot posts the instruction and stores draft plus presets', async () => {

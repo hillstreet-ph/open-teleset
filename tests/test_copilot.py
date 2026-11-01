@@ -1,6 +1,10 @@
 """The copilot drafts only; it can never create accounts or bypass consent."""
 
+import json
+from types import SimpleNamespace
+
 import pytest
+from cryptography.fernet import Fernet
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -116,16 +120,33 @@ def test_empty_instruction_returns_help_with_examples():
     assert draft["requires_confirmation"] is False
 
 
-def test_router_exposes_only_drafting():
-    routes = [(route.path, sorted(route.methods)) for route in copilot.router.routes]
-    assert routes == [("/api/copilot/draft", ["POST"])]
+def test_router_exposes_drafting_and_history_only():
+    routes = sorted((route.path, tuple(sorted(route.methods))) for route in copilot.router.routes)
+    assert routes == [
+        ("/api/copilot/draft", ("POST",)),
+        ("/api/copilot/history", ("DELETE",)),
+        ("/api/copilot/history", ("GET",)),
+        ("/api/copilot/history/{turn_id}/outcome", ("POST",)),
+    ]
 
 
-def test_draft_endpoint_returns_presets_and_a_draft():
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    """A dashboard-less app whose request state carries the signed-in operator."""
+    monkeypatch.setenv("OPERATOR_STORE_DIR", str(tmp_path))
+    monkeypatch.setenv("SESSION_ENCRYPTION_KEY", Fernet.generate_key().decode())
     app = FastAPI()
-    app.include_router(copilot.router)
-    client = TestClient(app)
 
+    @app.middleware("http")
+    async def sign_in(request, call_next):
+        request.state.user = SimpleNamespace(id="operator-1", role="admin")
+        return await call_next(request)
+
+    app.include_router(copilot.router)
+    return TestClient(app)
+
+
+def test_draft_endpoint_returns_presets_and_a_draft(client):
     response = client.post(
         "/api/copilot/draft",
         json={"instruction": "Create a template named Ping that says: Hello there."},
@@ -136,13 +157,141 @@ def test_draft_endpoint_returns_presets_and_a_draft():
     assert body["success"] is True
     assert body["draft"]["payload"]["name"] == "Ping"
     assert body["presets"]
+    assert body["turn_id"]
 
 
-def test_draft_endpoint_rejects_oversized_instructions():
-    app = FastAPI()
-    app.include_router(copilot.router)
-    client = TestClient(app)
-
+def test_draft_endpoint_rejects_oversized_instructions(client):
     response = client.post("/api/copilot/draft", json={"instruction": "x" * 2001})
 
     assert response.status_code == 422
+
+
+def test_draft_never_sends_or_creates_anything(client):
+    client.post("/api/copilot/draft",
+                json={"instruction": "Create a template named Ping that says: Hello there."})
+    before = copilot.build_draft("Create a template named Ping that says: Hello there.")
+
+    assert before["requires_confirmation"] is True
+    assert before["action"] == "template"
+    assert client.get("/api/copilot/history").json()["turns"][0]["outcome"] == "drafted"
+
+
+def test_history_keeps_the_thread_in_newest_first_order(client):
+    for instruction in (
+        "Create a template named First that says: Hello.",
+        "Create a template named Second that says: Goodbye.",
+    ):
+        client.post("/api/copilot/draft", json={"instruction": instruction})
+
+    turns = client.get("/api/copilot/history").json()["turns"]
+    assert [turn["text"] for turn in turns][:2] == ["Goodbye.", "Hello."]
+    assert all(turn["instruction"] for turn in turns)
+
+
+def test_history_is_scoped_to_the_signed_in_operator(client, tmp_path, monkeypatch):
+    turns = client.get("/api/copilot/history").json()["turns"]
+    assert turns == []
+
+    client.post("/api/copilot/draft", json={"instruction": "Create a template named Mine that says: Hi there."})
+    path = tmp_path / "copilot_history.secret.json"
+    raw = json.loads(path.read_text())
+    assert set(raw) == {"ciphertext"}
+    assert "Hi there." not in path.read_text()
+
+    monkeypatch.setenv("OPERATOR_STORE_DIR", str(tmp_path / "other"))
+    assert copilot._turns("operator-2") == []
+
+
+def test_applying_a_draft_offers_it_to_the_knowledge_base(client, monkeypatch):
+    saved = []
+    monkeypatch.setattr(
+        copilot.knowledge, "add_document",
+        lambda operator, **kwargs: saved.append((operator, kwargs)) or {"id": "doc-1"},
+    )
+
+    turn = client.post("/api/copilot/draft",
+                       json={"instruction": "Create a template named Ping that says: Hello there."}).json()["turn_id"]
+    response = client.post(f"/api/copilot/history/{turn}/outcome", json={"outcome": "applied"})
+
+    assert response.json() == {"success": True, "collected": True}
+    assert saved[0][0] == "operator-1"
+    assert saved[0][1]["text"] == "Hello there."
+    assert saved[0][1]["source"] == "copilot"
+
+
+def test_auto_collect_can_be_switched_off(client, monkeypatch):
+    calls = []
+    monkeypatch.setattr(copilot.knowledge, "add_document", lambda *a, **k: calls.append(a))
+    monkeypatch.setattr(copilot.knowledge, "settings_for", lambda operator: {"auto_collect_copilot": False})
+
+    turn = client.post("/api/copilot/draft",
+                       json={"instruction": "Create a template named Ping that says: Hi."}).json()["turn_id"]
+    response = client.post(f"/api/copilot/history/{turn}/outcome", json={"outcome": "applied"})
+
+    assert response.json()["collected"] is True
+    assert calls == []
+
+
+def test_discarding_a_draft_collects_nothing(client, monkeypatch):
+    calls = []
+    monkeypatch.setattr(copilot.knowledge, "add_document",
+                        lambda *a, **k: calls.append(a))
+
+    turn = client.post("/api/copilot/draft",
+                       json={"instruction": "Create a template named Ping that says: Hello there."}).json()["turn_id"]
+    client.post(f"/api/copilot/history/{turn}/outcome", json={"outcome": "discarded"})
+
+    assert calls == []
+    assert copilot._turns("operator-1")[0]["outcome"] == "discarded"
+
+
+def test_only_known_outcomes_are_accepted(client):
+    turn = client.post("/api/copilot/draft",
+                       json={"instruction": "Create a template named Ping that says: Hi."}).json()["turn_id"]
+
+    assert client.post(f"/api/copilot/history/{turn}/outcome", json={"outcome": "sent"}).status_code == 400
+    assert client.post("/api/copilot/history/nope/outcome", json={"outcome": "applied"}).status_code == 404
+
+
+def test_history_can_be_cleared(client):
+    client.post("/api/copilot/draft", json={"instruction": "Create a template named Ping that says: Hi."})
+
+    assert client.delete("/api/copilot/history").json()["cleared"] is True
+    assert client.get("/api/copilot/history").json()["turns"] == []
+
+
+def test_turns_are_bounded(client, monkeypatch):
+    monkeypatch.setattr(copilot, "MAX_TURNS", 3)
+    for index in range(6):
+        client.post("/api/copilot/draft",
+                    json={"instruction": f"Create a template named T{index} that says: Hello."})
+
+    assert len(copilot._turns("operator-1")) == 3
+
+
+def test_draft_still_works_when_history_cannot_be_written(client, monkeypatch):
+    def refuse(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(copilot, "_write_turns", refuse)
+
+    response = client.post("/api/copilot/draft",
+                           json={"instruction": "Create a template named Ping that says: Hi."})
+
+    assert response.status_code == 200
+    assert response.json()["turn_id"] == ""
+
+
+def test_anonymous_requests_are_refused():
+    app = FastAPI()
+
+    @app.middleware("http")
+    async def anonymous(request, call_next):
+        request.state.user = None
+        return await call_next(request)
+
+    app.include_router(copilot.router)
+    client = TestClient(app)
+
+    assert client.post("/api/copilot/draft", json={"instruction": "hi"}).status_code == 403
+    assert client.get("/api/copilot/history").status_code == 403

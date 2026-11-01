@@ -554,6 +554,7 @@ class FeatureUpdate(BaseModel):
     automation_enabled: Optional[bool] = None
     factory_enabled: Optional[bool] = None
     cloud_browser_enabled: Optional[bool] = None
+    auto_reply_enabled: Optional[bool] = None
 
 
 @router.put("/api/platform/features")

@@ -372,6 +372,15 @@ class OutreachPolicy:
         if data["approvals"].get(approval_id, {}).get("recorded_via") == "member_add_form":
             raise OutreachDenied("member_authorization_job_mismatch")
 
+    def is_suppressed(self, subject: object) -> bool:
+        """Read the opt-out ledger for one subject. An unreadable store blocks the send."""
+        data = self._load()
+        if data is None:
+            raise OutreachDenied("policy_unavailable")
+        subject_hash = hash_identifier(subject)
+        return any(isinstance(record, dict) and record.get("active") is True
+                   and record.get("subject_hash") == subject_hash for record in data["suppressions"])
+
     def select_member_approval(self, account_id: object) -> str:
         """Select an existing authorization; never create or renew one."""
         data = self._load()

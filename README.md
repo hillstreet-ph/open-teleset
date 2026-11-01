@@ -15,6 +15,7 @@ telegram-mcp is a powerful tool for managing multiple Telegram accounts. This ap
 - **Web Dashboard:** Access a user-friendly web interface for account management.
 - **Login via QR Code:** Quickly log into your accounts using QR code scanning.
 - **Cloud Browser:** Drive a hosted browser you already own for web logins, including your Cloud Phone's Telegram web sign-in. See [docs/CLOUD_BROWSER.md](docs/CLOUD_BROWSER.md).
+- **Auto Reply, Knowledge Base and Copilot History:** Answer inbound private chats with your own rules or approved AI drafts, keep operator notes in one encrypted knowledge store, and turn repeated wording into reusable suggestions. Ships switched off. See [docs/AUTO_REPLY_AND_KNOWLEDGE.md](docs/AUTO_REPLY_AND_KNOWLEDGE.md).
 
 ## 🚀 Getting Started
 

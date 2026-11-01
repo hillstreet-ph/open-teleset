@@ -5,16 +5,29 @@ draft that the UI prefills into the existing, approval-gated forms: templates,
 schedules (approval reference + 1-20 consenting recipients) and BulkSend
 (explicit consent checkbox). Account creation, number purchase, group joining,
 member adding and messaging scraped/cold audiences are intentionally refused.
+
+Every exchange is kept as a conversation turn so the panel can show the history, and a
+turn the operator applies is offered to the knowledge base - the notes the dashboard's
+own AI reads when it drafts a reply later.
 """
 from __future__ import annotations
 
 import re
 from typing import Any
+from uuid import uuid4
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+import knowledge
+from open_teleset.operator_store import read_secret, secret_key_available, write_secret
+
 router = APIRouter(tags=["copilot"])
+
+HISTORY_STORE = "copilot_history"
+MAX_TURNS = 100
+INSTRUCTION_PREVIEW = 300
+OUTCOMES = ("drafted", "applied", "discarded")
 
 _USERNAME_RE = re.compile(r"^@?([A-Za-z][A-Za-z0-9_]{3,31})$")
 _NUMERIC_ID_RE = re.compile(r"^\d{5,20}$")
@@ -369,5 +382,112 @@ def build_draft(instruction: str) -> dict[str, Any]:
 
 
 @router.post("/api/copilot/draft")
-async def draft_command(request: CopilotRequest):
-    return {"success": True, "draft": build_draft(request.instruction), "presets": PRESETS}
+async def draft_command(body: CopilotRequest, http_request: Request):
+    draft = build_draft(body.instruction)
+    turn = _remember(_operator(http_request), body.instruction, draft)
+    return {"success": True, "draft": draft, "presets": PRESETS, "turn_id": turn["id"] if turn else ""}
+
+
+@router.get("/api/copilot/history")
+async def history(http_request: Request):
+    return {"success": True, "turns": _turns(_operator(http_request))}
+
+
+class OutcomeBody(BaseModel):
+    outcome: str = Field(min_length=1, max_length=16)
+
+
+@router.post("/api/copilot/history/{turn_id}/outcome")
+async def mark_outcome(turn_id: str, body: OutcomeBody, http_request: Request):
+    """The panel says what it did with the draft; applying one offers it to the knowledge base."""
+    operator = _operator(http_request)
+    if body.outcome not in OUTCOMES:
+        raise HTTPException(400, "Choose applied, discarded or drafted.")
+    turns = _turns(operator)
+    turn = next((item for item in turns if item.get("id") == turn_id), None)
+    if not turn:
+        raise HTTPException(404, "No Copilot turn with that id.")
+    turn["outcome"] = body.outcome
+    _write_turns(operator, turns)
+    if body.outcome == "applied":
+        _collect(operator, turn)
+    return {"success": True, "collected": body.outcome == "applied"}
+
+
+@router.delete("/api/copilot/history")
+async def clear_history(http_request: Request):
+    operator = _operator(http_request)
+    _write_turns(operator, [])
+    return {"success": True, "cleared": True}
+
+
+def _operator(request: Request) -> str:
+    user = getattr(request.state, "user", None)
+    if not user or not getattr(user, "id", None):
+        raise HTTPException(403, "Authenticated operator required")
+    return str(user.id)
+
+
+def _all() -> dict:
+    if not secret_key_available():
+        raise HTTPException(500, "SESSION_ENCRYPTION_KEY is not configured, so nothing can be stored.")
+    data = read_secret(HISTORY_STORE, {})
+    return data if isinstance(data, dict) else {}
+
+
+def _turns(operator: str) -> list:
+    entry = _all().get(operator)
+    turns = entry.get("turns") if isinstance(entry, dict) else None
+    return [t for t in (turns or []) if isinstance(t, dict) and t.get("id")]
+
+
+def _write_turns(operator: str, turns: list) -> None:
+    records = _all()
+    records[operator] = {"turns": turns[:MAX_TURNS]}
+    write_secret(HISTORY_STORE, records)
+
+
+def _remember(operator: str, instruction: str, draft: dict) -> dict | None:
+    """Keep the exchange so the panel can show the thread. A failed save never blocks a draft."""
+    text = (instruction or "").strip()
+    if not text:
+        return None
+    turn = {
+        "id": uuid4().hex[:12],
+        "time": _now(),
+        "instruction": text[:INSTRUCTION_PREVIEW],
+        "action": draft.get("action"),
+        "title": draft.get("title"),
+        "summary": draft.get("summary"),
+        "outcome": "drafted",
+    }
+    payload = draft.get("payload") or {}
+    for key in ("content", "message", "name"):
+        if isinstance(payload.get(key), str) and payload[key]:
+            turn["text"] = payload[key][:INSTRUCTION_PREVIEW]
+            break
+    try:
+        _write_turns(operator, [turn] + _turns(operator))
+    except Exception:
+        return None
+    return turn
+
+
+def _collect(operator: str, turn: dict) -> None:
+    if not knowledge.settings_for(operator).get("auto_collect_copilot"):
+        return
+    body = turn.get("text") or turn.get("instruction") or ""
+    if not body:
+        return
+    try:
+        knowledge.add_document(operator, title=turn.get("title") or "Copilot draft", text=body,
+                               source="copilot", tags=["copilot", str(turn.get("action") or "")], dedupe=True)
+    except HTTPException:
+        pass
+
+
+def _now() -> str:
+    from datetime import datetime
+
+    return datetime.now().isoformat(timespec="seconds")
+
