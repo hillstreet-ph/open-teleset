@@ -637,3 +637,21 @@ def test_the_stream_opens_ready_then_the_wall_then_live_events(api):
     assert "peer" not in bootstrap["chat"]
     assert live["type"] == "ping"
     assert inbox.HUB.subscribers("op-1") == 0
+
+
+def test_the_dashboard_mounts_the_inbox_routes():
+    """The MCP app is mounted at "/", so the product routers must be registered too."""
+    import dashboard
+
+    paths = dashboard.app.openapi()["paths"]
+    for path in ["/api/inbox/config", "/api/inbox/chats", "/api/inbox/chats/{ref}/messages",
+                 "/api/inbox/chats/{ref}/read", "/api/inbox/refresh", "/api/inbox/cache",
+                 "/api/inbox/stream", "/api/inbox/accounts/{account_id}"]:
+        assert path in paths, path
+
+
+def test_the_lifespan_detaches_every_handler_on_shutdown():
+    """A handler left registered past shutdown is a leak into a dead loop."""
+    source = open("dashboard.py", encoding="utf-8").read()
+    assert "inbox_detach_all()" in source
+    assert source.index("inbox_detach_all()") < source.index("scheduler_task.cancel()")
