@@ -29,6 +29,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
+import browser_agent
 from log_manager import log_manager
 from open_teleset.cdp_client import KEY_REJECTED_MESSAGE, CdpClient, CdpError, pressable_keys
 from open_teleset.operator_store import (
@@ -405,10 +406,16 @@ def _live_state(operator: str) -> dict:
 
 
 async def _drop_existing(operator: str) -> None:
-    """Forget an open cockpit after the address it belongs to has changed."""
+    """Close the open cockpit after the address it belongs to has changed.
+
+    Agent plans go with it: they were drafted against that browser's pages, and
+    running one after a switch would drive a different browser than the operator
+    approved.
+    """
     session = _sessions.pop(operator, None)
     if session:
         await session.teardown()
+    browser_agent.forget_operator(operator)
 
 
 def _label(operator: str) -> str:
@@ -903,3 +910,113 @@ async def close_live_view(request: Request):
         await session.teardown()
     log_manager.add_log("Cloud Browser", _label(operator), "Closed the live browser view", "info")
     return {"success": True, **_live_state(operator)}
+
+
+# ------------------------------------------------------------------ agent plans
+#
+# A plan is drafted by the operator's own AI provider and never runs itself. Each step
+# is approved by pressing that step's button, in order, one at a time.
+
+
+class PlanInput(BaseModel):
+    target_id: str = Field(min_length=1, max_length=120)
+    goal: str = Field(min_length=1, max_length=500)
+
+
+class StepRunInput(BaseModel):
+    # The operator's answer to a type step. It is never part of the plan and never
+    # comes back out, so a password does not sit in server memory or reach the model.
+    text: str = Field(default="", max_length=400)
+
+
+async def _page_summary(client: CdpClient, target_id: str) -> dict:
+    for page in await client.pages():
+        if page["target_id"] == target_id:
+            return {"url": page["url"][:300], "title": page["title"][:120]}
+    raise HTTPException(404, "That page is not open in the browser.")
+
+
+async def _look_at_page(operator: str, target_id: str) -> tuple[dict, list]:
+    """What the page says it is, and the controls it says it has."""
+    async with _client_for(operator) as client:
+        try:
+            page = await _page_summary(client, target_id)
+            raw = await client.evaluate(target_id, browser_agent.ELEMENTS_JS)
+        except CdpError as exc:
+            raise HTTPException(502, str(exc)) from None
+    return page, browser_agent.parse_elements(raw)
+
+
+@router.post("/api/cloud-browser/plans")
+async def propose_plan(body: PlanInput, request: Request):
+    """Draft a plan. This reads the page and asks the provider; it drives nothing."""
+    operator = _operator(request)
+    _enabled()
+    page, elements = await _look_at_page(operator, body.target_id)
+    reply = await browser_agent.ask_provider(operator, body.goal.strip(), page, elements)
+    steps = browser_agent.parse_steps(reply, elements, keys=pressable_keys(), url_ok=_validate_page_url)
+    plan = browser_agent.new_plan(operator, body.target_id, body.goal.strip(), page, steps)
+    log_manager.add_log("Cloud Browser", _label(operator), f"Drafted a plan of {len(steps)} steps", "info")
+    return {"success": True, "plan": browser_agent.public(plan)}
+
+
+@router.get("/api/cloud-browser/plans/{plan_id}")
+async def read_plan(plan_id: str, request: Request):
+    operator = _operator(request)
+    _enabled()
+    return {"success": True, "plan": browser_agent.public(browser_agent.get_plan(operator, plan_id))}
+
+
+async def _run_step(client: CdpClient, plan: browser_agent.Plan, step: dict, text: str) -> str:
+    target_id = plan.target_id
+    if step["action"] == "open":
+        await client.navigate(target_id, step["url"])
+        return browser_agent.result_text(step)
+    if step["action"] == "key":
+        await client.press_key(target_id, step["key"])
+        return browser_agent.result_text(step)
+    # Look again before touching anything: the plan was written against the page as it
+    # was, and a login flow redraws itself between steps.
+    raw = await client.evaluate(target_id, browser_agent.ELEMENTS_JS)
+    element = browser_agent.find_element(browser_agent.parse_elements(raw), step["want"])
+    if element is None:
+        raise HTTPException(409, "That control is no longer on the page. Ask for a new plan.")
+    width, height = await client.viewport_size(target_id)
+    await client.click_mouse(target_id, round(element["x"] * width, 1), round(element["y"] * height, 1))
+    if step["action"] == "type":
+        await client.type_text(target_id, text)
+        return browser_agent.result_text(step, len(text))
+    return browser_agent.result_text(step)
+
+
+@router.post("/api/cloud-browser/plans/{plan_id}/steps/{index}/run")
+async def run_plan_step(plan_id: str, index: int, body: StepRunInput, request: Request):
+    """The approval: run exactly this step, and only if it is the next one."""
+    operator = _operator(request)
+    _enabled()
+    plan = browser_agent.get_plan(operator, plan_id)
+    if browser_agent.next_index(plan) != index:
+        raise HTTPException(409, "Run the steps in order.")
+    step = plan.steps[index]
+    if step["action"] == "type" and not body.text:
+        raise HTTPException(400, "Type the text this step should send first.")
+    async with _client_for(operator) as client:
+        try:
+            result = await _run_step(client, plan, step, body.text)
+        except CdpError as exc:
+            raise HTTPException(502, str(exc)) from None
+    step["status"] = "done"
+    step["result"] = result
+    # The label comes from the page, so the log records the action rather than its text.
+    log_manager.add_log("Cloud Browser", _label(operator), f"Ran step {index + 1} of a browser plan ({step['action']})", "info")
+    return {"success": True, "plan": browser_agent.public(plan)}
+
+
+@router.delete("/api/cloud-browser/plans/{plan_id}")
+async def discard_plan(plan_id: str, request: Request):
+    operator = _operator(request)
+    _enabled()
+    plan = browser_agent.get_plan(operator, plan_id)
+    browser_agent.forget(plan)
+    log_manager.add_log("Cloud Browser", _label(operator), "Discarded a browser plan", "info")
+    return {"success": True, "plan": None}

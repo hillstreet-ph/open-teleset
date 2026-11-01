@@ -95,6 +95,33 @@ the stream.
 Each action with no live view open uses its own DevTools connection and closes it
 afterwards. The only session the server holds is the one a live view opened.
 
+## Let your own AI plan the steps
+
+With a page selected, the **AI plan** card asks the provider you configured in Settings → AI
+providers to read that page and propose a route through it. This is a drafter, not a driver:
+nothing runs until you press that step's button, steps run in order, and a fifth proposal drops
+the oldest plan.
+
+| Button | Result |
+|---|---|
+| **Propose steps** | Reads the page's controls, asks your provider for up to 12 steps, and lists them with each one's reason. No input event is sent. |
+| **Run this step** | Runs that one step against the page as it is now, then reports what happened. |
+| **Discard plan** | Takes the plan off the card and keeps your goal text for another try. |
+
+A step can do four things: **Open** a web address, **Click** a control, **Type into** a control,
+**Press** one of the 14 keys. Steps name controls rather than remembering coordinates, so a form
+that moves after a navigation is still clicked in the right place — and a control that has
+disappeared stops that step with `That control is no longer on the page. Ask for a new plan.`
+instead of clicking where it used to be.
+
+A type step carries no text until you run it: the panel asks in a masked field, sends it once,
+and reports only how many characters arrived. Keep passwords out of the goal — the goal goes to
+your provider.
+
+What the provider is shown is the page's own address and the labels of the controls on it. It is
+never shown your browser's DevTools address or token, and its answer is checked against the page
+before it reaches the card.
+
 ## Privacy and consent
 
 - Text you type and codes you send go straight into the browser. They are not stored, not
@@ -111,6 +138,12 @@ afterwards. The only session the server holds is the one a live view opened.
   label, a host and whether a token is stored — never the DevTools address or the token.
   Their cookies live in the browser you connected to, so this product copies nothing between
   them.
+- A drafted plan holds nothing worth stealing: an action, a validated address, a key, or a
+  control's description. The text you type into a step never enters the plan, the provider's
+  prompt, the API response or the log — the log says `Ran step 2 of a browser plan (type)` and
+  the plan itself says "Typed 13 characters".
+- The AI agent drafts and the operator approves. No step, and no sequence of steps, runs by
+  itself, on a timer, or when the page changes.
 - No proxy rotation or fingerprint masking is built in. Automate only sites you are
   authorised to use, and stay inside Telegram's terms.
 
@@ -128,6 +161,15 @@ afterwards. The only session the server holds is the one a live view opened.
 | `The hosted browser closed this view.` | The browser ended the DevTools session — it restarted, the page was closed, or the vendor cut the connection. Start the view again. |
 | `Keep at most 12 named browsers - forget one first.` | The browser list is full. **Forget** one before adding another. |
 | `No named browser with that id.` | The row you acted on is from a panel that has not reloaded — another tab just changed the list. Reload the tab. |
+| `Configure an AI provider and API key in Settings → AI providers.` | The plan card has nothing to ask. Set a provider first; the plan uses your own key, never a built-in one. |
+| `The provider did not return a usable plan.` / `The provider proposed no steps.` | The answer was prose, empty or not a list of steps. Try a narrower goal. |
+| `That plan asks for something the browser cannot do from here.` | The provider named an action this panel will not take, or an address that is not a web page. |
+| `That plan points at a field the page does not have.` | The provider invented a control. Ask for a new plan so it reads the page again. |
+| `The page would not list its controls.` | The page refused to describe itself — a DevTools-restricted vendor, or a page that is not really there. |
+| `That plan is no longer available.` | It ran out (15 minutes), was discarded, or belongs to a browser you have since switched away from. |
+| `Run the steps in order.` | A later step cannot be pressed before an earlier one has run. |
+| `Type the text this step should send first.` | A type step needs its text in the masked field beside its button. |
+| `That control is no longer on the page. Ask for a new plan.` | The page changed under the plan. Propose again; the new plan reads the page as it is. |
 
 Design decisions and the endpoint contract live in
 [docs/superpowers/specs/2026-11-01-cloud-browser-design.md](superpowers/specs/2026-11-01-cloud-browser-design.md).

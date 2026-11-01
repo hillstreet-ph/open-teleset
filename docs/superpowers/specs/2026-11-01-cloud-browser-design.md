@@ -52,6 +52,10 @@ its fingerprint, its proxies and its lifetime. That is the boundary we want.
 | `POST /api/cloud-browser/pages/{id}/reel` | Start recording frames into the live session. |
 | `GET /api/cloud-browser/pages/{id}/reel` | The reel as a ZIP of numbered JPEGs, in paint order. |
 | `DELETE /api/cloud-browser/pages/{id}/reel` | Discard the reel. |
+| `POST /api/cloud-browser/plans` | Ask the operator's own AI provider for steps against one page. Reads the page's controls, validates the answer, runs nothing. 400 with one of our own sentences when the answer is unusable. |
+| `GET /api/cloud-browser/plans/{id}` | The plan as it stands — steps, statuses, the next one, seconds left. 404 once it is discarded, expired, or orphaned by a browser switch. |
+| `POST /api/cloud-browser/plans/{id}/steps/{index}/run` | Run one approved step, in order, against the page as it is now. A type step carries its text here and only its length comes back. |
+| `DELETE /api/cloud-browser/plans/{id}` | Discard the plan. |
 | `POST /api/cloud-browser/live/close` | Stop the view and release the connection. |
 
 With no live view open, every action opens a connection, does one thing, and closes it —
@@ -149,6 +153,51 @@ goes out, redirects are not followed, and a refusal gets one fixed sentence rath
 identity provider's error body, which can carry secrets. This is the difference between
 "connect my MCP server" and "let my MCP server point my backend at my own network".
 
+## Agent plans: the decisions worth recording
+
+The same request asked for AI control "like TinyFish". What shipped is a first-party
+propose-then-approve agent: the operator's own AI provider reads the page and drafts steps,
+and every step needs a press. Six choices shaped it:
+
+**The page describes itself; nobody looks at a picture.** A plan starts from one
+`Runtime.evaluate` that returns the controls a person could actually use — tag, input type,
+name, visible label and its box on screen — capped at 60 elements with each label trimmed.
+Rejected: screenshot-plus-vision, which costs an image per proposal, needs a model chosen for
+looking rather than reasoning, and produces coordinates no one can review before approving.
+
+**Steps name controls, not places.** A step says "the input labelled Phone number", never
+"x=224 y=100". Coordinates live in a viewport that changes when the page navigates, so the run
+endpoint re-reads the page and re-locates the control by its tag, type, name and label. A
+control that has moved is clicked where it is now; a control that is gone stops the plan with
+"ask for a new plan" rather than clicking where it used to be. Rejected: running the offsets
+the provider was shown.
+
+**A type step carries no text.** The system prompt forbids it, the parser drops a value the
+provider invents anyway, and the panel asks the operator for the text in a masked field at the
+moment they press Run. The text then goes straight to the browser and only its length comes
+back. So a plan can be stored, listed and re-read without a credential inside it — and without
+one in the provider's prompt or the operation log.
+
+**Drafting is not doing.** Proposing sends no input event at all. Only the next unfinished step
+has a button, steps run in order, and a finished plan offers nothing to press. Plans live 15
+minutes, four per operator, and belong to the browser they were drafted against: adding or
+switching a browser drops them, because a plan is a working note about one page in one browser.
+
+**Refusals are ours, not the provider's.** Every failure the operator sees is one of a handful
+of fixed sentences — the answer was not a plan, it asked for something a browser cannot do from
+here, the page has no controls to act on, the provider returned HTTP 5xx. A provider's prose can
+carry anything, including part of the page it was shown.
+
+**Nothing that identifies the browser leaves the backend.** The prompt carries the page's own
+address and the control labels. The stored DevTools address, its token and the vendor host are
+not in what is sent, and the check asserts that from the provider's side rather than from the
+page.
+
+Rejected wholesale: delegating to a third-party agent service. That would hand an outside
+orchestrator the operator's logged-in session, its cookies and whatever page it lands on, and
+move the approval step off this dashboard. The browser this agent drives is the one the operator
+already owns and can watch.
+
 ## Boundaries that are enforced by construction
 
 - **Telethon stays Telegram.** No Cloud Browser request model carries an `account_id`,
@@ -162,6 +211,10 @@ identity provider's error body, which can carry secrets. This is the difference 
   `test_the_browsers_address_never_reaches_the_viewer` lock this.
 - **Text goes in, nothing comes back.** `type` returns a character count; `otp` returns
   seconds remaining. The generated code is typed on the server and never serialized.
+- **A drafted plan holds nothing to leak.** It stores an action, a validated public URL, a key
+  from the 14-key list or a control's description — never the text a step types, never the
+  browser's address or token, and never a word of the provider's answer. The operation log
+  records the action and the character count.
 - **Frames are transient.** Screencast frames are streamed to the operator and written
   nowhere — not to disk, not to a storage bucket, not to the database. The reel is a list
   in the live session's memory, bounded at 300 frames and 8 MB, and is gone when the view
@@ -195,13 +248,37 @@ identity provider's error body, which can carry secrets. This is the difference 
   store, the cap answers 409, an unknown id 404, a spaces-only label falls back to the host,
   a legacy record reads as one browser and loses its top-level secret on the next write, and
   another operator's record is not readable.
+- `tests/test_browser_agent.py` — 43 tests over the whole propose-then-approve path, with the
+  real router, the real CDP client and a real HTTP call to a fake provider. The drafting side
+  covers what the provider is shown (the page's own controls, the goal, the page address) and
+  what it is never shown (the browser's address or token), the 900-token cap, the system prompt
+  it has to answer to, and that a plan is refused in our words — not echoed — when the answer is
+  prose, empty, an unknown action, an unknown control index, a URL that is not a page, or more
+  steps than a plan may have. The running side covers the order (a later step is refused before
+  any connection is made), the re-location (a control that moved is clicked where it is now; one
+  that disappeared stops the plan and clicks nothing), the masked text (a type step sends only
+  what the operator supplied, and only its length comes back), a key the client cannot press,
+  the plan going with its browser, the TTL and the four-plan cap, and that the log records the
+  action rather than the text.
+- `tests/test_browser_agent_panel.mjs` — 13 tests on the panel's own methods: a proposal posts
+  exactly the page and the goal, an empty goal or no selected page asks for nothing, only the
+  next step is pressable, typed text is sent once and then cleared from the field, a failed step
+  keeps its place, a provider refusal is written into the card instead of toasted, discarding
+  takes the plan away and keeps the goal, and nothing on the card schedules a step by itself.
 - A local harness (`dev_ui_server.py`, session workspace only) serves a fake DevTools
   WebSocket that actually paints: it renders the frame counter, the typed text, the last
   key, click rings and a scroll offset, so a click that reached the browser is visible in
   the picture that comes back. It now serves two of them under separate addresses, each
   answering with its own version string, its own page list, its own picture header and its
   own connection log, so a browser switch is proved by what the browser reports rather than
-  by what the DOM says. 28 button-level checks pass on the cockpit — the original save →
+  by what the DOM says. For the agent it also answers `Runtime.evaluate` with the sign-in form
+  the page would describe, and moves that form once the page has been navigated, so a step that
+  kept stale coordinates lands somewhere visibly wrong; the fake page keeps one state per
+  browser, however many DevTools connections are open, so the plan step and the live view
+  describe the same page. A fake OpenAI-compatible endpoint on the same port answers in five
+  modes — the plan, prose, a refusal, HTTP 500, and a plan that tries to carry a password — and
+  records what it was asked without recording the key it was asked with. 28 button-level checks
+  pass on the cockpit — the original save →
   check → pages → view → navigate → type → key → OTP → close → forget sweep, plus start live
   view → frames counted → click → wheel → keys rendered from the server list → record →
   download the reel as a valid ZIP → switch pages without losing the view → stop, with no
@@ -210,7 +287,16 @@ identity provider's error body, which can carry secrets. This is the difference 
   record, the new one is in use and its pages are listed, switching re-reads the version and
   opens a connection to that address, forgetting one leaves the survivor active, forgetting
   all leaves the panel asking for setup, and no stored address is ever shown as more than a
-  host.
+  host. A further 53 pass on the agent (`ui_agent.mjs`): the provider's three steps appear in
+  order with their reasons and nothing has run, the prompt carries the page's controls and
+  address but never the browser's address, the answer comes on the operator's own key at the
+  panel's token cap, the page is asked to describe itself read-only, approving a step navigates
+  for real, the next step asks for its text as a secret field and the page reports the click at
+  its new position rather than its old one, the plan says only how many characters were typed,
+  the value is then gone from the page and from the log, a refused proposal adds nothing and
+  leaves the plan already in view alone, a provider in prose, a provider that is down and a
+  provider that invents a password each say so in our words, discarding empties the card and
+  keeps the goal, and a plan drafted for the previous browser is gone after the switch.
 - `tests/test_mcp_oauth.py` — 22 tests against a mock authorization server, covering
   discovery at the MCP origin, registration as a public client, the scope actually sent,
   the PKCE verifier, single-use state and codes, renewal before expiry, write-only storage,
@@ -219,12 +305,12 @@ identity provider's error body, which can carry secrets. This is the difference 
   the address bar at boot, spent once, failures written into the list, and a save that never
   resends a blank secret.
 - The harness also serves a fake authorization server and a fake MCP endpoint on the browser
-  port, so `ui_mcp_oauth.mjs` walks 43 button-level checks through the real panel: add an
+  port, so `ui_mcp_oauth.mjs` walks 38 button-level checks through the real panel: add an
   OAuth server, see the callback address, sign in, read the consent page (it asks for exactly
   the scope typed), approve, land with a clean address bar, test the bearer, watch a token
   about to expire, renew it, meet a deliberately rude token endpoint, sign out, sign in again
   on the same registration, rename, switch to a bearer and back, deny, and remove.
-- `node --test tests/*.mjs` and the full pytest suite stay green (89 node tests, 656 passed).
+- `node --test tests/*.mjs` and the full pytest suite stay green (102 node tests, 699 passed).
 
 ## What this is not
 

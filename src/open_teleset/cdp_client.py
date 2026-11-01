@@ -290,6 +290,18 @@ class CdpClient:
                 return width, height
         raise CdpError("The browser endpoint did not report the page size.")
 
+    async def evaluate(self, target_id: str, expression: str) -> str:
+        """Run a read-only expression in the page and hand back its string answer."""
+        answer = await self.call(
+            "Runtime.evaluate",
+            {"expression": expression, "returnByValue": True},
+            await self._page_session(target_id),
+        )
+        result = answer.get("result") or {}
+        if answer.get("exceptionDetails") or result.get("type") != "string":
+            raise CdpError("The page would not describe its own controls.")
+        return str(result.get("value") or "")
+
     async def move_mouse(self, target_id: str, x: float, y: float) -> None:
         await self.call(
             "Input.dispatchMouseEvent",

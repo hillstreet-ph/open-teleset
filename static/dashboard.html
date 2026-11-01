@@ -1939,6 +1939,40 @@
                     </div>
                     <p class="muted small">The code is generated and typed on the server. It is never returned to this page, so the only place it appears is the browser you are driving.</p>
                 </div>
+                <div class="card" style="margin-top:18px;" v-if="cloudBrowser.selected">
+                    <div class="card-header">
+                        <h3>AI plan</h3>
+                        <span class="badge" :class="!cloudBrowser.plan.steps.length ? 'badge-danger' : (cloudBrowser.plan.done ? 'badge-info' : 'badge-warning')">{{ !cloudBrowser.plan.steps.length ? 'No plan' : (cloudBrowser.plan.done ? 'Plan finished' : cloudBrowser.plan.steps.length + ' steps, nothing auto-run') }}</span>
+                    </div>
+                    <p class="muted small">Your own AI provider reads this page's address and the labels of the controls it can see, then proposes steps. Nothing runs until you press that step's button, and steps run in order.</p>
+                    <p class="small" style="color:var(--warning);">Never write a password in the goal — the goal goes to the provider. A type step asks for its text when you approve it.</p>
+                    <p v-if="cloudBrowser.plan.error" class="small" style="color:var(--danger);">{{ cloudBrowser.plan.error }}</p>
+                    <div class="form-row" style="align-items:flex-end;">
+                        <div class="form-group" style="flex:1;min-width:260px;">
+                            <label>What should the browser do?</label>
+                            <textarea v-model="cloudBrowser.plan.goal" class="form-control" rows="2" maxlength="500" placeholder="Sign in to my.telegram.org using the Cloud Phone number"></textarea>
+                        </div>
+                        <div class="form-group" style="flex:0 0 auto;">
+                            <button class="btn btn-primary" @click="proposeCloudBrowserPlan" :disabled="!!cloudBrowser.busy || !cloudBrowser.plan.goal.trim()">{{ cloudBrowser.busy === 'plan' ? 'Asking…' : 'Propose steps' }}</button>
+                        </div>
+                    </div>
+                    <div v-if="cloudBrowser.plan.steps.length">
+                        <p class="muted small">Plan for <span class="mono">{{ cloudBrowser.plan.page }}</span><span v-if="cloudBrowser.plan.seconds_left"> · {{ cloudBrowser.plan.seconds_left }}s left</span></p>
+                        <div v-for="step in cloudBrowser.plan.steps" :key="step.index" class="contact-row" style="flex-wrap:wrap;">
+                            <div style="flex:1;min-width:220px;">
+                                <div>{{ step.index + 1 }}. {{ planStepText(step) }}</div>
+                                <div class="muted small" v-if="step.why">{{ step.why }}</div>
+                                <div class="muted small" v-if="step.result">{{ step.result }}</div>
+                            </div>
+                            <div v-if="step.status === 'todo' && step.index === cloudBrowser.plan.next" class="form-group" style="flex:0 0 auto;margin:0;">
+                                <input v-if="step.needs_text" v-model="cloudBrowser.plan.text" type="password" class="form-control" placeholder="Text this step types" autocomplete="new-password" style="margin-bottom:6px;min-width:200px;">
+                                <button class="btn btn-sm btn-primary" @click="runCloudBrowserStep(step)" :disabled="!!cloudBrowser.busy || (step.needs_text &amp;&amp; !cloudBrowser.plan.text)">{{ cloudBrowser.busy === 'step-' + step.index ? 'Running…' : 'Run this step' }}</button>
+                            </div>
+                            <span v-else class="badge" :class="step.status === 'done' ? 'badge-info' : 'badge-warning'">{{ step.status === 'done' ? 'Ran' : 'Waits' }}</span>
+                        </div>
+                        <button class="btn btn-outline btn-sm" style="margin-top:8px;" @click="discardCloudBrowserPlan" :disabled="!!cloudBrowser.busy">Discard plan</button>
+                    </div>
+                </div>
             </div>
 
             <!-- Proxies -->
@@ -3791,6 +3825,7 @@
                         pages: [], selected: '', url: '', navigateUrl: '', text: '', otpAccount: '',
                         view: '', busy: '', error: '', message: '',
                         live: false, frames: 0, watchers: 0, recording: false, reel_frames: 0, reel_bytes: 0, streamError: '',
+                        plan: { id: '', goal: '', page: '', steps: [], next: null, done: false, seconds_left: 0, text: '', error: '' },
                     },
                     freeProxies: { count: 5, loading: false },
                     templateEdit: { id: '', name: '', content: '', busy: false },
@@ -6256,6 +6291,7 @@
                     this.cloudBrowser.reel_frames = 0
                     this.cloudBrowser.reel_bytes = 0
                     this.cloudBrowser.streamError = ''
+                    this.resetCloudBrowserPlan()
                 },
                 async loadCloudBrowser() {
                     this.cloudBrowser.error = ''
@@ -6698,6 +6734,75 @@
                         this.showToast('Recorded frames cleared.')
                     } catch (e) {
                         this.showToast(e.response?.data?.detail || 'Could not clear the recorded frames.', true)
+                    }
+                },
+                // ---- AI browser plans (propose, then approve step by step) ----
+                resetCloudBrowserPlan() {
+                    const goal = this.cloudBrowser.plan.goal
+                    this.cloudBrowser.plan = { id: '', goal, page: '', steps: [], next: null, done: false, seconds_left: 0, text: '', error: '' }
+                },
+                applyCloudPlan(plan) {
+                    const steps = (plan && plan.steps) || []
+                    const nextStep = steps.find(step => step.status === 'todo')
+                    this.cloudBrowser.plan = {
+                        id: (plan && plan.id) || '',
+                        goal: this.cloudBrowser.plan.goal,
+                        page: (plan && plan.page && plan.page.url) || '',
+                        steps,
+                        next: nextStep ? nextStep.index : null,
+                        done: !!steps.length && !nextStep,
+                        seconds_left: (plan && plan.seconds_left) || 0,
+                        text: '',
+                        error: '',
+                    }
+                },
+                planStepText(step) {
+                    if (step.action === 'open') return `Open ${step.url}`
+                    if (step.action === 'key') return `Press ${step.key}`
+                    if (step.action === 'type') return `Type into ${step.label}`
+                    return `Click ${step.label}`
+                },
+                async proposeCloudBrowserPlan() {
+                    const goal = this.cloudBrowser.plan.goal.trim()
+                    if (!goal || !this.cloudBrowser.selected) return
+                    this.cloudBrowser.busy = 'plan'
+                    this.cloudBrowser.plan.error = ''
+                    try {
+                        const { data } = await _api.post('/api/cloud-browser/plans', { target_id: this.cloudBrowser.selected, goal })
+                        this.applyCloudPlan(data.plan)
+                        this.showToast(`Planned ${this.cloudBrowser.plan.steps.length} steps — nothing has run yet.`)
+                    } catch (e) {
+                        this.cloudBrowser.plan.error = e.response?.data?.detail || 'Could not get a plan from your AI provider.'
+                    } finally {
+                        this.cloudBrowser.busy = ''
+                    }
+                },
+                async runCloudBrowserStep(step) {
+                    this.cloudBrowser.busy = `step-${step.index}`
+                    this.cloudBrowser.plan.error = ''
+                    try {
+                        const { data } = await _api.post(
+                            `/api/cloud-browser/plans/${this.cloudBrowser.plan.id}/steps/${step.index}/run`,
+                            { text: step.needs_text ? this.cloudBrowser.plan.text : '' },
+                        )
+                        this.applyCloudPlan(data.plan)
+                        this.showToast(step.action === 'type' ? 'Typed into the page — check the live view.' : 'That step ran — check the live view.')
+                    } catch (e) {
+                        this.cloudBrowser.plan.error = e.response?.data?.detail || 'That step did not run.'
+                    } finally {
+                        this.cloudBrowser.busy = ''
+                    }
+                },
+                async discardCloudBrowserPlan() {
+                    this.cloudBrowser.busy = 'plan'
+                    try {
+                        await _api.delete(`/api/cloud-browser/plans/${this.cloudBrowser.plan.id}`)
+                        this.resetCloudBrowserPlan()
+                        this.showToast('Plan discarded.')
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not discard the plan.', true)
+                    } finally {
+                        this.cloudBrowser.busy = ''
                     }
                 },
                 // ---- AI providers ----
