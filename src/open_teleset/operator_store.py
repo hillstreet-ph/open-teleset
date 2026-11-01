@@ -85,6 +85,8 @@ DEFAULT_FEATURES = {
     "cloud_browser_enabled": False,
     # Ships dark: it sends messages on a real account, so it stays off until switched on.
     "auto_reply_enabled": False,
+    # Ships dark: it holds a live connection per account, so it stays off until switched on.
+    "inbox_enabled": False,
 }
 
 

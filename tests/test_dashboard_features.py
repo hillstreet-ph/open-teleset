@@ -32,16 +32,17 @@ def isolated_store(tmp_path, monkeypatch):
 def test_feature_toggles_default_on_and_persist():
     assert operator_store.get_features() == {
         "automation_enabled": True, "factory_enabled": True, "cloud_browser_enabled": False,
-        "auto_reply_enabled": False,
+        "auto_reply_enabled": False, "inbox_enabled": False,
     }
     updated = operator_store.set_features({"factory_enabled": False, "cloud_browser_enabled": True,
-                                           "auto_reply_enabled": True})
+                                           "auto_reply_enabled": True, "inbox_enabled": True})
     assert updated == {"automation_enabled": True, "factory_enabled": False, "cloud_browser_enabled": True,
-                       "auto_reply_enabled": True}
+                       "auto_reply_enabled": True, "inbox_enabled": True}
     assert operator_store.feature_enabled("factory") is False
     assert operator_store.feature_enabled("automation") is True
     assert operator_store.feature_enabled("cloud_browser") is True
     assert operator_store.feature_enabled("auto_reply") is True
+    assert operator_store.feature_enabled("inbox") is True
 
 
 def test_totp_matches_rfc_6238_vector():
@@ -64,6 +65,20 @@ async def test_the_features_endpoint_carries_the_auto_reply_switch():
 
     assert saved["auto_reply_enabled"] is True
     assert operator_store.feature_enabled("auto_reply") is True
+
+
+@pytest.mark.asyncio
+async def test_the_features_endpoint_carries_the_inbox_switch():
+    """An undeclared switch is dropped by extra='ignore', so both halves need the name."""
+    assert operator_store.get_features()["inbox_enabled"] is False
+
+    saved = await features.update_platform_features(features.FeatureUpdate(inbox_enabled=True))
+    assert saved["inbox_enabled"] is True
+    assert operator_store.feature_enabled("inbox") is True
+
+    restored = await features.update_platform_features(features.FeatureUpdate(inbox_enabled=False))
+    assert restored["inbox_enabled"] is False
+    assert operator_store.feature_enabled("inbox") is False
 
 
 @pytest.mark.asyncio
