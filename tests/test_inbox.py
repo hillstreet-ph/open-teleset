@@ -147,7 +147,9 @@ def workspace(tmp_path, monkeypatch):
     operator_store.set_features({"inbox_enabled": True})
     monkeypatch.setattr(inbox.log_manager, "add_log", lambda *a, **k: None)
     inbox.WALLS.clear()
+    inbox.HUB._queues.clear()
     yield tmp_path
+    inbox.HUB._queues.clear()
 
 
 def test_opting_in_is_capped_and_survives_a_reload(workspace):
@@ -329,3 +331,117 @@ def test_the_hub_caps_subscribers_and_survives_a_slow_tab(accounts):
     assert inbox.HUB.subscribe("op-9") is None
     assert inbox.HUB.subscribers("op-9") == inbox.MAX_SUBSCRIBERS
     inbox.HUB._queues.pop("op-9", None)
+
+
+def an_event(peer=4242, text="the thing said", age=0, out=False, *, entity=None):
+    return SimpleNamespace(
+        chat=entity if entity is not None else a_user(pid=peer),
+        chat_id=peer,
+        raw_text=text,
+        date=time.time() - age,
+        out=out,
+        id=77,
+        sender=None,
+    )
+
+
+def watched_operator(accounts):
+    an_account, _ = accounts
+    account_id = an_account()
+    inbox.set_account_enabled("op-1", account_id, True)
+    asyncio.run(inbox.attach("op-1", [account_id]))
+    return account_id
+
+
+def test_a_new_message_lands_in_the_wall_and_in_the_queue(accounts):
+    account_id = watched_operator(accounts)
+    queue = inbox.HUB.subscribe("op-1")
+    result = asyncio.run(inbox.note(account_id, an_event()))
+    assert result["stored"] is True and result["published"] == 2
+    row = inbox.WALLS["op-1"].rows()[0]
+    assert row["bucket"] == "personal" and row["unread"] == 1
+    assert row["name"] == "Alice Lee"
+    assert row["preview"] == "the thing said"
+    payloads = [queue.get_nowait() for _ in range(queue.qsize())]
+    assert [p["type"] for p in payloads] == ["chat", "message"]
+    assert "peer" not in payloads[0]["chat"]
+
+
+def test_a_thread_page_grows_from_the_updates_it_sees(accounts):
+    account_id = watched_operator(accounts)
+    ref = inbox.peer_ref("op-1", account_id, 4242)
+    asyncio.run(inbox.note(account_id, an_event(text="first")))
+    asyncio.run(inbox.note(account_id, an_event(text="second")))
+    page = inbox.WALLS["op-1"].messages(ref)
+    assert [item["text"] for item in page] == ["second", "first"]
+
+
+def test_an_outgoing_message_does_not_make_an_unread(accounts):
+    account_id = watched_operator(accounts)
+    asyncio.run(inbox.note(account_id, an_event()))
+    result = asyncio.run(inbox.note(account_id, an_event(text="my own reply", out=True)))
+    row = inbox.WALLS["op-1"].rows()[0]
+    assert result["stored"] is True and row["unread"] == 1 and row["outgoing"] is True
+    assert inbox.counters("op-1")[row["ref"]] == 1
+
+
+def test_two_operators_on_one_account_get_different_refs_and_their_own_rows(accounts):
+    """The ref is salted with the operator, so two watchers never share one handle."""
+    an_account, _ = accounts
+    account_id = an_account()
+    inbox.set_account_enabled("op-1", account_id, True)
+    inbox.set_account_enabled("op-2", account_id, True)
+    asyncio.run(inbox.attach("op-1", [account_id]))
+    one, two = inbox.HUB.subscribe("op-1"), inbox.HUB.subscribe("op-2")
+    asyncio.run(inbox.note(account_id, an_event()))
+    assert one.qsize() == two.qsize() == 2
+    assert inbox.WALLS["op-1"].rows()[0]["ref"] != inbox.WALLS["op-2"].rows()[0]["ref"]
+
+
+def test_an_update_older_than_the_stale_window_is_dropped(accounts):
+    account_id = watched_operator(accounts)
+    queue = inbox.HUB.subscribe("op-1")
+    result = asyncio.run(inbox.note(account_id, an_event(age=inbox.STALE_EVENT_SECONDS + 60)))
+    assert result["reason"] == "stale" and result["stored"] is False
+    assert queue.qsize() == 0 and inbox.WALLS == {}
+
+
+def test_an_unclassifiable_chat_is_stored_nowhere(accounts):
+    account_id = watched_operator(accounts)
+    inbox.HUB.subscribe("op-1")
+    result = asyncio.run(inbox.note(account_id, an_event(entity=SimpleNamespace(id=5))))
+    assert result["reason"] == "unknown_bucket"
+    assert inbox.WALLS == {}
+
+
+def test_a_message_for_an_account_nobody_watched_is_ignored(accounts):
+    asyncio.run(inbox.note("acct-never-opted", an_event()))
+    assert inbox.WALLS == {}
+
+
+def test_a_handler_that_raises_never_closes_the_stream(accounts, monkeypatch):
+    account_id = watched_operator(accounts)
+    queue = inbox.HUB.subscribe("op-1")
+
+    async def explode(*args, **kwargs):
+        raise RuntimeError("a chat we could not read")
+
+    monkeypatch.setattr(inbox, "note", explode)
+    asyncio.run(inbox._HANDLERS[account_id](an_event()))
+    assert inbox.HUB.subscribers("op-1") == 1
+    assert queue is not None
+
+
+def test_a_slow_subscriber_is_dropped_and_the_others_keep_receiving(accounts):
+    account_id = watched_operator(accounts)
+    slow, fine = inbox.HUB.subscribe("op-1"), inbox.HUB.subscribe("op-1")
+    for index in range(inbox.QUEUE_MAXSIZE):
+        slow.put_nowait({"type": "ping", "i": index})
+    asyncio.run(inbox.note(account_id, an_event(peer=8899)))
+    assert inbox.HUB.subscribers("op-1") == 1
+    assert fine.qsize() == 2
+    assert slow.qsize() == inbox.QUEUE_MAXSIZE
+    drained = [slow.get_nowait() for _ in range(slow.qsize())]
+    assert drained[0] == {"type": "ping", "i": 1}          # the oldest frame was discarded
+    assert drained[-1] == {"type": "state", "state": "slowed"}
+    inbox.HUB._queues.clear()

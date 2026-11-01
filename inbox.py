@@ -53,6 +53,7 @@ STATE_LABELS = {
     "proxy-unavailable": "The saved proxy for this account is unavailable.",
     "connection-unavailable": "Telegram did not hand back a connection. Try Refresh now.",
     "lost": "The connection stopped. Use Refresh now to start it again.",
+    "slowed": "This tab stopped keeping up. Reload it to catch up.",
 }
 
 
@@ -328,3 +329,101 @@ def detach_all() -> int:
 
 def watched() -> list:
     return sorted(_HANDLERS)
+
+
+def _seconds(value: Any) -> float:
+    """Telegram hands back a datetime; the harness hands back a float."""
+    if isinstance(value, (int, float)):
+        return float(value)
+    if hasattr(value, "timestamp"):
+        try:
+            return float(value.timestamp())
+        except (OSError, ValueError, OverflowError):
+            return time.time()
+    return time.time()
+
+
+def message_shape(event: Any) -> dict:
+    sender = getattr(event, "sender", None)
+    return {
+        "id": getattr(event, "id", None),
+        "text": str(getattr(event, "raw_text", None) or "")[:STORED_MESSAGE_CHARS],
+        "time": _seconds(getattr(event, "date", None)),
+        "outgoing": bool(getattr(event, "out", False)),
+        "sender": str(getattr(sender, "username", "") or getattr(sender, "first_name", "") or ""),
+    }
+
+
+def _display_name(entity: Any) -> str:
+    name = " ".join(part for part in (getattr(entity, "first_name", None),
+                                      getattr(entity, "last_name", None)) if part).strip()
+    if not name:
+        name = str(getattr(entity, "title", "") or "").strip()
+    if not name:
+        username = str(getattr(entity, "username", "") or "").strip()
+        name = f"@{username}" if username else ""
+    return name[:NAME_MAX] or "a chat"
+
+
+def _public(row: dict) -> dict:
+    """The browser sees a ref, never the raw peer id Telegram gave us."""
+    return {key: value for key, value in row.items() if key != "peer"}
+
+
+def _record_owners(account_id: str) -> list:
+    """Operators who opted this account in. One handler per account, not per operator."""
+    owners = []
+    for operator, entry in _all().items():
+        if not isinstance(entry, dict):
+            continue
+        cfg = _mapping(entry.get("accounts")).get(account_id)
+        if isinstance(cfg, dict) and cfg.get("enabled"):
+            owners.append(str(operator))
+    return owners
+
+
+async def note(account_id: str, event: Any) -> dict:
+    """One Telegram update in, one wall row out, fanned to whoever watches this account."""
+    entity = getattr(event, "chat", None)
+    kind = bucket_of(entity)
+    if kind == "unknown":
+        return {"stored": False, "published": 0, "reason": "unknown_bucket"}
+
+    at = _seconds(getattr(event, "date", None))
+    if time.time() - at > STALE_EVENT_SECONDS:
+        return {"stored": False, "published": 0, "reason": "stale"}
+
+    peer = getattr(event, "chat_id", None) or getattr(entity, "id", None)
+    if peer is None:
+        return {"stored": False, "published": 0, "reason": "no-peer"}
+
+    owners = _record_owners(account_id)
+    if not owners:
+        return {"stored": False, "published": 0, "reason": "not_watched"}
+
+    message = message_shape(event)
+    published = 0
+    for operator in owners:
+        wall = WALLS.setdefault(operator, Wall())
+        ref = peer_ref(operator, account_id, peer)
+        if message["outgoing"]:
+            unread = _record(operator)["counters"].get(ref, 0)
+        else:
+            unread = bump_counter(operator, ref)
+        row = {
+            "ref": ref,
+            "account_id": account_id,
+            "peer": peer,
+            "username": str(getattr(entity, "username", "") or ""),
+            "bucket": kind,
+            "name": _display_name(entity),
+            "preview": message["text"][:CHAT_PREVIEW_CHARS],
+            "time": at,
+            "unread": unread,
+            "outgoing": message["outgoing"],
+        }
+        wall.upsert(row)
+        wall.put_messages(ref, [message] + wall.messages(ref))
+        published += HUB.publish(operator, {"type": "chat", "chat": _public(row)})
+        published += HUB.publish(operator, {"type": "message", "ref": ref, "message": message})
+    return {"stored": True, "published": published, "reason": ""}
