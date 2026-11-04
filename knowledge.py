@@ -12,12 +12,16 @@ container to answer a search; only the snippets a later AI call is asked to use.
 
 from __future__ import annotations
 
+import io
+import json
 import re
+import zipfile
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
+from log_manager import log_manager
 from open_teleset.operator_store import read_secret, secret_key_available, write_secret
 
 router = APIRouter(tags=["knowledge"])
@@ -287,6 +291,48 @@ def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
+def _zip_name(value: str, fallback: str) -> str:
+    """A title becomes a file name, never a path."""
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", str(value or "")).strip("-.")
+    return cleaned[:60] or fallback
+
+
+def build_zip(operator: str, *, include_templates: bool = None) -> tuple[bytes, int]:
+    """The operator's own notes as a zip of markdown files plus an index.
+
+    Credential-shaped values are scrubbed again on the way out, so an export never
+    carries a secret even if a note predates the masking rule.
+    """
+    record = _record(operator)
+    if include_templates is None:
+        include_templates = record["settings"].get("include_templates", True)
+    templates = _template_documents(operator) if include_templates else []
+    buffer = io.BytesIO()
+    entries = []
+    used = set()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for folder, docs in (("documents", record["docs"]), ("templates", templates)):
+            for doc in docs:
+                title = doc.get("title") or "Untitled"
+                base = _zip_name(title, str(doc.get("id") or "note"))
+                name, counter = base, 2
+                while f"{folder}/{name}.md" in used:
+                    name = f"{base}-{counter}"
+                    counter += 1
+                path = f"{folder}/{name}.md"
+                used.add(path)
+                clean, masked = scrub(doc.get("text") or "")
+                archive.writestr(path, f"# {title}\n\n{clean}\n")
+                entries.append({"path": path, "id": doc.get("id"), "title": title,
+                                "source": doc.get("source") or "manual",
+                                "tags": doc.get("tags") or [], "masked": masked,
+                                "characters": len(clean)})
+        index = {"exported": _now(), "documents": len(record["docs"]),
+                 "templates": len(templates), "files": entries}
+        archive.writestr("index.json", json.dumps(index, indent=2, ensure_ascii=False))
+    return buffer.getvalue(), len(entries)
+
+
 class DocumentBody(BaseModel):
     title: str = Field(default="", max_length=MAX_TITLE)
     text: str = Field(default="", max_length=MAX_DOC_CHARS)
@@ -359,3 +405,14 @@ async def clear(request: Request, body: dict = None):
     source = str((body or {}).get("source") or "")
     removed = clear_documents(_operator(request), source=source)
     return {"success": True, "removed": removed}
+
+
+@router.get("/api/knowledge/export")
+async def export_knowledge(request: Request, include_templates: bool = None):
+    """Download the operator's own knowledge base as a zip of markdown files."""
+    operator = _operator(request)
+    payload, count = build_zip(operator, include_templates=include_templates)
+    stamp = _now().replace(":", "-")
+    log_manager.add_log("Knowledge", "-", f"Exported {count} knowledge entries as a zip")
+    return Response(content=payload, media_type="application/zip",
+                    headers={"Content-Disposition": f'attachment; filename="knowledge-{stamp}.zip"'})

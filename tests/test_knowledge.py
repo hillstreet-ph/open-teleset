@@ -364,6 +364,101 @@ def test_router_exposes_only_the_operators_own_data():
     assert paths == [
         "/api/knowledge/clear", "/api/knowledge/documents", "/api/knowledge/documents",
         "/api/knowledge/documents/{doc_id}", "/api/knowledge/documents/{doc_id}",
-        "/api/knowledge/documents/{doc_id}", "/api/knowledge/search", "/api/knowledge/settings",
-        "/api/knowledge/settings",
+        "/api/knowledge/documents/{doc_id}", "/api/knowledge/export", "/api/knowledge/search",
+        "/api/knowledge/settings", "/api/knowledge/settings",
     ]
+
+
+# ============ the zip export ============
+
+
+def _read_zip(payload: bytes) -> dict:
+    import io
+    import zipfile
+
+    with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+        return {name: archive.read(name).decode("utf-8") for name in archive.namelist()}
+
+
+def test_the_export_is_a_zip_of_markdown_notes_with_an_index(client):
+    client.post("/api/knowledge/documents", json={"title": "Refund policy", "text": "Refunds run 30 days."})
+    client.post("/api/knowledge/documents", json={"title": "Support hours", "text": "We reply within a day."})
+
+    response = client.get("/api/knowledge/export")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/zip"
+    assert response.headers["content-disposition"].startswith('attachment; filename="knowledge-')
+
+    files = _read_zip(response.content)
+    assert files["documents/Refund-policy.md"] == "# Refund policy\n\nRefunds run 30 days.\n"
+    assert files["documents/Support-hours.md"] == "# Support hours\n\nWe reply within a day.\n"
+
+    index = json.loads(files["index.json"])
+    assert index["documents"] == 2
+    assert index["templates"] == 0
+    assert {entry["path"] for entry in index["files"]} == {
+        "documents/Refund-policy.md", "documents/Support-hours.md"}
+
+
+def test_the_export_never_carries_a_credential(client):
+    client.post("/api/knowledge/documents",
+                json={"title": "Note", "text": "The api hash is 0123456789abcdef0123456789abcdef"})
+
+    files = _read_zip(client.get("/api/knowledge/export").content)
+
+    assert "0123456789abcdef0123456789abcdef" not in files["documents/Note.md"]
+    assert "[masked]" in files["documents/Note.md"]
+
+
+def test_duplicate_titles_get_distinct_file_names(client):
+    for _ in range(2):
+        client.post("/api/knowledge/documents", json={"title": "Note", "text": "Same title, different note."})
+
+    files = _read_zip(client.get("/api/knowledge/export").content)
+
+    assert "documents/Note.md" in files
+    assert "documents/Note-2.md" in files
+
+
+def test_a_title_cannot_escape_the_export_folder(client):
+    client.post("/api/knowledge/documents", json={"title": "../../etc/passwd", "text": "A note."})
+
+    files = _read_zip(client.get("/api/knowledge/export").content)
+
+    assert all(name.startswith(("documents/", "templates/", "index.json")) for name in files)
+    assert not any(".." in name for name in files)
+
+
+def test_the_export_can_include_the_live_templates(client, monkeypatch):
+    monkeypatch.setattr(template_manager, "templates",
+                        {"welcome": {"name": "Welcome", "content": "Hi {name}, thanks for writing."}})
+    client.post("/api/knowledge/documents", json={"title": "Note", "text": "A stored note."})
+
+    files = _read_zip(client.get("/api/knowledge/export").content)
+
+    assert files["templates/Welcome.md"] == "# Welcome\n\nHi {name}, thanks for writing.\n"
+    assert json.loads(files["index.json"])["templates"] == 1
+
+
+def test_templates_can_be_left_out_of_the_export(client, monkeypatch):
+    monkeypatch.setattr(template_manager, "templates",
+                        {"welcome": {"name": "Welcome", "content": "Hi {name}."}})
+    client.post("/api/knowledge/documents", json={"title": "Note", "text": "A stored note."})
+
+    files = _read_zip(client.get("/api/knowledge/export?include_templates=false").content)
+
+    assert not any(name.startswith("templates/") for name in files)
+    assert json.loads(files["index.json"])["templates"] == 0
+
+
+def test_an_empty_base_still_exports_an_index(client):
+    files = _read_zip(client.get("/api/knowledge/export").content)
+
+    index = json.loads(files["index.json"])
+    assert index["documents"] == 0
+    assert index["files"] == []
+
+
+def test_the_export_requires_an_operator(anon_client):
+    assert anon_client.get("/api/knowledge/export").status_code == 403
