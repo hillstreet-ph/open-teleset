@@ -16,6 +16,9 @@ telegram-mcp is a powerful tool for managing multiple Telegram accounts. This ap
 - **Login via QR Code:** Quickly log into your accounts using QR code scanning.
 - **Cloud Browser:** Drive a hosted browser you already own for web logins, including your Cloud Phone's Telegram web sign-in. See [docs/CLOUD_BROWSER.md](docs/CLOUD_BROWSER.md).
 - **Auto Reply, Knowledge Base and Copilot History:** Answer inbound private chats with your own rules or approved AI drafts, keep operator notes in one encrypted knowledge store, and turn repeated wording into reusable suggestions. Ships switched off. See [docs/AUTO_REPLY_AND_KNOWLEDGE.md](docs/AUTO_REPLY_AND_KNOWLEDGE.md).
+- **Inbox:** One live wall of every chat on the accounts you opt in, filed as personal, group, channel or bot, updating as Telegram pushes — no polling, no refresh. Opening a chat marks it read; a reply is only ever text you typed. Ships switched off and stores only your opt-ins and unread counters. See [docs/INBOX.md](docs/INBOX.md).
+- **Ops Copilot:** Describe work in your own words. It runs the safe ones itself inside your own workspace — save and search notes, look for repeated wording, preview which Auto Reply rule would answer — and for anything with consequences it opens that surface prefilled inside hard bounds, leaving consent unchecked and the button to you. Its preset runbook edits itself to your usage and exports your knowledge base as a ZIP. See [docs/OPS_COPILOT.md](docs/OPS_COPILOT.md).
+- **Compact record lists:** Job history, chats, contacts, logs and presets render as short collapsed heads with one button for the rest, so a section never turns into a long scroll as records pile up. See [docs/RECORD_LISTS.md](docs/RECORD_LISTS.md).
 
 ## 🚀 Getting Started
 

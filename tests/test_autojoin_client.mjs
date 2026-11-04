@@ -61,7 +61,8 @@ test('progress tracker renders dates, counts and collapsible job cards', () => {
   assert.match(html, /jobStamp\(job\.created\)/);
   assert.match(html, /jobStamp\(job\.started\)/);
   assert.match(html, /jobStamp\(job\.finished\)/);
-  assert.match(html, /<details v-for="job in progressJobs"/);
+  assert.match(html, /<record-list :items="progressJobs"/);
+  assert.match(html, /:open-when="jobIsActive"/);
   assert.match(html, /jobCountLabel\(job\)/);
   assert.match(html, /\[['"]adder['"], ['"]bulksend['"], ['"]autojoin['"]\]\.includes\(tab\)/);
 });

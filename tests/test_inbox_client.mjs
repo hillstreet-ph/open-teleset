@@ -25,13 +25,23 @@ test('the icon registry carries an inbox glyph instead of falling back', () => {
 });
 
 test('leaving the tab closes the inbox stream', () => {
-  assert.match(html, /if \(tab === 'inbox'\) \{ this\.loadMailbox\(\); this\.startMailboxStream\(\) \}/);
+  // The stream only opens once the config has answered whether the switch is on: starting
+  // it beside the load left the live inbox permanently closed on a cold entry.
+  assert.match(html, /if \(tab === 'inbox'\) \{\n\s+\/\/ The stream needs to know[\s\S]*?\n\s+this\.loadMailbox\(\)\.then\(\(\) => \{ if \(this\.tab === 'inbox'\) this\.startMailboxStream\(\) \}\)\n\s+\}/);
+  assert.ok(!html.includes("this.loadMailbox(); this.startMailboxStream()"),
+    'the stream must not start before the config is known');
   assert.match(html, /else this\.stopMailboxStream\(\)/);
   assert.match(html, /if \(this\.tab === 'inbox'\) this\.loadMailbox\(\)/);
 });
 
 test('a reply says only what the operator typed is sent', () => {
   assert.match(html, /Only a reply you type here is sent/);
+});
+
+test('the chats wall is a bounded list, not an endless scroll', () => {
+  assert.match(html, /<bounded-list :items="mailbox\.chats" :limit="12">/);
+  assert.match(html, /#default="\{ items: shownChats \}"/);
+  assert.ok(!/max-height:520px;overflow:auto/.test(html), 'the scroll box must be gone');
 });
 
 function slice(start, end) {

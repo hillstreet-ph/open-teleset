@@ -585,6 +585,22 @@
         .proxy-info h4 { margin-bottom: 4px; font-size: 13.5px; font-weight: 600; color: var(--text); }
         .proxy-info p { font-size: 12.5px; color: var(--text-dim); overflow-wrap: anywhere; }
         .proxy-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+        /* ---------- Collapsed record lists ---------- */
+        .record-list { display: grid; gap: 8px; }
+        .record-row { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-2); overflow: hidden; }
+        .record-row > summary { display: flex; align-items: center; gap: 10px; padding: 10px 14px; cursor: pointer; list-style: none; font-size: 13px; }
+        .record-row > summary::-webkit-details-marker { display: none; }
+        .record-row > summary::before { content: '\25B8'; color: var(--text-dim); flex: 0 0 auto; }
+        .record-row[open] > summary::before { content: '\25BE'; }
+        .record-row[open] > summary { border-bottom: 1px solid var(--border); }
+        .record-row > summary:hover { background: rgba(255,255,255,0.02); }
+        .record-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .record-body { padding: 12px 14px; overflow-wrap: anywhere; font-size: 12.5px; }
+        .record-body p { margin: 4px 0; }
+        .record-body > .proxy-item, .record-body > .contact-row { margin-bottom: 0; padding: 0; border: 0; background: transparent; }
+        .record-more { justify-self: start; margin-top: 2px; }
+        .bounded-list { display: contents; }
         .row-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; align-items: stretch; min-width: 208px; max-width: 232px; margin-left: auto; }
         .row-actions > * { width: 100%; box-sizing: border-box; }
         .row-actions > select, .row-actions .row-action-wide { grid-column: 1 / -1; }
@@ -1157,10 +1173,14 @@
                                 <button class="btn btn-outline btn-sm" @click="openScheduleModal"><app-icon name="plus" :size="15"></app-icon>New schedule</button>
                             </div>
                             <div v-if="!schedules.length" class="empty-inline">Nothing scheduled yet. Create a schedule to send messages or run actions later.</div>
-                            <div v-for="(sch, i) in schedules" :key="i" class="status-row">
-                                <span class="status-key">{{ sch.name }} · {{ getScheduleDescription(sch) }}</span>
-                                <span class="status-val"><span class="badge" :class="sch.enabled ? 'badge-success' : 'badge-normal'">{{ sch.enabled ? 'Enabled' : 'Paused' }}</span></span>
-                            </div>
+                            <bounded-list v-else :items="schedules" :limit="6">
+                                <template #default="{ items: visible }">
+                                    <div v-for="(sch, i) in visible" :key="i" class="status-row">
+                                        <span class="status-key">{{ sch.name }} · {{ getScheduleDescription(sch) }}</span>
+                                        <span class="status-val"><span class="badge" :class="sch.enabled ? 'badge-success' : 'badge-normal'">{{ sch.enabled ? 'Enabled' : 'Paused' }}</span></span>
+                                    </div>
+                                </template>
+                            </bounded-list>
                             <div class="panel-foot">
                                 <button class="btn btn-outline btn-sm" @click="go('schedule')">Manage schedule</button>
                             </div>
@@ -1176,7 +1196,7 @@
                             <table v-else>
                                 <thead><tr><th>Run</th><th>Requested</th><th>Max price</th><th>Status</th></tr></thead>
                                 <tbody>
-                                    <tr v-for="run in automation.status.runs" :key="run.run_id">
+                                    <tr v-for="run in visibleRows(automation.status.runs, 'factoryRuns', 8)" :key="run.run_id">
                                         <td class="mono">{{ run.run_id.slice(0, 12) }}…</td>
                                         <td>{{ formatTime(run.requested_at) }}</td>
                                         <td>{{ run.max_price != null ? '$' + run.max_price : 'default' }}</td>
@@ -1184,6 +1204,9 @@
                                             <span class="badge" :class="run.status === 'accepted' ? 'badge-success' : 'badge-danger'">{{ run.status }}</span>
                                             <small v-if="run.error" style="display:block;color:var(--danger);margin-top:4px;">{{ run.error }}</small>
                                         </td>
+                                    </tr>
+                                    <tr v-if="automation.status.runs.length > 8">
+                                        <td colspan="4"><button type="button" class="btn btn-sm btn-outline record-more" @click="toggleRows('factoryRuns')">{{ expandedRows.factoryRuns ? 'Show fewer' : 'Show all (' + automation.status.runs.length + ')' }}</button></td>
                                     </tr>
                                 </tbody>
                             </table>
@@ -1195,23 +1218,24 @@
                                 <span class="panel-sub">Worker: {{ outreachWorker || 'checking' }}</span>
                             </div>
                             <p v-if="outreachJobError" class="notice bad">{{ outreachJobError }}</p>
-                            <div v-if="!outreachJobs.length" class="empty-inline">No outreach jobs yet. Start one from Adder, Auto Join or BulkSend.</div>
-                            <details v-for="job in outreachJobs" :key="job.id" :open="jobIsActive(job)" style="padding:14px 0;border-top:1px solid var(--border);overflow-wrap:anywhere;">
-                                <summary style="cursor:pointer;display:flex;justify-content:space-between;gap:10px;align-items:baseline;flex-wrap:wrap;">
-                                    <strong style="font-size:13px;">{{ job.kind === 'member_add' ? 'Member add' : (job.kind === 'auto_join' ? 'Auto Join' : 'Message send') }} · <span class="mono">{{ job.id.slice(0, 8) }}</span></strong>
-                                    <span class="badge" :class="job.state === 'completed' ? 'badge-success' : (['failed','needs_review'].includes(job.state) ? 'badge-danger' : 'badge-info')">{{ jobStateLabel(job) }}</span>
-                                </summary>
-                                <p class="muted small" style="margin-top:4px;">{{ job.reason === 'operator_resume' && job.retry_after > 0 ? 'Resumed; waiting for the next eligible attempt' : job.reason ? outreachReason(job.reason) : (job.state === 'completed' ? 'Finished processing this list' : (job.kind === 'auto_join' ? 'Joining links from the selected accounts' : 'Processing consenting recipients')) }}</p>
-                                <progress :value="job.completed + job.skipped + job.failed + job.uncertain" :max="job.total || 1" style="width:100%;margin-top:8px;"></progress>
-                                <p class="muted small" style="margin-top:6px;">Total {{ job.total }} · {{ jobCountLabel(job) }} {{ job.completed }} · Pending {{ job.pending }} · Skipped {{ job.skipped }} · Failed {{ job.failed }}</p>
-                                <p class="muted small" style="margin-top:4px;">Created {{ jobStamp(job.created) }} · Started {{ jobStamp(job.started) }} · Finished {{ jobStamp(job.finished) }}<template v-if="job.started"> · Elapsed {{ outreachDuration(jobElapsed(job)) }}</template></p>
-                                <p v-if="job.retry_after > 0 && ['queued','running','waiting'].includes(job.state)" class="small" style="color:var(--warning);margin-top:4px;">Next eligible attempt in {{ outreachDuration(job.retry_after) }}<span v-if="job.retry_at"> · {{ outreachRetryTime(job.retry_at) }}</span>.</p>
-                                <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;">
-                                    <button v-if="['queued','running','waiting'].includes(job.state)" class="btn btn-outline btn-sm" @click="controlOutreachJob(job, 'pause')" :disabled="!!outreachJobBusy">Pause</button>
-                                    <button v-if="job.state === 'paused'" class="btn btn-primary btn-sm" @click="controlOutreachJob(job, 'resume')" :disabled="!!outreachJobBusy">Resume</button>
-                                    <button v-if="['queued','running','waiting','paused'].includes(job.state)" class="btn btn-danger btn-sm" @click="controlOutreachJob(job, 'stop')" :disabled="!!outreachJobBusy">Stop</button>
-                                </div>
-                            </details>
+                            <record-list :items="outreachJobs" :key-of="job => job.id"
+                                         :label="job => (job.kind === 'member_add' ? 'Member add' : (job.kind === 'auto_join' ? 'Auto Join' : 'Message send')) + ' · ' + job.id.slice(0, 8)"
+                                         :state="jobStateLabel" :state-class="jobStateBadge"
+                                         :open-when="jobIsActive" :limit="5"
+                                         empty="No outreach jobs yet. Start one from Adder, Auto Join or BulkSend.">
+                                <template #default="{ item: job }">
+                                    <p class="muted small">{{ job.reason === 'operator_resume' && job.retry_after > 0 ? 'Resumed; waiting for the next eligible attempt' : job.reason ? outreachReason(job.reason) : (job.state === 'completed' ? 'Finished processing this list' : (job.kind === 'auto_join' ? 'Joining links from the selected accounts' : 'Processing consenting recipients')) }}</p>
+                                    <progress :value="job.completed + job.skipped + job.failed + job.uncertain" :max="job.total || 1" style="width:100%;margin-top:8px;"></progress>
+                                    <p class="muted small" style="margin-top:6px;">Total {{ job.total }} · {{ jobCountLabel(job) }} {{ job.completed }} · Pending {{ job.pending }} · Skipped {{ job.skipped }} · Failed {{ job.failed }}</p>
+                                    <p class="muted small" style="margin-top:4px;">Created {{ jobStamp(job.created) }} · Started {{ jobStamp(job.started) }} · Finished {{ jobStamp(job.finished) }}<template v-if="job.started"> · Elapsed {{ outreachDuration(jobElapsed(job)) }}</template></p>
+                                    <p v-if="job.retry_after > 0 && ['queued','running','waiting'].includes(job.state)" class="small" style="color:var(--warning);margin-top:4px;">Next eligible attempt in {{ outreachDuration(job.retry_after) }}<span v-if="job.retry_at"> · {{ outreachRetryTime(job.retry_at) }}</span>.</p>
+                                    <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;">
+                                        <button v-if="['queued','running','waiting'].includes(job.state)" class="btn btn-outline btn-sm" @click="controlOutreachJob(job, 'pause')" :disabled="!!outreachJobBusy">Pause</button>
+                                        <button v-if="job.state === 'paused'" class="btn btn-primary btn-sm" @click="controlOutreachJob(job, 'resume')" :disabled="!!outreachJobBusy">Resume</button>
+                                        <button v-if="['queued','running','waiting','paused'].includes(job.state)" class="btn btn-danger btn-sm" @click="controlOutreachJob(job, 'stop')" :disabled="!!outreachJobBusy">Stop</button>
+                                    </div>
+                                </template>
+                            </record-list>
                         </section>
 
                     </div>
@@ -1247,7 +1271,7 @@
                                 <div class="status-row"><span class="status-key">Webhook guard</span><span class="status-val">AUTOMATION_WEBHOOK_TOKEN</span></div>
                                 <div class="status-row"><span class="status-key">Cooldown</span><span class="status-val">{{ automation.status && automation.status.cooldown_seconds ? automation.status.cooldown_seconds + 's between runs' : '—' }}</span></div>
                                 <div class="panel-foot">
-                                    <button class="btn btn-outline btn-sm" @click="loadAutomationStatus" :disabled="automation.loading">{{ automation.loading ? 'Loading…' : 'Refresh status' }}</button>
+                                    <button id="gate-automation" class="btn btn-outline btn-sm" @click="loadAutomationStatus" :disabled="automation.loading">{{ automation.loading ? 'Loading…' : 'Refresh status' }}</button>
                                     <a v-if="automation.status && automation.status.webhook_host" class="btn btn-outline btn-sm" :href="'https://' + automation.status.webhook_host" target="_blank" rel="noopener"><app-icon name="external" :size="15"></app-icon>Open n8n</a>
                                 </div>
                             </section>
@@ -1394,23 +1418,27 @@
 
                             <div v-if="webhooks.loading" class="muted small">Loading webhooks…</div>
                             <div v-else-if="!webhooks.list.length" class="empty-inline">No webhooks yet. Add one to receive signed job events.</div>
-                            <div v-for="hook in webhooks.list" :key="hook.id" style="padding:14px 0;border-top:1px solid var(--border);overflow-wrap:anywhere;">
-                                <div style="display:flex;justify-content:space-between;gap:10px;align-items:baseline;flex-wrap:wrap;">
-                                    <strong style="font-size:13px;">{{ hook.name }}</strong>
-                                    <span class="badge" :class="hook.enabled ? 'badge-success' : 'badge-normal'">{{ hook.enabled ? 'Enabled' : 'Paused' }}</span>
-                                </div>
-                                <p class="mono small" style="margin-top:4px;">{{ hook.url }}</p>
-                                <p class="muted small" style="margin-top:4px;">Events: {{ hook.events.join(', ') }}</p>
-                                <p class="muted small" style="margin-top:4px;">
-                                    Last delivery {{ hookStamp(hook.last_attempt) }}<template v-if="hook.last_status"> · HTTP {{ hook.last_status }}</template><template v-if="hook.last_error"> · {{ hook.last_error }}</template> · {{ hook.delivery_count }} delivered · {{ hook.failure_count }} failed
-                                </p>
-                                <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;">
-                                    <button class="btn btn-outline btn-sm" @click="testWebhook(hook)" :disabled="!!webhooks.busy">Send test</button>
-                                    <button class="btn btn-outline btn-sm" @click="toggleWebhook(hook)" :disabled="!!webhooks.busy">{{ hook.enabled ? 'Pause' : 'Enable' }}</button>
-                                    <button class="btn btn-outline btn-sm" @click="rotateWebhook(hook)" :disabled="!!webhooks.busy">Rotate secret</button>
-                                    <button class="btn btn-danger btn-sm" @click="deleteWebhook(hook)" :disabled="!!webhooks.busy">Delete</button>
-                                </div>
-                            </div>
+                            <bounded-list :items="webhooks.list" :limit="8">
+                                <template #default="{ items: shownHooks }">
+                                    <div v-for="hook in shownHooks" :key="hook.id" style="padding:14px 0;border-top:1px solid var(--border);overflow-wrap:anywhere;">
+                                        <div style="display:flex;justify-content:space-between;gap:10px;align-items:baseline;flex-wrap:wrap;">
+                                            <strong style="font-size:13px;">{{ hook.name }}</strong>
+                                            <span class="badge" :class="hook.enabled ? 'badge-success' : 'badge-normal'">{{ hook.enabled ? 'Enabled' : 'Paused' }}</span>
+                                        </div>
+                                        <p class="mono small" style="margin-top:4px;">{{ hook.url }}</p>
+                                        <p class="muted small" style="margin-top:4px;">Events: {{ hook.events.join(', ') }}</p>
+                                        <p class="muted small" style="margin-top:4px;">
+                                            Last delivery {{ hookStamp(hook.last_attempt) }}<template v-if="hook.last_status"> · HTTP {{ hook.last_status }}</template><template v-if="hook.last_error"> · {{ hook.last_error }}</template> · {{ hook.delivery_count }} delivered · {{ hook.failure_count }} failed
+                                        </p>
+                                        <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;">
+                                            <button class="btn btn-outline btn-sm" @click="testWebhook(hook)" :disabled="!!webhooks.busy">Send test</button>
+                                            <button class="btn btn-outline btn-sm" @click="toggleWebhook(hook)" :disabled="!!webhooks.busy">{{ hook.enabled ? 'Pause' : 'Enable' }}</button>
+                                            <button class="btn btn-outline btn-sm" @click="rotateWebhook(hook)" :disabled="!!webhooks.busy">Rotate secret</button>
+                                            <button class="btn btn-danger btn-sm" @click="deleteWebhook(hook)" :disabled="!!webhooks.busy">Delete</button>
+                                        </div>
+                                    </div>
+                                </template>
+                            </bounded-list>
                         </section>
 
                         <section class="panel" style="margin-top:24px;">
@@ -1485,21 +1513,25 @@
                             <p v-if="integrations.error" class="notice bad">{{ integrations.error }}</p>
                             <p v-if="integrations.loading" class="muted small">Loading servers…</p>
                             <p v-else-if="!integrations.list.length" class="empty-inline">No custom MCP servers yet.</p>
-                            <div v-for="item in integrations.list" :key="item.id" style="padding:12px 0;border-top:1px solid var(--border);overflow-wrap:anywhere;">
-                                <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;">
-                                    <strong style="font-size:13px;">{{ item.name }}</strong>
-                                    <span class="badge" :class="integrationState(item).cls">{{ integrationState(item).text }}</span>
-                                </div>
-                                <p class="mono small" style="margin-top:4px;">{{ item.base_url }} · {{ item.transport.toUpperCase() }} · {{ item.auth_mode === 'oauth' ? 'OAuth' : 'Token' }}<template v-if="item.granted_scopes"> · {{ item.granted_scopes }}</template><template v-if="item.expires_at"> · expires {{ formatIntegrationExpiry(item.expires_at) }}</template></p>
-                                <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">
-                                    <button class="btn btn-outline btn-sm" @click="testIntegration(item)" :disabled="!!integrations.busy">Test</button>
-                                    <button v-if="item.auth_mode === 'oauth' && !item.authorized" class="btn btn-primary btn-sm" @click="startIntegrationSignIn(item)" :disabled="!!integrations.busy">Sign in</button>
-                                    <button v-if="item.auth_mode === 'oauth' && item.authorized" class="btn btn-outline btn-sm" @click="renewIntegrationSignIn(item)" :disabled="!!integrations.busy">Renew now</button>
-                                    <button v-if="item.auth_mode === 'oauth' && item.authorized" class="btn btn-outline btn-sm" @click="signOutIntegration(item)" :disabled="!!integrations.busy">Sign out</button>
-                                    <button class="btn btn-outline btn-sm" @click="editIntegration(item)" :disabled="!!integrations.busy">Edit</button>
-                                    <button class="btn btn-danger btn-sm" @click="deleteIntegration(item)" :disabled="!!integrations.busy">Remove</button>
-                                </div>
-                            </div>
+                            <bounded-list :items="integrations.list" :limit="8">
+                                <template #default="{ items: shownServers }">
+                                    <div v-for="item in shownServers" :key="item.id" style="padding:12px 0;border-top:1px solid var(--border);overflow-wrap:anywhere;">
+                                        <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;">
+                                            <strong style="font-size:13px;">{{ item.name }}</strong>
+                                            <span class="badge" :class="integrationState(item).cls">{{ integrationState(item).text }}</span>
+                                        </div>
+                                        <p class="mono small" style="margin-top:4px;">{{ item.base_url }} · {{ item.transport.toUpperCase() }} · {{ item.auth_mode === 'oauth' ? 'OAuth' : 'Token' }}<template v-if="item.granted_scopes"> · {{ item.granted_scopes }}</template><template v-if="item.expires_at"> · expires {{ formatIntegrationExpiry(item.expires_at) }}</template></p>
+                                        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">
+                                            <button class="btn btn-outline btn-sm" @click="testIntegration(item)" :disabled="!!integrations.busy">Test</button>
+                                            <button v-if="item.auth_mode === 'oauth' && !item.authorized" class="btn btn-primary btn-sm" @click="startIntegrationSignIn(item)" :disabled="!!integrations.busy">Sign in</button>
+                                            <button v-if="item.auth_mode === 'oauth' && item.authorized" class="btn btn-outline btn-sm" @click="renewIntegrationSignIn(item)" :disabled="!!integrations.busy">Renew now</button>
+                                            <button v-if="item.auth_mode === 'oauth' && item.authorized" class="btn btn-outline btn-sm" @click="signOutIntegration(item)" :disabled="!!integrations.busy">Sign out</button>
+                                            <button class="btn btn-outline btn-sm" @click="editIntegration(item)" :disabled="!!integrations.busy">Edit</button>
+                                            <button class="btn btn-danger btn-sm" @click="deleteIntegration(item)" :disabled="!!integrations.busy">Remove</button>
+                                        </div>
+                                    </div>
+                                </template>
+                            </bounded-list>
                         </section>
                     </div>
 
@@ -1544,16 +1576,20 @@
 
                                 <div v-if="apiKeys.loading" class="muted small">Loading tokens…</div>
                                 <div v-else-if="!apiKeys.list.length" class="empty-inline">No tokens yet. Generate one for your first client.</div>
-                                <div v-for="k in apiKeys.list" :key="k.id" class="copy-row" style="margin-bottom:8px;">
-                                    <span style="min-width:0;">
-                                        <strong :style="{ color: k.revoked_at ? 'var(--text-dim)' : 'var(--text)' }">{{ k.name }}</strong>
-                                        <span class="muted"> · ott_{{ k.prefix }}…</span>
-                                        <span v-if="k.revoked_at" style="color:var(--danger);"> · revoked</span>
-                                        <span v-else-if="k.last_used_at" class="muted"> · last used {{ new Date(k.last_used_at).toLocaleDateString() }}</span>
-                                        <span v-else class="muted"> · never used</span>
-                                    </span>
-                                    <button v-if="!k.revoked_at" class="copy-btn" style="color:var(--danger);border-color:rgba(248,113,113,0.35);" @click="revokeApiKey(k)">Revoke</button>
-                                </div>
+                                <bounded-list :items="apiKeys.list" :limit="8">
+                                    <template #default="{ items: shownKeys }">
+                                        <div v-for="k in shownKeys" :key="k.id" class="copy-row" style="margin-bottom:8px;">
+                                            <span style="min-width:0;">
+                                                <strong :style="{ color: k.revoked_at ? 'var(--text-dim)' : 'var(--text)' }">{{ k.name }}</strong>
+                                                <span class="muted"> · ott_{{ k.prefix }}…</span>
+                                                <span v-if="k.revoked_at" style="color:var(--danger);"> · revoked</span>
+                                                <span v-else-if="k.last_used_at" class="muted"> · last used {{ new Date(k.last_used_at).toLocaleDateString() }}</span>
+                                                <span v-else class="muted"> · never used</span>
+                                            </span>
+                                            <button v-if="!k.revoked_at" class="copy-btn" style="color:var(--danger);border-color:rgba(248,113,113,0.35);" @click="revokeApiKey(k)">Revoke</button>
+                                        </div>
+                                    </template>
+                                </bounded-list>
                                 <p class="muted small" style="margin-top:12px;">Revocation is immediate. The secret is shown only once, so store it in your client or secret manager.</p>
                             </section>
 
@@ -1654,15 +1690,19 @@
                                     </div>
                                     <p v-if="accountSessionsError[acc.account_id]" class="small" style="color:var(--danger);">{{ accountSessionsError[acc.account_id] }}</p>
                                     <p v-else-if="!accountSessions[acc.account_id].length" class="small muted">No login sessions were returned.</p>
-                                    <div v-for="session in accountSessions[acc.account_id]" :key="session.hash" class="proxy-item" style="margin:0;padding:10px 12px;align-items:flex-start;">
-                                        <div style="flex:1;min-width:180px;">
-                                            <strong style="font-size:12.5px;">{{ session.device || session.platform || 'Unknown device' }} <span v-if="session.current" class="badge badge-success">This session</span></strong>
-                                            <p class="small muted" style="margin-top:3px;">{{ session.platform }} {{ session.system }} · {{ session.app }}</p>
-                                            <p class="small muted">{{ [session.ip, session.country, session.region].filter(Boolean).join(' · ') || 'Location not shared' }}</p>
-                                            <p class="small muted">Active {{ formatTime(session.active) }} · Created {{ formatTime(session.created) }}</p>
-                                        </div>
-                                        <button v-if="!session.current" class="btn btn-sm btn-danger" @click="revokeAccountSession(acc.account_id, session.hash)">Sign out</button>
-                                    </div>
+                                    <bounded-list :items="accountSessions[acc.account_id]" :limit="8">
+                                        <template #default="{ items: shownSessions }">
+                                            <div v-for="session in shownSessions" :key="session.hash" class="proxy-item" style="margin:0;padding:10px 12px;align-items:flex-start;">
+                                                <div style="flex:1;min-width:180px;">
+                                                    <strong style="font-size:12.5px;">{{ session.device || session.platform || 'Unknown device' }} <span v-if="session.current" class="badge badge-success">This session</span></strong>
+                                                    <p class="small muted" style="margin-top:3px;">{{ session.platform }} {{ session.system }} · {{ session.app }}</p>
+                                                    <p class="small muted">{{ [session.ip, session.country, session.region].filter(Boolean).join(' · ') || 'Location not shared' }}</p>
+                                                    <p class="small muted">Active {{ formatTime(session.active) }} · Created {{ formatTime(session.created) }}</p>
+                                                </div>
+                                                <button v-if="!session.current" class="btn btn-sm btn-danger" @click="revokeAccountSession(acc.account_id, session.hash)">Sign out</button>
+                                            </div>
+                                        </template>
+                                    </bounded-list>
                                 </div>
                             </div>
                         </div>
@@ -1719,23 +1759,27 @@
                     <p v-else-if="contacts.loading && !contacts.list.length" class="empty-state"><span>Loading contacts…</span></p>
                     <p v-else-if="!contacts.list.length" class="empty-state"><span>No contacts match this account.</span></p>
                     <div v-else class="contact-rows">
-                        <div v-for="contact in contacts.list" :key="contact.id" class="contact-row">
-                            <span class="account-face">{{ (contact.first_name || contact.username || '?').slice(0, 2).toUpperCase() }}</span>
-                            <span class="contact-main">
-                                <strong>{{ [contact.first_name, contact.last_name].filter(Boolean).join(' ') || 'Unnamed contact' }}</strong>
-                                <small>
-                                    <a v-if="contact.username" :href="'https://t.me/' + contact.username" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none;">@{{ contact.username }}</a>
-                                    <span v-else class="muted">No username</span>
-                                    <span v-if="contact.phone"> · {{ contact.phone }}</span>
-                                    <span v-if="contact.last_seen"> · Active {{ formatTime(contact.last_seen) }}</span>
-                                </small>
-                            </span>
-                            <span v-if="contact.mutual" class="badge badge-success">Mutual</span>
-                            <span class="account-tools" style="margin:0;flex-wrap:nowrap;">
-                                <button class="btn btn-sm btn-outline" @click="blockContact(contact)">Block</button>
-                                <button class="btn btn-sm btn-danger" @click="deleteContact(contact)">Delete</button>
-                            </span>
-                        </div>
+                        <bounded-list :items="contacts.list" :limit="12">
+                            <template #default="{ items: shownContacts }">
+                                <div v-for="contact in shownContacts" :key="contact.id" class="contact-row">
+                                    <span class="account-face">{{ (contact.first_name || contact.username || '?').slice(0, 2).toUpperCase() }}</span>
+                                    <span class="contact-main">
+                                        <strong>{{ [contact.first_name, contact.last_name].filter(Boolean).join(' ') || 'Unnamed contact' }}</strong>
+                                        <small>
+                                            <a v-if="contact.username" :href="'https://t.me/' + contact.username" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none;">@{{ contact.username }}</a>
+                                            <span v-else class="muted">No username</span>
+                                            <span v-if="contact.phone"> · {{ contact.phone }}</span>
+                                            <span v-if="contact.last_seen"> · Active {{ formatTime(contact.last_seen) }}</span>
+                                        </small>
+                                    </span>
+                                    <span v-if="contact.mutual" class="badge badge-success">Mutual</span>
+                                    <span class="account-tools" style="margin:0;flex-wrap:nowrap;">
+                                        <button class="btn btn-sm btn-outline" @click="blockContact(contact)">Block</button>
+                                        <button class="btn btn-sm btn-danger" @click="deleteContact(contact)">Delete</button>
+                                    </span>
+                                </div>
+                            </template>
+                        </bounded-list>
                     </div>
                     <p class="muted small" style="margin-top:12px;">CSV columns: <span class="mono">phone</span>, optional <span class="mono">first_name</span> and <span class="mono">last_name</span>. Up to 2000 contacts per import.</p>
                 </div>
@@ -1783,22 +1827,26 @@
                     <div class="card-header"><h3>Recovery records</h3><span class="badge badge-info">{{ recovery.list.length }}</span></div>
                     <p v-if="!recovery.list.length" class="empty-state"><span>No recovery records yet.</span></p>
                     <div v-else class="contact-rows">
-                        <div v-for="entry in cloudPhoneAccounts" :key="entry.account_id" class="contact-row" style="flex-wrap:wrap;">
-                            <span class="account-face"><app-icon name="cloud" :size="18"></app-icon></span>
-                            <span class="contact-main">
-                                <strong>{{ accountDisplayName(accounts.find(a => a.account_id === entry.account_id) || { account_id: entry.account_id }) }}</strong>
-                                <small class="mono">{{ entry.account_id }}</small>
-                                <small>Fields: {{ entry.fields.join(', ') || 'none' }}<span v-if="entry.updated_at"> · Updated {{ formatTime(entry.updated_at) }}</span></small>
-                                <small v-if="entry.has_otp && recovery.otp[entry.account_id]" class="mono" style="color:var(--accent);font-size:14px;">
-                                    OTP {{ recovery.otp[entry.account_id].code }} · {{ recovery.otp[entry.account_id].seconds_remaining }}s
-                                </small>
-                            </span>
-                            <span class="account-tools" style="margin:0;flex-wrap:wrap;">
-                                <button v-if="entry.has_otp" class="btn btn-sm btn-outline" @click="generateRecoveryOtp(entry.account_id)">Show OTP</button>
-                                <button class="btn btn-sm btn-outline" @click="recovery.editing = entry.account_id; recovery.form = { login_email: '', email_password: '', twofa_password: '', otp_secret: '', backup_codes: '', note: '' }">Add details</button>
-                                <button class="btn btn-sm btn-danger" @click="deleteRecovery(entry.account_id)">Delete</button>
-                            </span>
-                        </div>
+                        <bounded-list :items="cloudPhoneAccounts" :limit="10">
+                            <template #default="{ items: shownRecovery }">
+                                <div v-for="entry in shownRecovery" :key="entry.account_id" class="contact-row" style="flex-wrap:wrap;">
+                                    <span class="account-face"><app-icon name="cloud" :size="18"></app-icon></span>
+                                    <span class="contact-main">
+                                        <strong>{{ accountDisplayName(accounts.find(a => a.account_id === entry.account_id) || { account_id: entry.account_id }) }}</strong>
+                                        <small class="mono">{{ entry.account_id }}</small>
+                                        <small>Fields: {{ entry.fields.join(', ') || 'none' }}<span v-if="entry.updated_at"> · Updated {{ formatTime(entry.updated_at) }}</span></small>
+                                        <small v-if="entry.has_otp && recovery.otp[entry.account_id]" class="mono" style="color:var(--accent);font-size:14px;">
+                                            OTP {{ recovery.otp[entry.account_id].code }} · {{ recovery.otp[entry.account_id].seconds_remaining }}s
+                                        </small>
+                                    </span>
+                                    <span class="account-tools" style="margin:0;flex-wrap:wrap;">
+                                        <button v-if="entry.has_otp" class="btn btn-sm btn-outline" @click="generateRecoveryOtp(entry.account_id)">Show OTP</button>
+                                        <button class="btn btn-sm btn-outline" @click="recovery.editing = entry.account_id; recovery.form = { login_email: '', email_password: '', twofa_password: '', otp_secret: '', backup_codes: '', note: '' }">Add details</button>
+                                        <button class="btn btn-sm btn-danger" @click="deleteRecovery(entry.account_id)">Delete</button>
+                                    </span>
+                                </div>
+                            </template>
+                        </bounded-list>
                     </div>
                 </div>
             </div>
@@ -1848,14 +1896,18 @@
                         <div class="status-row"><span class="status-key">Saved</span><span class="status-val">{{ cloudBrowser.config.updated_at ? formatTime(cloudBrowser.config.updated_at) : '—' }}</span></div>
                     </div>
                     <p v-if="cloudBrowser.config.profiles.length" class="muted small" style="margin-top:14px;">Each named browser is a separate one: its own cookies, its own signed-in pages. Switching never copies a session between them.</p>
-                    <div v-for="profile in cloudBrowser.config.profiles" :key="profile.id" class="contact-row">
-                        <div style="flex:1;min-width:180px;">
-                            <div>{{ profile.label }}<span v-if="profile.id === cloudBrowser.config.active" class="badge badge-info" style="margin-left:8px;">In use</span></div>
-                            <div class="mono small muted">{{ profile.host }} · {{ profile.has_token ? 'token stored' : 'no token' }}</div>
-                        </div>
-                        <button v-if="profile.id !== cloudBrowser.config.active" class="btn btn-sm btn-outline" @click="useCloudBrowserProfile(profile)" :disabled="!!cloudBrowser.busy">{{ cloudBrowser.busy === profile.id ? 'Opening…' : 'Use this browser' }}</button>
-                        <button class="btn btn-sm btn-danger" @click="forgetCloudBrowserProfile(profile)" :disabled="!!cloudBrowser.busy">Forget</button>
-                    </div>
+                    <bounded-list :items="cloudBrowser.config.profiles" :limit="8">
+                        <template #default="{ items: shownProfiles }">
+                            <div v-for="profile in shownProfiles" :key="profile.id" class="contact-row">
+                                <div style="flex:1;min-width:180px;">
+                                    <div>{{ profile.label }}<span v-if="profile.id === cloudBrowser.config.active" class="badge badge-info" style="margin-left:8px;">In use</span></div>
+                                    <div class="mono small muted">{{ profile.host }} · {{ profile.has_token ? 'token stored' : 'no token' }}</div>
+                                </div>
+                                <button v-if="profile.id !== cloudBrowser.config.active" class="btn btn-sm btn-outline" @click="useCloudBrowserProfile(profile)" :disabled="!!cloudBrowser.busy">{{ cloudBrowser.busy === profile.id ? 'Opening…' : 'Use this browser' }}</button>
+                                <button class="btn btn-sm btn-danger" @click="forgetCloudBrowserProfile(profile)" :disabled="!!cloudBrowser.busy">Forget</button>
+                            </div>
+                        </template>
+                    </bounded-list>
                 </div>
 
                 <div class="card" style="margin-top:18px;">
@@ -1877,17 +1929,21 @@
                     </div>
                     <p v-if="!cloudBrowser.pages.length" class="empty-state"><span>No pages read yet. Save an address, then check the connection.</span></p>
                     <div v-else class="contact-rows">
-                        <div v-for="page in cloudBrowser.pages" :key="page.target_id" class="contact-row" style="flex-wrap:wrap;">
-                            <span class="account-face"><app-icon name="globe" :size="18"></app-icon></span>
-                            <span class="contact-main">
-                                <strong>{{ page.title || 'Untitled page' }}</strong>
-                                <small class="mono" style="overflow-wrap:anywhere;">{{ page.url || 'about:blank' }}</small>
-                            </span>
-                            <span class="account-tools" style="margin:0;">
-                                <button class="btn btn-sm" :class="cloudBrowser.selected === page.target_id ? 'btn-primary' : 'btn-outline'" @click="selectCloudBrowserPage(page)">View</button>
-                                <button class="btn btn-sm btn-danger" @click="closeCloudBrowserPage(page)">Close</button>
-                            </span>
-                        </div>
+                        <bounded-list :items="cloudBrowser.pages" :limit="8">
+                            <template #default="{ items: shownPages }">
+                                <div v-for="page in shownPages" :key="page.target_id" class="contact-row" style="flex-wrap:wrap;">
+                                    <span class="account-face"><app-icon name="globe" :size="18"></app-icon></span>
+                                    <span class="contact-main">
+                                        <strong>{{ page.title || 'Untitled page' }}</strong>
+                                        <small class="mono" style="overflow-wrap:anywhere;">{{ page.url || 'about:blank' }}</small>
+                                    </span>
+                                    <span class="account-tools" style="margin:0;">
+                                        <button class="btn btn-sm" :class="cloudBrowser.selected === page.target_id ? 'btn-primary' : 'btn-outline'" @click="selectCloudBrowserPage(page)">View</button>
+                                        <button class="btn btn-sm btn-danger" @click="closeCloudBrowserPage(page)">Close</button>
+                                    </span>
+                                </div>
+                            </template>
+                        </bounded-list>
                     </div>
                 </div>
 
@@ -2096,29 +2152,33 @@
                     </button>
 
                     <div v-if="proxies.length > 0" style="margin-top: 25px;">
-                        <div v-for="proxy in proxies" :key="proxy.proxy_id" class="proxy-item">
-                            <div class="proxy-info">
-                                <h4>{{ proxy.proxy_id }} <span class="badge badge-warning">{{ proxy.protocol.toUpperCase() }}</span></h4>
-                                <p>{{ proxy.host }}:{{ proxy.port }}</p>
-                                <p style="font-size: 12px; color: var(--text-dim);">
-                                    <span v-if="proxy.username">Username: {{ proxy.username }}</span>
-                                    <span v-if="proxy.password" style="margin-left: 10px;">
-                                        Password:
-                                        <span v-if="proxyPasswordVisible[proxy.proxy_id]">{{ proxy.password }}</span>
-                                        <span v-else style="cursor: pointer;" @click="toggleProxyPassword(proxy.proxy_id)">••••••</span>
-                                        <span style="cursor: pointer; margin-left: 5px; color: var(--info);" @click="toggleProxyPassword(proxy.proxy_id)">
-                                            {{ proxyPasswordVisible[proxy.proxy_id] ? '👁️' : '👁️‍🗨️' }}
-                                        </span>
-                                    </span>
-                                    <span v-if="!proxy.username && !proxy.password" style="color: var(--accent);">Unverified</span>
-                                </p>
-                            </div>
-                            <div class="proxy-actions">
-                                <button class="btn btn-sm btn-success" @click="testProxy(proxy.proxy_id)">Test</button>
-                                <button class="btn btn-sm btn-outline" @click="useProxyAsGlobal(proxy)">Use as global</button>
-                                <button class="btn btn-sm btn-danger" @click="deleteProxy(proxy.proxy_id)">Delete</button>
-                            </div>
-                        </div>
+                        <bounded-list :items="proxies" :limit="8">
+                            <template #default="{ items: shownProxies }">
+                                <div v-for="proxy in shownProxies" :key="proxy.proxy_id" class="proxy-item">
+                                    <div class="proxy-info">
+                                        <h4>{{ proxy.proxy_id }} <span class="badge badge-warning">{{ proxy.protocol.toUpperCase() }}</span></h4>
+                                        <p>{{ proxy.host }}:{{ proxy.port }}</p>
+                                        <p style="font-size: 12px; color: var(--text-dim);">
+                                            <span v-if="proxy.username">Username: {{ proxy.username }}</span>
+                                            <span v-if="proxy.password" style="margin-left: 10px;">
+                                                Password:
+                                                <span v-if="proxyPasswordVisible[proxy.proxy_id]">{{ proxy.password }}</span>
+                                                <span v-else style="cursor: pointer;" @click="toggleProxyPassword(proxy.proxy_id)">••••••</span>
+                                                <span style="cursor: pointer; margin-left: 5px; color: var(--info);" @click="toggleProxyPassword(proxy.proxy_id)">
+                                                    {{ proxyPasswordVisible[proxy.proxy_id] ? '👁️' : '👁️‍🗨️' }}
+                                                </span>
+                                            </span>
+                                            <span v-if="!proxy.username && !proxy.password" style="color: var(--accent);">Unverified</span>
+                                        </p>
+                                    </div>
+                                    <div class="proxy-actions">
+                                        <button class="btn btn-sm btn-success" @click="testProxy(proxy.proxy_id)">Test</button>
+                                        <button class="btn btn-sm btn-outline" @click="useProxyAsGlobal(proxy)">Use as global</button>
+                                        <button class="btn btn-sm btn-danger" @click="deleteProxy(proxy.proxy_id)">Delete</button>
+                                    </div>
+                                </div>
+                            </template>
+                        </bounded-list>
                     </div>
                 </div>
             </div>
@@ -2158,13 +2218,16 @@
                             <tr><th>Account ID</th><th>Risk level</th><th>Consecutive failures</th><th>Status</th></tr>
                         </thead>
                         <tbody>
-                            <tr v-for="id in riskAccounts" :key="id">
+                            <tr v-for="id in visibleRows(riskAccounts, 'riskAccounts', 8)" :key="id">
                                 <td>{{ id }}</td>
                                 <td><span class="badge badge-warning">{{ healthDetails[id]?.risk_level || 'Med' }}</span></td>
                                 <td>{{ healthDetails[id]?.consecutive_fails || 0 }}</td>
                                 <td><span class="badge" :class="healthDetails[id]?.banned ? 'badge-danger' : 'badge-warning'">
                                     {{ healthDetails[id]?.banned ? 'May be banned' : 'Needs attention' }}
                                 </span></td>
+                            </tr>
+                            <tr v-if="riskAccounts.length > 8">
+                                <td colspan="4"><button type="button" class="btn btn-sm btn-outline record-more" @click="toggleRows('riskAccounts')">{{ expandedRows.riskAccounts ? 'Show fewer' : 'Show all (' + riskAccounts.length + ')' }}</button></td>
                             </tr>
                         </tbody>
                     </table>
@@ -2200,10 +2263,13 @@
                     <table v-else>
                         <thead><tr><th>Rank</th><th>Account ID</th><th>Usage</th></tr></thead>
                         <tbody>
-                            <tr v-for="(acc, i) in topAccounts" :key="acc.account_id">
+                            <tr v-for="(acc, i) in visibleRows(topAccounts, 'topAccounts', 10)" :key="acc.account_id">
                                 <td>#{{ i + 1 }}</td>
                                 <td>{{ acc.account_id }}</td>
                                 <td>{{ acc.value }}</td>
+                            </tr>
+                            <tr v-if="topAccounts.length > 10">
+                                <td colspan="3"><button type="button" class="btn btn-sm btn-outline record-more" @click="toggleRows('topAccounts')">{{ expandedRows.topAccounts ? 'Show fewer' : 'Show all (' + topAccounts.length + ')' }}</button></td>
                             </tr>
                         </tbody>
                     </table>
@@ -2222,10 +2288,14 @@
                         <p>No activity logs</p>
                     </div>
                     <div v-else>
-                        <div v-for="(log, i) in logs" :key="i" class="log-item">
-                            <span><span class="action">{{ log.action }}</span> - <span class="account">{{ log.account }}</span> {{ log.detail }}</span>
-                            <span class="time">{{ log.time }}</span>
-                        </div>
+                        <bounded-list :items="logs" :limit="20">
+                            <template #default="{ items: shownLogs }">
+                                <div v-for="(log, i) in shownLogs" :key="i" class="log-item">
+                                    <span><span class="action">{{ log.action }}</span> - <span class="account">{{ log.account }}</span> {{ log.detail }}</span>
+                                    <span class="time">{{ log.time }}</span>
+                                </div>
+                            </template>
+                        </bounded-list>
                     </div>
                 </div>
             </div>
@@ -2235,9 +2305,9 @@
                 <div class="card">
                     <div class="card-header">
                         <h3>Ops Copilot</h3>
-                        <span class="badge badge-info">Draft only</span>
+                        <span class="badge badge-info">Workspace commands + prefilled forms</span>
                     </div>
-                    <p class="muted small" style="margin-bottom: 16px;">Describe a template, schedule or opt-in send in plain language. The Copilot returns a draft and never sends anything — you review it, and the existing approval and consent checks still apply.</p>
+                    <p class="muted small" style="margin-bottom: 16px;">Ask in plain language, or run a preset. The Copilot works inside your own workspace — save or search a note, spot repeated wording, preview which Auto Reply rule would answer — and opens your own forms prefilled. It never sends, buys, joins or adds anything by itself: the existing approval and consent checks still apply.</p>
                     <div class="form-group">
                         <label for="copilot-instruction">What do you want to set up?</label>
                         <textarea id="copilot-instruction" class="form-control" rows="4" v-model="copilot.instruction" @keydown.ctrl.enter="draftCopilot" placeholder="Create a template named Welcome that says: Hi {name}, thanks for reaching out."></textarea>
@@ -2281,6 +2351,39 @@
                         <p class="muted small">Consent stays unchecked. Nothing runs until you press Start BulkSend.</p>
                     </div>
 
+                    <div v-else-if="copilot.draft.action === 'ops'" style="background: rgba(0,0,0,0.2); padding: 12px; border-radius: 8px;">
+                        <p><strong>Opens:</strong> {{ copilot.draft.payload.tab }} · <strong>You press:</strong> {{ copilot.draft.payload.gate_label }}</p>
+                        <p v-for="(value, key) in copilot.draft.payload.fields" :key="key" style="margin-top:4px;"><strong>{{ key }}:</strong> {{ value }}</p>
+                        <p class="muted small" style="margin-top:8px;">The Copilot only fills your form. The button is still yours.</p>
+                    </div>
+
+                    <div v-else-if="copilot.draft.action === 'run'" style="background: rgba(0,0,0,0.2); padding: 12px; border-radius: 8px;">
+                        <p v-if="copilot.draft.result?.error" role="alert" style="color:var(--danger);">{{ copilot.draft.result.error }}</p>
+                        <template v-else-if="copilot.draft.result">
+                            <p v-if="copilot.draft.payload.command === 'knowledge-note'">
+                                {{ copilot.draft.result.stored ? 'Saved to your knowledge base.' : 'That note is already in your knowledge base.' }}
+                            </p>
+                            <template v-else-if="copilot.draft.payload.command === 'knowledge-search'">
+                                <p><strong>{{ copilot.draft.result.count }}</strong> note(s) match “{{ copilot.draft.result.query }}”.</p>
+                                <ul style="margin:8px 0 0 18px;">
+                                    <li v-for="hit in (copilot.draft.result.matches || []).slice(0, 8)" :key="hit.id">{{ hit.title }} — {{ hit.preview }}</li>
+                                    <li v-if="(copilot.draft.result.matches || []).length > 8" class="muted">Showing the first 8 of {{ copilot.draft.result.matches.length }}.</li>
+                                </ul>
+                            </template>
+                            <template v-else-if="copilot.draft.payload.command === 'patterns-refresh'">
+                                <p>{{ copilot.draft.result.suggestions.length }} repeated wording suggestion(s) from {{ copilot.draft.result.corpus }} note(s).</p>
+                                <ul style="margin:8px 0 0 18px;">
+                                    <li v-for="s in copilot.draft.result.suggestions" :key="s.id">{{ s.title }}</li>
+                                </ul>
+                            </template>
+                            <template v-else-if="copilot.draft.payload.command === 'autoreply-test'">
+                                <p v-if="copilot.draft.result.matched">Rule <strong>{{ copilot.draft.result.matched.name }}</strong> would answer: <span style="white-space:pre-wrap;">{{ copilot.draft.result.reply }}</span></p>
+                                <p v-else>{{ copilot.draft.result.detail }}</p>
+                            </template>
+                        </template>
+                        <p v-else class="muted small">Nothing ran yet.</p>
+                    </div>
+
                     <div v-else-if="copilot.draft.examples?.length" style="background: rgba(0,0,0,0.2); padding: 12px; border-radius: 8px;">
                         <p><strong>Try one of these:</strong></p>
                         <ul style="margin: 8px 0 0 18px;">
@@ -2289,7 +2392,7 @@
                     </div>
 
                     <div v-if="copilot.draft.requires_confirmation" style="display:flex; gap:10px; margin-top: 16px; flex-wrap:wrap;">
-                        <button class="btn btn-primary" @click="applyCopilotDraft">{{ copilot.draft.action === 'template' ? 'Save template' : (copilot.draft.action === 'schedule' ? 'Open schedule form' : 'Open BulkSend') }}</button>
+                        <button class="btn btn-primary" @click="applyCopilotDraft">{{ copilotApplyLabel() }}</button>
                         <span class="muted small" style="align-self:center;">You confirm in the destination form; the Copilot does not run it.</span>
                     </div>
                 </div>
@@ -2303,37 +2406,98 @@
                         </div>
                     </div>
                     <p class="muted small" style="margin-bottom: 14px;">Every draft you asked for, newest first. Marking one as applied offers its wording to the knowledge base; nothing is sent from here.</p>
-                    <div v-if="!copilot.history.length" class="empty-state"><p>No Copilot turns yet.</p></div>
-                    <div v-else>
-                        <div v-for="turn in copilot.history" :key="turn.id" class="proxy-item" style="align-items:flex-start;">
-                            <div class="proxy-info" style="flex:1;">
-                                <h4>{{ turn.title || turn.action || 'Draft' }}
-                                    <span class="badge" :class="turn.outcome === 'applied' ? 'badge-success' : (turn.outcome === 'discarded' ? 'badge-danger' : 'badge-info')">{{ turn.outcome || 'drafted' }}</span>
-                                </h4>
-                                <p>{{ turn.instruction }}</p>
-                                <p v-if="turn.text" style="margin-top:6px; white-space:pre-wrap;">{{ turn.text }}</p>
-                                <p class="muted small" style="margin-top:6px;">{{ turn.time }} · {{ turn.summary || '—' }}</p>
+                    <record-list :items="copilot.history" :key-of="turn => turn.id"
+                                 :label="turn => (turn.action || 'Draft') + ' · ' + String(turn.id).slice(0, 8)"
+                                 :state="turn => turn.outcome || 'drafted'"
+                                 :state-class="copilotOutcomeBadge" empty="No Copilot turns yet.">
+                        <template #default="{ item: turn }">
+                            <div class="proxy-item" style="align-items:flex-start;">
+                                <div class="proxy-info" style="flex:1;">
+                                    <h4>{{ turn.title || turn.action || 'Draft' }}</h4>
+                                    <p>{{ turn.instruction }}</p>
+                                    <p v-if="turn.text" style="margin-top:6px; white-space:pre-wrap;">{{ turn.text }}</p>
+                                    <p class="muted small" style="margin-top:6px;">{{ turn.time }} · {{ turn.summary || '—' }}</p>
+                                </div>
+                                <div class="proxy-actions">
+                                    <button class="btn btn-sm btn-outline" @click="markCopilotOutcome(turn, 'applied')" :disabled="turn.outcome === 'applied'">Applied</button>
+                                    <button class="btn btn-sm btn-outline" @click="markCopilotOutcome(turn, 'discarded')" :disabled="turn.outcome === 'discarded'">Discarded</button>
+                                </div>
                             </div>
-                            <div class="proxy-actions">
-                                <button class="btn btn-sm btn-outline" @click="markCopilotOutcome(turn, 'applied')" :disabled="turn.outcome === 'applied'">Applied</button>
-                                <button class="btn btn-sm btn-outline" @click="markCopilotOutcome(turn, 'discarded')" :disabled="turn.outcome === 'discarded'">Discarded</button>
-                            </div>
-                        </div>
-                    </div>
+                        </template>
+                    </record-list>
                 </div>
 
                 <div class="card">
-                    <div class="card-header"><h3>Presets</h3></div>
-                    <p class="muted small" style="margin-bottom: 14px;">Start from a ready-made draft, then review and adjust it.</p>
-                    <div v-if="!copilot.presets.length" class="empty-state"><p>Presets load when you open this page.</p></div>
-                    <div v-else style="display:grid; gap:10px;">
-                        <div v-for="preset in copilot.presets" :key="preset.id" class="proxy-item" style="align-items:center;">
-                            <div class="proxy-info" style="flex:1;">
-                                <h4>{{ preset.title }} <span class="badge badge-info">{{ preset.group }}</span></h4>
-                                <p>{{ preset.description }}</p>
-                            </div>
-                            <button class="btn btn-sm btn-outline" @click="useCopilotPreset(preset)">Use preset</button>
+                    <div class="card-header">
+                        <h3>Presets</h3>
+                        <div style="display:flex; gap:8px;">
+                            <button class="btn btn-sm btn-outline" @click="newCopilotPreset">Add preset</button>
+                            <button class="btn btn-sm btn-outline" @click="resetCopilotPresets">Reset</button>
                         </div>
+                    </div>
+                    <p class="muted small" style="margin-bottom: 14px;">Your runbook. Presets you actually apply float to the top, so the panel learns your routine. Edit the wording, add your own, or hide the ones you never use.</p>
+                    <record-list :items="copilot.presets" :key-of="preset => preset.id"
+                                 :label="preset => preset.group + ' · ' + preset.title"
+                                 :state="preset => preset.uses ? preset.uses + ' applied' : (preset.modified ? 'edited' : '')"
+                                 state-class="badge-info" :limit="10" empty="Presets load when you open this page.">
+                        <template #default="{ item: preset }">
+                            <div class="proxy-item" style="align-items:center;">
+                                <div class="proxy-info" style="flex:1;">
+                                    <h4>{{ preset.title }}
+                                        <span class="badge badge-info">{{ preset.group }}</span>
+                                        <span v-if="!preset.built_in" class="badge badge-normal">yours</span>
+                                    </h4>
+                                    <p>{{ preset.description }}</p>
+                                    <p class="muted small" style="margin-top:6px;">{{ preset.instruction }}</p>
+                                </div>
+                                <div class="proxy-actions">
+                                    <button class="btn btn-sm btn-outline" @click="runCopilotPreset(preset)">Use preset</button>
+                                    <button class="btn btn-sm btn-outline" @click="editCopilotPreset(preset)">Edit</button>
+                                    <button class="btn btn-sm btn-outline" @click="deleteCopilotPreset(preset)">Remove</button>
+                                </div>
+                            </div>
+                        </template>
+                    </record-list>
+                </div>
+
+                <div v-if="copilot.editing" class="card">
+                    <div class="card-header">
+                        <h3>{{ copilot.editing === 'new' ? 'Add a preset' : 'Edit preset' }}</h3>
+                        <span class="badge badge-info">{{ copilot.editing }}</span>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="preset-title">Title</label>
+                            <input id="preset-title" class="form-control" v-model="copilot.form.title" maxlength="60" placeholder="Weekly member check">
+                        </div>
+                        <div class="form-group">
+                            <label for="preset-group">Group</label>
+                            <input id="preset-group" class="form-control" v-model="copilot.form.group" maxlength="40" placeholder="Outreach">
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label for="preset-description">What it does</label>
+                        <input id="preset-description" class="form-control" v-model="copilot.form.description" maxlength="200" placeholder="Opens the collector prefilled with your usual limit.">
+                    </div>
+                    <div class="form-group">
+                        <label for="preset-instruction">Instruction</label>
+                        <textarea id="preset-instruction" class="form-control" rows="3" v-model="copilot.form.instruction" maxlength="500"></textarea>
+                        <small>The instruction is what the Copilot drafts from. Keep it inside the same rules as the chat: no account creation, no cold outreach.</small>
+                    </div>
+                    <div class="form-group" v-if="copilot.editing === 'new'">
+                        <label for="preset-command">Internal command (optional)</label>
+                        <select id="preset-command" class="form-control" v-model="copilot.form.command">
+                            <option value="">None — draft from the instruction</option>
+                            <option value="knowledge-note">Save a note</option>
+                            <option value="knowledge-search">Search the knowledge base</option>
+                            <option value="patterns-refresh">Look for repeated wording</option>
+                            <option value="autoreply-test">Preview an Auto Reply rule</option>
+                        </select>
+                    </div>
+                    <p v-if="copilot.formError" role="alert" style="color:var(--danger); margin-bottom:10px;">{{ copilot.formError }}</p>
+                    <div style="display:flex; gap:10px; flex-wrap:wrap;">
+                        <button class="btn btn-primary" @click="saveCopilotPreset" :disabled="copilot.saving">{{ copilot.saving ? 'Saving…' : 'Save preset' }}</button>
+                        <button class="btn btn-outline" @click="cancelCopilotPresetEdit" :disabled="copilot.saving">Cancel</button>
                     </div>
                 </div>
             </div>
@@ -2378,7 +2542,7 @@
                         </div>
                         <small class="muted">0 means nothing sends. Telegram is asked to wait 10 minutes between chats and 20 seconds between messages.</small>
                         <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px;">
-                            <button class="btn btn-primary" @click="saveAutoReplySettings" :disabled="autoReply.saving">{{ autoReply.saving ? 'Saving…' : 'Save settings' }}</button>
+                            <button id="gate-autoreply" class="btn btn-primary" @click="saveAutoReplySettings" :disabled="autoReply.saving">{{ autoReply.saving ? 'Saving…' : 'Save settings' }}</button>
                             <button class="btn btn-outline" @click="runAutoReplyNow" :disabled="!!autoReply.busy || !autoReply.config.enabled">Run one check now</button>
                         </div>
                         <p v-if="autoReply.message" class="muted small" style="margin-top:12px;">{{ autoReply.message }}</p>
@@ -2400,10 +2564,14 @@
                     <p class="muted small" style="margin-bottom:14px;">Pick the accounts Auto Reply may speak for. It reads their private chats and answers on their behalf.</p>
                     <div v-if="!accounts.length" class="empty-state"><p>Add a Telegram account first.</p></div>
                     <div v-else>
-                        <div v-for="acc in accounts" :key="acc.account_id" class="toggle-row">
-                            <div><strong style="font-size:13px;">{{ accountDisplayName(acc) }}</strong><p class="muted small mono" style="margin-top:2px;">{{ shortAccountId(acc.account_id) }}</p></div>
-                            <button class="toggle" :class="{ on: isAccountWatched(acc.account_id) }" role="switch" :aria-checked="isAccountWatched(acc.account_id) ? 'true' : 'false'" :disabled="!!autoReply.busy" @click="watchAccount(acc.account_id, !isAccountWatched(acc.account_id))"></button>
-                        </div>
+                        <bounded-list :items="accounts" :limit="8">
+                            <template #default="{ items: shownAccounts }">
+                                <div v-for="acc in shownAccounts" :key="acc.account_id" class="toggle-row">
+                                    <div><strong style="font-size:13px;">{{ accountDisplayName(acc) }}</strong><p class="muted small mono" style="margin-top:2px;">{{ shortAccountId(acc.account_id) }}</p></div>
+                                    <button class="toggle" :class="{ on: isAccountWatched(acc.account_id) }" role="switch" :aria-checked="isAccountWatched(acc.account_id) ? 'true' : 'false'" :disabled="!!autoReply.busy" @click="watchAccount(acc.account_id, !isAccountWatched(acc.account_id))"></button>
+                                </div>
+                            </template>
+                        </bounded-list>
                     </div>
                 </div>
 
@@ -2444,21 +2612,25 @@
                     </div>
                     <div v-if="!autoReply.config.rules.length" class="empty-state" style="padding:24px;"><p>No rules yet. In AI mode the rules are not used.</p></div>
                     <div v-else style="margin-top:16px;">
-                        <div v-for="rule in autoReply.config.rules" :key="rule.id" class="proxy-item" style="align-items:flex-start;">
-                            <div class="proxy-info" style="flex:1;">
-                                <h4>{{ rule.name }}
-                                    <span class="badge" :class="rule.enabled ? 'badge-success' : 'badge-normal'">{{ rule.enabled ? 'On' : 'Off' }}</span>
-                                    <span class="badge badge-info">{{ rule.match === 'any' ? 'anything' : rule.keywords.length + ' keywords' }}</span>
-                                </h4>
-                                <p v-if="rule.match === 'keyword'">{{ rule.keywords.join(', ') }}</p>
-                                <p style="white-space:pre-wrap;margin-top:4px;">{{ rule.reply }}</p>
-                            </div>
-                            <div class="proxy-actions">
-                                <button class="btn btn-sm btn-outline" @click="toggleAutoReplyRule(rule)" :disabled="!!autoReply.busy">{{ rule.enabled ? 'Pause' : 'Enable' }}</button>
-                                <button class="btn btn-sm btn-outline" @click="startRuleEdit(rule)">Edit</button>
-                                <button class="btn btn-sm btn-danger" @click="deleteAutoReplyRule(rule)" :disabled="!!autoReply.busy">Delete</button>
-                            </div>
-                        </div>
+                        <bounded-list :items="autoReply.config.rules" :limit="8">
+                            <template #default="{ items: shownRules }">
+                                <div v-for="rule in shownRules" :key="rule.id" class="proxy-item" style="align-items:flex-start;">
+                                    <div class="proxy-info" style="flex:1;">
+                                        <h4>{{ rule.name }}
+                                            <span class="badge" :class="rule.enabled ? 'badge-success' : 'badge-normal'">{{ rule.enabled ? 'On' : 'Off' }}</span>
+                                            <span class="badge badge-info">{{ rule.match === 'any' ? 'anything' : rule.keywords.length + ' keywords' }}</span>
+                                        </h4>
+                                        <p v-if="rule.match === 'keyword'">{{ rule.keywords.join(', ') }}</p>
+                                        <p style="white-space:pre-wrap;margin-top:4px;">{{ rule.reply }}</p>
+                                    </div>
+                                    <div class="proxy-actions">
+                                        <button class="btn btn-sm btn-outline" @click="toggleAutoReplyRule(rule)" :disabled="!!autoReply.busy">{{ rule.enabled ? 'Pause' : 'Enable' }}</button>
+                                        <button class="btn btn-sm btn-outline" @click="startRuleEdit(rule)">Edit</button>
+                                        <button class="btn btn-sm btn-danger" @click="deleteAutoReplyRule(rule)" :disabled="!!autoReply.busy">Delete</button>
+                                    </div>
+                                </div>
+                            </template>
+                        </bounded-list>
                     </div>
                 </div>
 
@@ -2492,21 +2664,25 @@
                     <p class="muted small" style="margin-bottom:14px;">A model wrote these. Nothing reaches Telegram until you press Send on the one you want.</p>
                     <div v-if="!autoReply.config.outbox.length" class="empty-state" style="padding:24px;"><p>No drafts waiting.</p></div>
                     <div v-else>
-                        <div v-for="draft in autoReply.config.outbox" :key="draft.id" class="proxy-item" style="flex-direction:column;align-items:stretch;">
-                            <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
-                                <div class="proxy-info">
-                                    <h4>{{ draft.name || draft.peer_ref }} <span class="mono muted small">{{ shortAccountId(draft.account) }}</span></h4>
-                                    <p><strong>They said:</strong> <span style="white-space:pre-wrap;">{{ draft.inbound || '—' }}</span></p>
+                        <bounded-list :items="autoReply.config.outbox" :limit="5">
+                            <template #default="{ items: shownDrafts }">
+                                <div v-for="draft in shownDrafts" :key="draft.id" class="proxy-item" style="flex-direction:column;align-items:stretch;">
+                                    <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
+                                        <div class="proxy-info">
+                                            <h4>{{ draft.name || draft.peer_ref }} <span class="mono muted small">{{ shortAccountId(draft.account) }}</span></h4>
+                                            <p><strong>They said:</strong> <span style="white-space:pre-wrap;">{{ draft.inbound || '—' }}</span></p>
+                                        </div>
+                                        <span class="muted small">{{ draft.created }}</span>
+                                    </div>
+                                    <textarea class="form-control" rows="3" v-model="draft.reply" :maxlength="autoReply.config.limits.reply_max"></textarea>
+                                    <div class="proxy-actions" style="margin-top:10px;">
+                                        <button class="btn btn-sm btn-outline" @click="editOutboxDraft(draft)" :disabled="!!autoReply.busy">Save edit</button>
+                                        <button class="btn btn-sm btn-primary" @click="sendOutboxDraft(draft)" :disabled="!!autoReply.busy">Send</button>
+                                        <button class="btn btn-sm btn-danger" @click="discardOutboxDraft(draft)" :disabled="!!autoReply.busy">Discard</button>
+                                    </div>
                                 </div>
-                                <span class="muted small">{{ draft.created }}</span>
-                            </div>
-                            <textarea class="form-control" rows="3" v-model="draft.reply" :maxlength="autoReply.config.limits.reply_max"></textarea>
-                            <div class="proxy-actions" style="margin-top:10px;">
-                                <button class="btn btn-sm btn-outline" @click="editOutboxDraft(draft)" :disabled="!!autoReply.busy">Save edit</button>
-                                <button class="btn btn-sm btn-primary" @click="sendOutboxDraft(draft)" :disabled="!!autoReply.busy">Send</button>
-                                <button class="btn btn-sm btn-danger" @click="discardOutboxDraft(draft)" :disabled="!!autoReply.busy">Discard</button>
-                            </div>
-                        </div>
+                            </template>
+                        </bounded-list>
                     </div>
                 </div>
 
@@ -2515,19 +2691,23 @@
                     <p class="muted small" style="margin-bottom:14px;">Once you answer a chat yourself, Auto Reply stops there. Resume it, or mute a conversation for good.</p>
                     <div v-if="!autoReply.config.conversations.length" class="empty-state" style="padding:24px;"><p>No private conversations watched yet.</p></div>
                     <div v-else>
-                        <div v-for="conv in autoReply.config.conversations" :key="conv.peer_ref" class="proxy-item" style="align-items:flex-start;">
-                            <div class="proxy-info" style="flex:1;">
-                                <h4>{{ conv.name || 'Unnamed' }}
-                                    <span class="badge" :class="conv.status === 'muted' ? 'badge-normal' : (conv.taken_over ? 'badge-warning' : 'badge-success')">{{ conv.taken_over ? 'You replied' : conv.status }}</span>
-                                </h4>
-                                <p>{{ conv.last_inbound || '—' }}</p>
-                                <p class="muted small mono">{{ conv.peer_ref }} · {{ shortAccountId(conv.account) }} · {{ conv.last_inbound_at || '' }}</p>
-                            </div>
-                            <div class="proxy-actions">
-                                <button class="btn btn-sm btn-outline" @click="setConversation('resume', conv)" :disabled="!!autoReply.busy">Resume</button>
-                                <button class="btn btn-sm btn-outline" @click="setConversation('mute', conv)" :disabled="!!autoReply.busy">Mute</button>
-                            </div>
-                        </div>
+                        <bounded-list :items="autoReply.config.conversations" :limit="8">
+                            <template #default="{ items: shownConversations }">
+                                <div v-for="conv in shownConversations" :key="conv.peer_ref" class="proxy-item" style="align-items:flex-start;">
+                                    <div class="proxy-info" style="flex:1;">
+                                        <h4>{{ conv.name || 'Unnamed' }}
+                                            <span class="badge" :class="conv.status === 'muted' ? 'badge-normal' : (conv.taken_over ? 'badge-warning' : 'badge-success')">{{ conv.taken_over ? 'You replied' : conv.status }}</span>
+                                        </h4>
+                                        <p>{{ conv.last_inbound || '—' }}</p>
+                                        <p class="muted small mono">{{ conv.peer_ref }} · {{ shortAccountId(conv.account) }} · {{ conv.last_inbound_at || '' }}</p>
+                                    </div>
+                                    <div class="proxy-actions">
+                                        <button class="btn btn-sm btn-outline" @click="setConversation('resume', conv)" :disabled="!!autoReply.busy">Resume</button>
+                                        <button class="btn btn-sm btn-outline" @click="setConversation('mute', conv)" :disabled="!!autoReply.busy">Mute</button>
+                                    </div>
+                                </div>
+                            </template>
+                        </bounded-list>
                     </div>
                 </div>
 
@@ -2537,10 +2717,13 @@
                     <table v-else>
                         <thead><tr><th>Time</th><th>Account</th><th>What happened</th></tr></thead>
                         <tbody>
-                            <tr v-for="(item, i) in autoReply.config.activity" :key="i">
+                            <tr v-for="(item, i) in visibleRows(autoReply.config.activity, 'arActivity', 8)" :key="i">
                                 <td class="mono small">{{ item.time }}</td>
                                 <td class="mono small">{{ shortAccountId(item.account) }}</td>
                                 <td>{{ item.detail }}</td>
+                            </tr>
+                            <tr v-if="autoReply.config.activity.length > 8">
+                                <td colspan="3"><button type="button" class="btn btn-sm btn-outline record-more" @click="toggleRows('arActivity')">{{ expandedRows.arActivity ? 'Show fewer' : 'Show all (' + autoReply.config.activity.length + ')' }}</button></td>
                             </tr>
                         </tbody>
                     </table>
@@ -2582,14 +2765,18 @@
                     <p class="muted small" style="margin-bottom:14px;">Opt an account in to see its chats here. While it is opted in, Telegram pushes every new message straight to this screen.</p>
                     <div v-if="!accounts.length" class="empty-state"><p>Add a Telegram account first.</p></div>
                     <div v-else>
-                        <div v-for="acc in accounts" :key="acc.account_id" class="toggle-row">
-                            <div>
-                                <strong style="font-size:13px;">{{ accountDisplayName(acc) }}</strong>
-                                <p class="muted small mono" style="margin-top:2px;">{{ shortAccountId(acc.account_id) }}</p>
-                                <p v-if="isMailboxWatched(acc.account_id)" class="muted small" style="margin-top:4px;">{{ mailbox.config.labels[mailbox.config.state[acc.account_id]] || mailbox.config.labels.live }}</p>
-                            </div>
-                            <button class="toggle" :class="{ on: isMailboxWatched(acc.account_id) }" role="switch" :aria-checked="isMailboxWatched(acc.account_id) ? 'true' : 'false'" :disabled="!!mailbox.busy || !mailbox.config.enabled" @click="setMailboxAccount(acc.account_id, !isMailboxWatched(acc.account_id))"></button>
-                        </div>
+                        <bounded-list :items="accounts" :limit="8">
+                            <template #default="{ items: shownAccounts }">
+                                <div v-for="(acc, index) in shownAccounts" :key="acc.account_id" class="toggle-row">
+                                    <div>
+                                        <strong style="font-size:13px;">{{ accountDisplayName(acc) }}</strong>
+                                        <p class="muted small mono" style="margin-top:2px;">{{ shortAccountId(acc.account_id) }}</p>
+                                        <p v-if="isMailboxWatched(acc.account_id)" class="muted small" style="margin-top:4px;">{{ mailbox.config.labels[mailbox.config.state[acc.account_id]] || mailbox.config.labels.live }}</p>
+                                    </div>
+                                    <button :id="index === 0 ? 'gate-inbox' : null" class="toggle" :class="{ on: isMailboxWatched(acc.account_id) }" role="switch" :aria-checked="isMailboxWatched(acc.account_id) ? 'true' : 'false'" :disabled="!!mailbox.busy || !mailbox.config.enabled" @click="setMailboxAccount(acc.account_id, !isMailboxWatched(acc.account_id))"></button>
+                                </div>
+                            </template>
+                        </bounded-list>
                     </div>
                 </div>
 
@@ -2612,18 +2799,22 @@
                             <div v-if="!mailbox.chats.length" class="empty-state" style="padding:28px 16px;">
                                 <p>No chats on this screen. Opt an account in above, then use Refresh now.</p>
                             </div>
-                            <div v-else style="display:flex;flex-direction:column;gap:8px;max-height:520px;overflow:auto;">
-                                <button v-for="chat in mailbox.chats" :key="chat.ref" class="proxy-item" style="text-align:left;width:100%;cursor:pointer;" :style="{ borderColor: mailbox.ref === chat.ref ? 'var(--accent)' : 'var(--border)' }" @click="openMailboxChat(chat)">
-                                    <div class="proxy-info" style="flex:1;min-width:0;">
-                                        <h4 style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
-                                            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ chat.name }}</span>
-                                            <span class="badge badge-info">{{ mailboxBucketLabel(chat.bucket) }}</span>
-                                            <span v-if="chat.unread" class="pill ok">{{ chat.unread }}</span>
-                                        </h4>
-                                        <p class="muted small" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ chat.preview || (chat.outgoing ? 'You last wrote here' : 'No text') }}</p>
-                                        <p class="muted small mono">{{ shortAccountId(chat.account_id) }} · {{ mailboxTime(chat.time) }}</p>
-                                    </div>
-                                </button>
+                            <div v-else style="display:flex;flex-direction:column;gap:8px;">
+                                <bounded-list :items="mailbox.chats" :limit="12">
+                                    <template #default="{ items: shownChats }">
+                                        <button v-for="chat in shownChats" :key="chat.ref" class="proxy-item" style="text-align:left;width:100%;cursor:pointer;" :style="{ borderColor: mailbox.ref === chat.ref ? 'var(--accent)' : 'var(--border)' }" @click="openMailboxChat(chat)">
+                                            <div class="proxy-info" style="flex:1;min-width:0;">
+                                                <h4 style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+                                                    <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ chat.name }}</span>
+                                                    <span class="badge badge-info">{{ mailboxBucketLabel(chat.bucket) }}</span>
+                                                    <span v-if="chat.unread" class="pill ok">{{ chat.unread }}</span>
+                                                </h4>
+                                                <p class="muted small" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ chat.preview || (chat.outgoing ? 'You last wrote here' : 'No text') }}</p>
+                                                <p class="muted small mono">{{ shortAccountId(chat.account_id) }} · {{ mailboxTime(chat.time) }}</p>
+                                            </div>
+                                        </button>
+                                    </template>
+                                </bounded-list>
                             </div>
                         </div>
                         <div>
@@ -2657,7 +2848,10 @@
                 <div class="card">
                     <div class="card-header">
                         <h3>Knowledge base</h3>
-                        <span class="muted small">{{ knowledge.capacity.used }} / {{ knowledge.capacity.limit }} entries</span>
+                        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+                            <span class="muted small">{{ knowledge.capacity.used }} / {{ knowledge.capacity.limit }} entries</span>
+                            <button id="gate-knowledge" class="btn btn-sm btn-outline" @click="exportKnowledge" :disabled="!!knowledge.busy">{{ knowledge.busy === 'export' ? 'Preparing…' : 'Export ZIP' }}</button>
+                        </div>
                     </div>
                     <p class="muted small" style="margin-bottom:16px;">The notes the dashboard's own AI is allowed to read. Stored encrypted, scoped to you, and never holding a credential — anything that looks like a key, session string, phone number or password is masked on the way in.</p>
                     <p v-if="knowledge.loading" class="muted small">Loading knowledge base…</p>
@@ -2720,27 +2914,35 @@
                     </div>
                     <div v-if="knowledge.matches" class="card" style="background:rgba(0,0,0,0.2);margin-bottom:16px;">
                         <div v-if="!knowledge.matches.length" class="empty-state" style="padding:20px;"><p>No entry matched that search.</p></div>
-                        <div v-for="hit in knowledge.matches" :key="hit.id" style="margin-bottom:10px;">
-                            <p><strong>{{ hit.title }}</strong> <span class="badge badge-info">{{ hit.source }}</span> <span class="muted small">score {{ hit.score }}</span></p>
-                            <p class="muted small" style="white-space:pre-wrap;">{{ hit.preview }}</p>
-                        </div>
+                        <bounded-list v-else :items="knowledge.matches" :limit="10">
+                            <template #default="{ items: shownHits }">
+                                <div v-for="hit in shownHits" :key="hit.id" style="margin-bottom:10px;">
+                                    <p><strong>{{ hit.title }}</strong> <span class="badge badge-info">{{ hit.source }}</span> <span class="muted small">score {{ hit.score }}</span></p>
+                                    <p class="muted small" style="white-space:pre-wrap;">{{ hit.preview }}</p>
+                                </div>
+                            </template>
+                        </bounded-list>
                     </div>
                     <div v-if="!knowledge.documents.length" class="empty-state"><p>Nothing stored yet. Write a note above, or mark a Copilot draft as applied.</p></div>
                     <div v-else>
-                        <div v-for="doc in knowledge.documents" :key="doc.id" class="proxy-item" style="align-items:flex-start;">
-                            <div class="proxy-info" style="flex:1;">
-                                <h4>{{ doc.title }}
-                                    <span class="badge badge-info">{{ doc.source }}</span>
-                                    <span v-if="doc.masked" class="badge badge-warning">credential masked</span>
-                                </h4>
-                                <p style="white-space:pre-wrap;">{{ doc.preview }}<span v-if="doc.characters > doc.preview.length">…</span></p>
-                                <p class="muted small">{{ doc.characters }} characters · {{ doc.hits }} reads · {{ doc.updated || doc.created }}<span v-if="doc.tags.length"> · {{ doc.tags.join(', ') }}</span></p>
-                            </div>
-                            <div class="proxy-actions">
-                                <button class="btn btn-sm btn-outline" @click="startKnowledgeEdit(doc)" :disabled="!!knowledge.busy">Edit</button>
-                                <button class="btn btn-sm btn-danger" @click="deleteKnowledgeDocument(doc)" :disabled="!!knowledge.busy">Delete</button>
-                            </div>
-                        </div>
+                        <bounded-list :items="knowledge.documents" :limit="10">
+                            <template #default="{ items: shownDocs }">
+                                <div v-for="doc in shownDocs" :key="doc.id" class="proxy-item" style="align-items:flex-start;">
+                                    <div class="proxy-info" style="flex:1;">
+                                        <h4>{{ doc.title }}
+                                            <span class="badge badge-info">{{ doc.source }}</span>
+                                            <span v-if="doc.masked" class="badge badge-warning">credential masked</span>
+                                        </h4>
+                                        <p style="white-space:pre-wrap;">{{ doc.preview }}<span v-if="doc.characters > doc.preview.length">…</span></p>
+                                        <p class="muted small">{{ doc.characters }} characters · {{ doc.hits }} reads · {{ doc.updated || doc.created }}<span v-if="doc.tags.length"> · {{ doc.tags.join(', ') }}</span></p>
+                                    </div>
+                                    <div class="proxy-actions">
+                                        <button class="btn btn-sm btn-outline" @click="startKnowledgeEdit(doc)" :disabled="!!knowledge.busy">Edit</button>
+                                        <button class="btn btn-sm btn-danger" @click="deleteKnowledgeDocument(doc)" :disabled="!!knowledge.busy">Delete</button>
+                                    </div>
+                                </div>
+                            </template>
+                        </bounded-list>
                     </div>
                 </div>
 
@@ -2758,20 +2960,24 @@
                     <p v-else-if="patterns.detected_at" class="muted small" style="margin-bottom:14px;">Last detected {{ patterns.detected_at }}.</p>
                     <div v-if="!patterns.suggestions.length" class="empty-state"><p>{{ patterns.empty_detail || 'No repeated wording yet.' }}</p></div>
                     <div v-else>
-                        <div v-for="s in patterns.suggestions" :key="s.id" class="proxy-item" style="flex-direction:column;align-items:stretch;">
-                            <div style="margin-bottom:8px;">
-                                <h4>{{ s.title }}
-                                    <span class="badge badge-info">{{ s.kind }}</span>
-                                    <span class="muted small">seen {{ s.count }} times · {{ s.sources.join(', ') }}</span>
-                                </h4>
-                                <p style="white-space:pre-wrap;margin-top:6px;">{{ s.text }}</p>
-                                <p v-if="s.evidence?.length" class="muted small" style="margin-top:6px;">Evidence: <span v-for="(e, i) in s.evidence" :key="i">“{{ e }}”{{ i < s.evidence.length - 1 ? ' · ' : '' }}</span></p>
-                            </div>
-                            <div class="proxy-actions">
-                                <button class="btn btn-sm btn-primary" @click="acceptPattern(s)" :disabled="patterns.busy === s.id">{{ s.kind === 'template' ? 'Save template' : (s.kind === 'reply' ? 'Save rule (off)' : (s.kind === 'task' ? 'Open BulkSend' : 'Open Copilot')) }}</button>
-                                <button class="btn btn-sm btn-outline" @click="dismissPattern(s)" :disabled="!!patterns.busy">Dismiss</button>
-                            </div>
-                        </div>
+                        <bounded-list :items="patterns.suggestions" :limit="8">
+                            <template #default="{ items: shownSuggestions }">
+                                <div v-for="s in shownSuggestions" :key="s.id" class="proxy-item" style="flex-direction:column;align-items:stretch;">
+                                    <div style="margin-bottom:8px;">
+                                        <h4>{{ s.title }}
+                                            <span class="badge badge-info">{{ s.kind }}</span>
+                                            <span class="muted small">seen {{ s.count }} times · {{ s.sources.join(', ') }}</span>
+                                        </h4>
+                                        <p style="white-space:pre-wrap;margin-top:6px;">{{ s.text }}</p>
+                                        <p v-if="s.evidence?.length" class="muted small" style="margin-top:6px;">Evidence: <span v-for="(e, i) in s.evidence" :key="i">“{{ e }}”{{ i < s.evidence.length - 1 ? ' · ' : '' }}</span></p>
+                                    </div>
+                                    <div class="proxy-actions">
+                                        <button class="btn btn-sm btn-primary" @click="acceptPattern(s)" :disabled="patterns.busy === s.id">{{ s.kind === 'template' ? 'Save template' : (s.kind === 'reply' ? 'Save rule (off)' : (s.kind === 'task' ? 'Open BulkSend' : 'Open Copilot')) }}</button>
+                                        <button class="btn btn-sm btn-outline" @click="dismissPattern(s)" :disabled="!!patterns.busy">Dismiss</button>
+                                    </div>
+                                </div>
+                            </template>
+                        </bounded-list>
                     </div>
                 </div>
             </div>
@@ -2860,30 +3066,34 @@
                     </div>
                     
                     <div v-else>
-                        <div v-for="(sch, i) in schedules" :key="i" class="proxy-item">
-                            <div class="proxy-info" style="flex: 1;">
-                                <h4>
-                                    {{ sch.name }}
-                                    <span class="badge" :class="sch.enabled ? 'badge-success' : 'badge-danger'">
-                                        {{ sch.enabled ? 'Enabled' : 'Paused' }}
-                                    </span>
-                                </h4>
-                                <p>{{ getScheduleDescription(sch) }}</p>
-                                <p style="margin-top: 5px;">
-                                    <span class="badge badge-info">{{ sch.cron || sch.time }}</span>
-                                    <span style="margin-left: 10px; color: var(--text-dim);">Account: {{ sch.accounts?.join(', ') || sch.account_ids?.join(', ') || 'All' }}</span>
-                                </p>
-                                <p v-if="sch.lastRun" style="font-size: 12px; color: var(--text-dim); margin-top: 5px;">
-                                    Last run: {{ formatTime(sch.lastRun) }}
-                                </p>
-                            </div>
-                            <div class="proxy-actions">
-                                <button class="btn btn-sm" :class="sch.enabled ? 'btn-warning' : 'btn-success'" @click="toggleSchedule(i)">
-                                    {{ sch.enabled ? 'Disable' : 'Enable' }}
-                                </button>
-                                <button class="btn btn-sm btn-danger" @click="deleteSchedule(i)">Delete</button>
-                            </div>
-                        </div>
+                        <bounded-list :items="schedules" :limit="10">
+                            <template #default="{ items: shownSchedules }">
+                                <div v-for="(sch, i) in shownSchedules" :key="i" class="proxy-item">
+                                    <div class="proxy-info" style="flex: 1;">
+                                        <h4>
+                                            {{ sch.name }}
+                                            <span class="badge" :class="sch.enabled ? 'badge-success' : 'badge-danger'">
+                                                {{ sch.enabled ? 'Enabled' : 'Paused' }}
+                                            </span>
+                                        </h4>
+                                        <p>{{ getScheduleDescription(sch) }}</p>
+                                        <p style="margin-top: 5px;">
+                                            <span class="badge badge-info">{{ sch.cron || sch.time }}</span>
+                                            <span style="margin-left: 10px; color: var(--text-dim);">Account: {{ sch.accounts?.join(', ') || sch.account_ids?.join(', ') || 'All' }}</span>
+                                        </p>
+                                        <p v-if="sch.lastRun" style="font-size: 12px; color: var(--text-dim); margin-top: 5px;">
+                                            Last run: {{ formatTime(sch.lastRun) }}
+                                        </p>
+                                    </div>
+                                    <div class="proxy-actions">
+                                        <button class="btn btn-sm" :class="sch.enabled ? 'btn-warning' : 'btn-success'" @click="toggleSchedule(i)">
+                                            {{ sch.enabled ? 'Disable' : 'Enable' }}
+                                        </button>
+                                        <button class="btn btn-sm btn-danger" @click="deleteSchedule(i)">Delete</button>
+                                    </div>
+                                </div>
+                            </template>
+                        </bounded-list>
                     </div>
                 </div>
 
@@ -2967,7 +3177,7 @@
                         </select>
                         <small>Uses Telegram's visible last-seen status. Unknown activity is excluded when filtering; an approximate month does not qualify for 15 days.</small>
                     </div>
-                    <button class="btn btn-primary" @click="runScraper" :disabled="scraper.loading || !scraper.accountId || !scraper.target">
+                    <button id="gate-scraper" class="btn btn-primary" @click="runScraper" :disabled="scraper.loading || !scraper.accountId || !scraper.target">
                         {{ scraper.loading ? 'Scraping…' : 'Scrape members' }}
                     </button>
                     <p v-if="scraper.summary" style="margin-top: 12px;">{{ scraper.summary }}</p>
@@ -3165,7 +3375,7 @@
                         <label><input type="checkbox" v-model="adder.consentConfirmed"> I confirm these recipients agreed to join this destination, and I authorize this job using the selected account.</label>
                         <small>Only confirmed recipients are processed. Telegram permissions and cooldowns still apply. Missing users are skipped; account or destination problems pause the job.</small>
                     </div>
-                    <button class="btn btn-primary" @click="runAdder" :disabled="adder.loading || (adder.rotationMode === 'single' ? !adder.accountId : !adder.accountIds.length) || !adder.destTarget || !adder.usernames.trim()">
+                    <button id="gate-adder" class="btn btn-primary" @click="runAdder" :disabled="adder.loading || (adder.rotationMode === 'single' ? !adder.accountId : !adder.accountIds.length) || !adder.destTarget || !adder.usernames.trim()">
                         {{ adder.loading ? 'Submitting...' : 'Start Member Adder' }}
                     </button>
 
@@ -3270,7 +3480,7 @@
                         </div>
 
                     </div>
-                    <button class="btn btn-primary" @click="runBulkSend" :disabled="bulksend.loading || (bulksend.rotationMode === 'single' ? !bulksend.accountId : !bulksend.accountIds.length) || (!bulksend.message && !Object.keys(bulksend.messages).length) || !bulksend.targets">
+                    <button id="gate-bulksend" class="btn btn-primary" @click="runBulkSend" :disabled="bulksend.loading || (bulksend.rotationMode === 'single' ? !bulksend.accountId : !bulksend.accountIds.length) || (!bulksend.message && !Object.keys(bulksend.messages).length) || !bulksend.targets">
                         {{ bulksend.loading ? 'Submitting...' : 'Start BulkSend' }}
                     </button>
 
@@ -3279,9 +3489,13 @@
                         <span>{{ bulksend.resultMsg }}</span>
                     </div>
                     <ul v-if="bulksend.results.length" style="margin-top: 12px; padding-left: 20px;">
-                        <li v-for="(result, index) in bulksend.results" :key="index">
-                            {{ result.target }} · {{ result.account_id }} · {{ result.success ? 'Sent' : (result.skipped || result.error || 'Failed') }}
-                        </li>
+                        <bounded-list :items="bulksend.results" :limit="25">
+                            <template #default="{ items: shownResults }">
+                                <li v-for="(result, index) in shownResults" :key="index">
+                                    {{ result.target }} · {{ result.account_id }} · {{ result.success ? 'Sent' : (result.skipped || result.error || 'Failed') }}
+                                </li>
+                            </template>
+                        </bounded-list>
                     </ul>
                 </div>
             </div>
@@ -3342,7 +3556,7 @@
                             <input class="form-control" type="number" v-model.number="autojoin.limit" min="1" max="50" step="1">
                         </div>
                     </div>
-                    <button class="btn btn-primary" @click="runAutoJoin" :disabled="autojoin.loading || (autojoin.rotationMode === 'single' ? !autojoin.accountId : !autojoin.accountIds.length) || !autojoinLinks.length">
+                    <button id="gate-autojoin" class="btn btn-primary" @click="runAutoJoin" :disabled="autojoin.loading || (autojoin.rotationMode === 'single' ? !autojoin.accountId : !autojoin.accountIds.length) || !autojoinLinks.length">
                         {{ autojoin.loading ? 'Joining...' : 'Start Auto Join' }}
                     </button>
 
@@ -3357,31 +3571,33 @@
                 <div class="card-header"><h3>Progress tracker</h3><button class="btn btn-outline" @click="loadOutreachJobs" :disabled="outreachJobsLoading">Refresh</button></div>
                 <p>Worker: {{ outreachWorker || 'Checking' }}. Jobs continue while this browser is closed and refresh every 2 seconds. Pause or Stop prevents the next operation; an in-flight operation may finish.</p>
                 <p v-if="outreachJobError" role="alert">{{ outreachJobError }}</p>
-                <p v-if="!progressJobs.length">No {{ tab === 'autojoin' ? 'Auto Join' : (tab === 'adder' ? 'member add' : 'message send') }} jobs yet.</p>
-                <details v-for="job in progressJobs" :key="job.id" :open="jobIsActive(job)" style="padding:12px 0;border-top:1px solid #555;overflow-wrap:anywhere;">
-                    <summary style="cursor:pointer;">
-                        <strong>{{ jobStateLabel(job) }} · {{ job.id.slice(0,8) }}</strong>
-                        <span class="muted small"> · {{ job.kind === 'auto_join' ? 'Auto Join' : (job.kind === 'member_add' ? 'Member add' : 'Message send') }} · {{ job.completed + job.skipped + job.failed + job.uncertain }}/{{ job.total }}</span>
-                    </summary>
-                    <p style="margin-top:8px;">{{ job.reason === 'operator_resume' && job.retry_after > 0 ? 'Resumed; waiting for the next eligible attempt' : job.reason ? outreachReason(job.reason) : (job.state === 'completed' ? 'Finished processing this list' : (job.kind === 'auto_join' ? 'Joining links from the selected accounts' : 'Processing consenting recipients')) }}</p>
-                    <progress :value="job.completed + job.skipped + job.failed + job.uncertain" :max="job.total || 1" style="width:100%;"></progress>
-                    <p aria-live="polite">Total {{ job.total }} · {{ jobCountLabel(job) }} {{ job.completed }} · Pending {{ job.pending }} · In flight {{ job.in_flight }} · Skipped {{ job.skipped }} · Failed {{ job.failed }}<template v-if="job.kind !== 'auto_join'"> · Uncertain {{ job.uncertain }}</template></p>
-                    <p class="muted small" style="margin-top:4px;">Created {{ jobStamp(job.created) }} · Started {{ jobStamp(job.started) }} · Finished {{ jobStamp(job.finished) }}<template v-if="job.started"> · Elapsed {{ outreachDuration(jobElapsed(job)) }}</template></p>
-                    <p v-if="job.next_account_id && ['queued','running','waiting','paused'].includes(job.state)">Assigned account: {{ job.next_account_id }}</p>
-                    <p v-if="job.retry_after > 0 && ['queued','running','waiting'].includes(job.state)">Next eligible attempt in {{ outreachDuration(job.retry_after) }}<span v-if="job.retry_at"> · {{ outreachRetryTime(job.retry_at) }} (your local time)</span>. Updates every 2 seconds.</p>
-                    <p v-if="job.reason === 'telegram_cooldown' && job.state === 'running'">A selected account is in a Telegram cooldown. Remaining work on the other available accounts keeps going automatically; work pinned to the limited account resumes once its cooldown ends. No click is needed.</p>
-                    <p v-if="job.reason === 'telegram_cooldown' && ['queued','waiting'].includes(job.state)">Every selected account is in a Telegram cooldown, so the job waits automatically and resumes after the soonest one clears; no click is needed. Pause, Resume, or a new job cannot shorten Telegram's wait.</p>
-                    <p v-if="job.state === 'paused'">Paused. Resume is required to continue; any remaining Telegram cooldown still applies.</p>
-                    <div style="display:flex;flex-wrap:wrap;gap:8px;margin:10px 0;">
-                        <button v-if="['queued','running','waiting'].includes(job.state)" class="btn btn-outline" @click="controlOutreachJob(job, 'pause')" :disabled="!!outreachJobBusy">Pause</button>
-                        <button v-if="job.state === 'paused'" class="btn btn-primary" @click="controlOutreachJob(job, 'resume')" :disabled="!!outreachJobBusy">Resume</button>
-                        <button v-if="['queued','running','waiting','paused'].includes(job.state)" class="btn btn-danger" @click="controlOutreachJob(job, 'stop')" :disabled="!!outreachJobBusy">Stop</button>
-                    </div>
-                    <p v-if="job.state === 'needs_review'">Delivery is uncertain. Check Telegram before creating another job; automatic retry is disabled.</p>
-                    <details><summary>{{ job.kind === 'auto_join' ? 'Link history' : 'Recipient history' }} (latest 100)</summary>
-                        <ul><li v-for="(result,index) in job.results" :key="index">{{ result.target }} · {{ result.account_id }} · {{ result.state }} · {{ outreachReason(result.reason) }}</li></ul>
-                    </details>
-                </details>
+                <record-list :items="progressJobs" :key-of="job => job.id"
+                             :label="job => (job.kind === 'auto_join' ? 'Auto Join' : (job.kind === 'member_add' ? 'Member add' : 'Message send')) + ' · ' + job.id.slice(0,8) + ' · ' + (job.completed + job.skipped + job.failed + job.uncertain) + '/' + job.total"
+                             :state="jobStateLabel" :state-class="jobStateBadge"
+                             :open-when="jobIsActive" :limit="5"
+                             :empty="'No ' + (tab === 'autojoin' ? 'Auto Join' : (tab === 'adder' ? 'member add' : 'message send')) + ' jobs yet.'">
+                    <template #default="{ item: job }">
+                        <p>{{ job.reason === 'operator_resume' && job.retry_after > 0 ? 'Resumed; waiting for the next eligible attempt' : job.reason ? outreachReason(job.reason) : (job.state === 'completed' ? 'Finished processing this list' : (job.kind === 'auto_join' ? 'Joining links from the selected accounts' : 'Processing consenting recipients')) }}</p>
+                        <progress :value="job.completed + job.skipped + job.failed + job.uncertain" :max="job.total || 1" style="width:100%;"></progress>
+                        <p aria-live="polite">Total {{ job.total }} · {{ jobCountLabel(job) }} {{ job.completed }} · Pending {{ job.pending }} · In flight {{ job.in_flight }} · Skipped {{ job.skipped }} · Failed {{ job.failed }}<template v-if="job.kind !== 'auto_join'"> · Uncertain {{ job.uncertain }}</template></p>
+                        <p class="muted small" style="margin-top:4px;">Created {{ jobStamp(job.created) }} · Started {{ jobStamp(job.started) }} · Finished {{ jobStamp(job.finished) }}<template v-if="job.started"> · Elapsed {{ outreachDuration(jobElapsed(job)) }}</template></p>
+                        <p v-if="job.next_account_id && ['queued','running','waiting','paused'].includes(job.state)">Assigned account: {{ job.next_account_id }}</p>
+                        <p v-if="job.retry_after > 0 && ['queued','running','waiting'].includes(job.state)">Next eligible attempt in {{ outreachDuration(job.retry_after) }}<span v-if="job.retry_at"> · {{ outreachRetryTime(job.retry_at) }} (your local time)</span>. Updates every 2 seconds.</p>
+                        <p v-if="job.reason === 'telegram_cooldown' && job.state === 'running'">A selected account is in a Telegram cooldown. Remaining work on the other available accounts keeps going automatically; work pinned to the limited account resumes once its cooldown ends. No click is needed.</p>
+                        <p v-if="job.reason === 'telegram_cooldown' && ['queued','waiting'].includes(job.state)">Every selected account is in a Telegram cooldown, so the job waits automatically and resumes after the soonest one clears; no click is needed. Pause, Resume, or a new job cannot shorten Telegram's wait.</p>
+                        <p v-if="job.state === 'paused'">Paused. Resume is required to continue; any remaining Telegram cooldown still applies.</p>
+                        <div style="display:flex;flex-wrap:wrap;gap:8px;margin:10px 0;">
+                            <button v-if="['queued','running','waiting'].includes(job.state)" class="btn btn-outline" @click="controlOutreachJob(job, 'pause')" :disabled="!!outreachJobBusy">Pause</button>
+                            <button v-if="job.state === 'paused'" class="btn btn-primary" @click="controlOutreachJob(job, 'resume')" :disabled="!!outreachJobBusy">Resume</button>
+                            <button v-if="['queued','running','waiting','paused'].includes(job.state)" class="btn btn-danger" @click="controlOutreachJob(job, 'stop')" :disabled="!!outreachJobBusy">Stop</button>
+                        </div>
+                        <p v-if="job.state === 'needs_review'">Delivery is uncertain. Check Telegram before creating another job; automatic retry is disabled.</p>
+                        <details><summary>{{ job.kind === 'auto_join' ? 'Link history' : 'Recipient history' }} (latest 100)</summary>
+                            <ul><li v-for="(result,index) in job.results.slice(0, 100)" :key="index">{{ result.target }} · {{ result.account_id }} · {{ result.state }} · {{ outreachReason(result.reason) }}</li></ul>
+                            <p v-if="job.results.length > 100" class="muted small">Showing the first 100 of {{ job.results.length }}.</p>
+                        </details>
+                    </template>
+                </record-list>
             </div>
 
             <!-- ============ Account Factory ============ -->
@@ -3424,7 +3640,7 @@
                                 <input class="form-control" type="number" min="1" max="120" step="1" v-model="automation.otpAttempts" :disabled="automation.running">
                             </div>
                         </div>
-                        <button class="btn btn-primary" @click="runAutomation" :disabled="automation.running || automation.status.cooldown_remaining > 0">
+                        <button id="gate-factory" class="btn btn-primary" @click="runAutomation" :disabled="automation.running || automation.status.cooldown_remaining > 0">
                             <app-icon name="factory" :size="16"></app-icon>
                             {{ automation.running ? 'Starting…' : (automation.status.cooldown_remaining > 0 ? 'Ready again in ' + automation.status.cooldown_remaining + 's' : 'Run account factory') }}
                         </button>
@@ -3451,7 +3667,7 @@
                     <table>
                         <thead><tr><th>Run</th><th>Requested</th><th>Max price</th><th>Status</th></tr></thead>
                         <tbody>
-                            <tr v-for="run in automation.status.runs" :key="run.run_id">
+                            <tr v-for="run in visibleRows(automation.status.runs, 'automationRuns', 12)" :key="run.run_id">
                                 <td class="mono">{{ run.run_id.slice(0, 12) }}…</td>
                                 <td>{{ formatTime(run.requested_at) }}</td>
                                 <td>{{ run.max_price != null ? '$' + run.max_price : 'default' }}</td>
@@ -3459,6 +3675,9 @@
                                     <span class="badge" :class="run.status === 'accepted' ? 'badge-success' : 'badge-danger'">{{ run.status }}</span>
                                     <small v-if="run.error" style="display:block;color:var(--danger);margin-top:4px;">{{ run.error }}</small>
                                 </td>
+                            </tr>
+                            <tr v-if="automation.status.runs.length > 12">
+                                <td colspan="4"><button type="button" class="btn btn-sm btn-outline record-more" @click="toggleRows('automationRuns')">{{ expandedRows.automationRuns ? 'Show fewer' : 'Show all (' + automation.status.runs.length + ')' }}</button></td>
                             </tr>
                         </tbody>
                     </table>
@@ -4227,6 +4446,68 @@
             }
         }
 
+        const RecordList = {
+            props: {
+                items: { type: Array, default: () => [] },
+                label: { type: Function, required: true },
+                state: { type: Function, default: null },
+                stateClass: { type: [Function, String], default: null },
+                keyOf: { type: Function, default: null },
+                limit: { type: Number, default: 8 },
+                openWhen: { type: Function, default: null },
+                empty: { type: String, default: 'Nothing here yet.' }
+            },
+            data() { return { expanded: false } },
+            computed: {
+                visible() {
+                    if (this.expanded) return this.items
+                    const head = this.items.slice(0, this.limit)
+                    if (!this.openWhen) return head
+                    const rest = this.items.slice(this.limit).filter((item, i) => this.openWhen(item, i + this.limit))
+                    return head.concat(rest)
+                }
+            },
+            methods: {
+                rowKey(item, index) { return this.keyOf ? this.keyOf(item) : index },
+                isOpen(item, index) { return this.openWhen ? !!this.openWhen(item, index) : false },
+                badge(state) { return typeof this.stateClass === 'function' ? this.stateClass(state) : (this.stateClass || 'badge-info') }
+            },
+            template: `
+                <div class="record-list">
+                    <div v-if="!items.length" class="empty-state"><p>{{ empty }}</p></div>
+                    <template v-else>
+                        <details v-for="(item, index) in visible" :key="rowKey(item, index)" class="record-row" :open="isOpen(item, index)">
+                            <summary>
+                                <span class="record-title">{{ label(item) }}</span>
+                                <span v-if="state && state(item)" class="badge" :class="badge(state(item))">{{ state(item) }}</span>
+                            </summary>
+                            <div class="record-body"><slot :item="item" :index="index"></slot></div>
+                        </details>
+                        <button v-if="items.length > limit" type="button" class="btn btn-sm btn-outline record-more" @click="expanded = !expanded">
+                            {{ expanded ? 'Show less' : 'Show all (' + items.length + ')' }}
+                        </button>
+                    </template>
+                </div>`
+        }
+
+        const BoundedList = {
+            props: {
+                items: { type: Array, default: () => [] },
+                limit: { type: Number, default: 10 }
+            },
+            data() { return { expanded: false } },
+            computed: {
+                visible() { return this.expanded ? this.items : this.items.slice(0, this.limit) }
+            },
+            template: `
+                <div class="bounded-list">
+                    <slot :items="visible"></slot>
+                    <button v-if="items.length > limit" type="button" class="btn btn-sm btn-outline record-more" @click="expanded = !expanded">
+                        {{ expanded ? 'Show fewer' : 'Show all (' + items.length + ')' }}
+                    </button>
+                </div>`
+        }
+
         const app = createApp({
             data() {
                 return {
@@ -4261,6 +4542,7 @@
                     liveStatus: 'Connecting',
                     // App state
                     tab: 'overview',
+                    expandedRows: {},
                     sidebarCollapsed: false,
                     sidebarOpen: false,
                     sidebarWidth: 248,
@@ -4591,11 +4873,13 @@
                     exportAllData: '',
 
                     // Copilot (draft-only: never sends)
-                    copilot: { instruction: '', loading: false, draft: null, presets: [], error: '', turnId: '', history: [] },
+                    copilot: { instruction: '', loading: false, draft: null, presets: [], error: '', turnId: '', history: [],
+                               editing: '', saving: false, formError: '',
+                               form: { group: '', title: '', description: '', instruction: '', command: '' } },
 
                     // Auto Reply (inbound; answers only private chats that spoke first)
                     autoReply: {
-                        loading: false, saving: false, busy: '', error: '', message: '',
+                        loading: false, saving: false, busy: '', error: '', message: '', pending: null,
                         config: null, ruleForm: { name: '', match: 'keyword', keywords: '', reply: '', enabled: true },
                         editingRule: '', test: { text: '', name: '', result: null, busy: false },
                     },
@@ -4948,7 +5232,11 @@
                     if (tab === 'cloudphone') this.loadRecovery()
                     if (tab === 'cloudbrowser') this.loadCloudBrowser()
                     else this.stopCloudBrowserStream()
-                    if (tab === 'inbox') { this.loadMailbox(); this.startMailboxStream() }
+                    if (tab === 'inbox') {
+                        // The stream needs to know the switch is on, and that only arrives with
+                        // the config - so open the live inbox after the load, never beside it.
+                        this.loadMailbox().then(() => { if (this.tab === 'inbox') this.startMailboxStream() })
+                    }
                     else this.stopMailboxStream()
                     if (tab === 'scraper' || tab === 'adder') this.loadGroups(tab)
                     if (tab === 'schedule') this.loadSchedules()
@@ -5202,6 +5490,16 @@
                 },
                 jobStateLabel(job) {
                     return job.state === 'queued' && job.retry_after > 0 ? 'waiting' : job.state;
+                },
+                jobStateBadge(job) {
+                    return job.state === 'completed' ? 'badge-success' : (['failed', 'needs_review'].includes(job.state) ? 'badge-danger' : 'badge-info');
+                },
+                visibleRows(list, key, limit) {
+                    const items = list || [];
+                    return this.expandedRows[key] ? items : items.slice(0, limit);
+                },
+                toggleRows(key) {
+                    this.expandedRows[key] = !this.expandedRows[key];
                 },
                 jobCountLabel(job) {
                     return job.kind === 'auto_join' ? 'Joined' : (job.kind === 'member_add' ? 'Added' : 'Sent');
@@ -8075,15 +8373,135 @@
                     this.proxyPasswordVisible = newState
                 },
 
-                // Copilot (draft only — every apply path stops at a form gate)
+                // Copilot (internal commands plus prefilled forms — operational gates stay with the operator)
                 async loadCopilot() {
-                    if (this.copilot.presets.length) return
+                    return this.loadCopilotPresets()
+                },
+
+                async loadCopilotPresets(force = false) {
+                    if (this.copilot.presets.length && !force) return
                     try {
-                        const res = await _api.post('/api/copilot/draft', { instruction: '' })
-                        this.copilot.presets = res.data.presets || []
+                        const { data } = await _api.get('/api/copilot/presets')
+                        this.copilot.presets = data.presets || []
                         this.copilot.error = ''
                     } catch (e) {
                         this.copilot.error = e.response?.data?.detail || 'Could not load Copilot presets.'
+                    }
+                },
+
+                copilotApplyLabel() {
+                    const action = this.copilot.draft?.action
+                    if (action === 'template') return 'Save template'
+                    if (action === 'schedule') return 'Prefill schedule'
+                    if (action === 'task') return 'Prefill BulkSend'
+                    if (action === 'ops') return 'Open ' + (this.copilot.draft.payload?.tab || 'form')
+                    return 'Apply draft'
+                },
+
+                copilotOutcomeBadge(outcome) {
+                    if (outcome === 'applied') return 'badge-success'
+                    if (outcome === 'discarded') return 'badge-normal'
+                    return 'badge-info'
+                },
+
+                async runCopilotPreset(preset) {
+                    if (!preset?.id || this.copilot.loading) return
+                    this.copilot.loading = true
+                    this.copilot.error = ''
+                    try {
+                        const { data } = await _api.post('/api/copilot/preset-draft', {
+                            preset_id: preset.id,
+                            instruction: preset.instruction || ''
+                        })
+                        this.copilot.draft = data.draft || null
+                        this.copilot.turnId = data.turn_id || ''
+                        if (data.presets) this.copilot.presets = data.presets
+                        this.loadCopilotHistory()
+                    } catch (e) {
+                        this.copilot.draft = null
+                        this.copilot.turnId = ''
+                        this.copilot.error = e.response?.data?.detail || 'Could not use that preset.'
+                    }
+                    this.copilot.loading = false
+                },
+
+                newCopilotPreset() {
+                    this.copilot.editing = 'new'
+                    this.copilot.formError = ''
+                    this.copilot.form = { group: '', title: '', description: '', instruction: '', command: '' }
+                },
+
+                editCopilotPreset(preset) {
+                    if (!preset?.id) return
+                    this.copilot.editing = preset.id
+                    this.copilot.formError = ''
+                    this.copilot.form = {
+                        group: preset.group || '',
+                        title: preset.title || '',
+                        description: preset.description || '',
+                        instruction: preset.instruction || '',
+                        command: preset.command || ''
+                    }
+                },
+
+                cancelCopilotPresetEdit() {
+                    this.copilot.editing = ''
+                    this.copilot.formError = ''
+                    this.copilot.form = { group: '', title: '', description: '', instruction: '', command: '' }
+                },
+
+                async saveCopilotPreset() {
+                    const form = this.copilot.form
+                    if (!form.title.trim() || !form.instruction.trim()) {
+                        this.copilot.formError = 'A preset needs a title and an instruction.'
+                        return
+                    }
+                    const body = {
+                        group: form.group.trim(),
+                        title: form.title.trim(),
+                        description: form.description.trim(),
+                        instruction: form.instruction.trim()
+                    }
+                    const adding = this.copilot.editing === 'new'
+                    if (adding && form.command) {
+                        body.kind = 'command'
+                        body.command = form.command
+                    }
+                    this.copilot.saving = true
+                    this.copilot.formError = ''
+                    try {
+                        const url = adding ? '/api/copilot/presets' : `/api/copilot/presets/${encodeURIComponent(this.copilot.editing)}`
+                        const { data } = adding ? await _api.post(url, body) : await _api.put(url, body)
+                        this.copilot.presets = data.presets || []
+                        this.cancelCopilotPresetEdit()
+                        this.showToast(adding ? 'Preset added.' : 'Preset updated.')
+                    } catch (e) {
+                        this.copilot.formError = e.response?.data?.detail || 'Could not save the preset.'
+                    }
+                    this.copilot.saving = false
+                },
+
+                async deleteCopilotPreset(preset) {
+                    if (!preset?.id || !window.confirm(`Remove “${preset.title}” from your presets?`)) return
+                    try {
+                        const { data } = await _api.delete(`/api/copilot/presets/${encodeURIComponent(preset.id)}`)
+                        this.copilot.presets = data.presets || []
+                        if (this.copilot.editing === preset.id) this.cancelCopilotPresetEdit()
+                        this.showToast('Preset removed.')
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not remove the preset.', true)
+                    }
+                },
+
+                async resetCopilotPresets() {
+                    if (!window.confirm('Restore the shipped presets? Your custom presets and edits will be removed.')) return
+                    try {
+                        const { data } = await _api.post('/api/copilot/presets/reset', {})
+                        this.copilot.presets = data.presets || []
+                        this.cancelCopilotPresetEdit()
+                        this.showToast('Presets restored.')
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not reset the presets.', true)
                     }
                 },
 
@@ -8106,8 +8524,7 @@
                 },
 
                 useCopilotPreset(preset) {
-                    this.copilot.instruction = preset.instruction
-                    return this.draftCopilot()
+                    return this.runCopilotPreset(preset)
                 },
 
                 clearCopilot() {
@@ -8186,6 +8603,46 @@
                         return
                     }
 
+                    if (draft.action === 'ops') {
+                        const fields = payload.fields || {}
+                        const forms = {
+                            scraper: ['scraper', { limit: 'limit' }],
+                            adder: ['adder', { delay: 'delay' }],
+                            autojoin: ['autojoin', { limit: 'limit', delay: 'delay' }],
+                            bulksend: ['bulksend', { delay: 'delay', perAccountLimit: 'perAccountLimit' }],
+                            factory: ['automation', { maxPrice: 'maxPrice', otpAttempts: 'otpAttempts' }],
+                            automation: [null, {}],
+                            knowledge: [null, {}],
+                            inbox: [null, {}]
+                        }
+                        const surface = payload.surface
+                        if (surface === 'autoreply') {
+                            const pending = {}
+                            if (fields.poll !== undefined) pending.poll_seconds = fields.poll
+                            if (fields.cap !== undefined) pending.daily_cap = fields.cap
+                            if (fields.mode !== undefined) pending.mode = fields.mode
+                            this.autoReply.pending = pending
+                            this.autoReply.config = { ...(this.autoReply.config || {}), ...pending }
+                        } else {
+                            const form = forms[surface]
+                            if (!form) {
+                                this.showToast('This form is not available.', true)
+                                return
+                            }
+                            const [stateKey, fieldMap] = form
+                            if (stateKey) {
+                                for (const [input, output] of Object.entries(fieldMap)) {
+                                    if (fields[input] !== undefined) this[stateKey][output] = fields[input]
+                                }
+                            }
+                        }
+                        if (surface === 'adder' || surface === 'bulksend') this[surface].consentConfirmed = false
+                        this.go(surface)
+                        this.$nextTick(() => document.getElementById(payload.gate)?.focus())
+                        this.showToast(`Form prefilled. Review it and press ${payload.gate_label}.`)
+                        return
+                    }
+
                     this.showToast('This draft has nothing to apply.')
                 },
 
@@ -8226,7 +8683,8 @@
                     this.autoReply.loading = true
                     try {
                         const { data } = await _api.get('/api/auto-reply/config')
-                        this.autoReply.config = data.config
+                        this.autoReply.config = { ...data.config, ...(this.autoReply.pending || {}) }
+                        this.autoReply.pending = null
                         this.autoReply.error = ''
                     } catch (e) {
                         this.autoReply.config = null
@@ -8542,6 +9000,26 @@
                         this.showToast(`Removed ${data.removed} entry(ies).`)
                     } catch (e) {
                         this.showToast(e.response?.data?.detail || 'Could not clear the knowledge base.', true)
+                    } finally {
+                        this.knowledge.busy = ''
+                    }
+                },
+
+                async exportKnowledge() {
+                    this.knowledge.busy = 'export'
+                    try {
+                        const response = await _api.get('/api/knowledge/export', { responseType: 'blob', timeout: 60000 })
+                        const href = URL.createObjectURL(response.data)
+                        const link = document.createElement('a')
+                        const disposition = response.headers?.['content-disposition'] || ''
+                        const filename = /filename="?([^";]+)"?/.exec(disposition)?.[1]
+                        link.href = href
+                        link.download = filename || `knowledge-${new Date().toISOString().replaceAll(':', '-')}.zip`
+                        link.click()
+                        setTimeout(() => URL.revokeObjectURL(href), 1000)
+                        this.showToast('Knowledge base exported.')
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not export the knowledge base.', true)
                     } finally {
                         this.knowledge.busy = ''
                     }
@@ -8924,6 +9402,8 @@
             }
         })
         app.component('app-icon', AppIcon)
+        app.component('record-list', RecordList)
+        app.component('bounded-list', BoundedList)
         app.mount('#app')
             // The app has mounted and replaced #app; drop the plain loading screen.
             if (typeof document !== 'undefined') {
