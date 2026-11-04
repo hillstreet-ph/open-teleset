@@ -72,3 +72,9 @@ Real `<table>`s cannot take a `display: contents` wrapper, so they use the same 
 When you add a panel that lists records, use one of these rather than a `v-for` over the
 whole array, and do not put a fixed-height scroll box around it — the bounded head is the
 mechanism, and a nested scrollbar is what this replaced.
+
+Pickers and transcripts are the exception, and there are exactly five left: the rotation
+account checkboxes on Adder, BulkSend and Auto Join, the scraped-contacts multi-select, and
+the message thread inside an open inbox chat. They sit in a `max-height` viewport of their
+own, so they can never lengthen the page, and collapsing a checkbox you are mid-selection on
+would be worse than scrolling it.
