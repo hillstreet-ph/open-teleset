@@ -54,6 +54,10 @@ goes out through the same Telethon session as any message you send yourself, is 
 700 characters, and is refused with HTTP 409 if that person is on the opt-out ledger:
 "That person asked not to be messaged. The reply is blocked."
 
+The ledger is read before every send, and the read failing closed is also a 409: "The opt-out
+list could not be read, so nothing was sent. Check the outreach policy file." A reply is never
+sent on the assumption that nobody opted out.
+
 Nothing here sends by itself. An incoming message does not trigger a reply, an outgoing
 event does not count as a send, and the inbox has no rules engine — that is Auto Reply, a
 separate feature with its own switch and its own limits. A log line is only written when an
