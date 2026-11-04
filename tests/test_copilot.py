@@ -24,9 +24,9 @@ def test_template_instruction_extracts_name_and_content():
 
 @pytest.mark.parametrize("preset", copilot.PRESETS, ids=lambda item: item["id"])
 def test_every_preset_drafts_a_supported_action(preset):
-    draft = copilot.build_draft(preset["instruction"])
-    assert draft["action"] in {"template", "schedule", "task"}
-    assert draft["requires_confirmation"] is True
+    draft = copilot._preset_draft(preset)
+    assert draft["action"] in {"template", "schedule", "task", "ops", "run"}
+    assert draft["requires_confirmation"] is (draft["action"] != "run")
 
 
 def test_schedule_defaults_and_keeps_the_consent_gates():
@@ -120,13 +120,19 @@ def test_empty_instruction_returns_help_with_examples():
     assert draft["requires_confirmation"] is False
 
 
-def test_router_exposes_drafting_and_history_only():
+def test_router_exposes_drafting_history_and_the_preset_runbook():
     routes = sorted((route.path, tuple(sorted(route.methods))) for route in copilot.router.routes)
     assert routes == [
         ("/api/copilot/draft", ("POST",)),
         ("/api/copilot/history", ("DELETE",)),
         ("/api/copilot/history", ("GET",)),
         ("/api/copilot/history/{turn_id}/outcome", ("POST",)),
+        ("/api/copilot/preset-draft", ("POST",)),
+        ("/api/copilot/presets", ("GET",)),
+        ("/api/copilot/presets", ("POST",)),
+        ("/api/copilot/presets/reset", ("POST",)),
+        ("/api/copilot/presets/{preset_id}", ("DELETE",)),
+        ("/api/copilot/presets/{preset_id}", ("PUT",)),
     ]
 
 
@@ -295,3 +301,252 @@ def test_anonymous_requests_are_refused():
 
     assert client.post("/api/copilot/draft", json={"instruction": "hi"}).status_code == 403
     assert client.get("/api/copilot/history").status_code == 403
+
+
+# ============ the ops tier ============
+
+
+def test_free_text_opens_an_ops_surface_without_running_anything():
+    draft = copilot.build_draft("Collect the members of a group I already have access to.")
+
+    assert draft["action"] == "ops"
+    payload = draft["payload"]
+    assert payload["surface"] == "scraper"
+    assert payload["tab"] == "scraper"
+    assert payload["gate"] == "gate-scraper"
+    assert payload["fields"]["limit"] == 500
+    assert draft["requires_confirmation"] is True
+
+
+def test_the_ops_draft_carries_the_surface_note_as_a_warning():
+    draft = copilot.build_draft("Show the automation status.")
+
+    assert draft["action"] == "ops"
+    assert draft["payload"]["surface"] == "automation"
+    assert draft["warnings"]
+
+
+def test_the_copilot_tunes_a_field_only_inside_its_bounds():
+    draft = copilot.build_draft("Collect the members with a limit of 900.")
+    assert draft["payload"]["fields"]["limit"] == 900
+
+    capped = copilot.build_draft("Collect the members with a limit of 99999.")
+    assert capped["payload"]["fields"]["limit"] == 2000
+
+
+def test_the_member_adder_delay_never_drops_below_the_safety_floor():
+    draft = copilot._preset_draft(
+        {"kind": "ops", "surface": "adder", "title": "Add members who agreed",
+         "instruction": "Add the members who agreed with delay 5."}
+    )
+
+    assert draft["action"] == "ops"
+    assert draft["payload"]["fields"]["delay"] == 35
+
+
+def test_the_bulksend_preset_keeps_the_consent_gate_closed():
+    draft = copilot._preset_draft(
+        {"kind": "ops", "surface": "bulksend", "title": "Prepare an opt-in send",
+         "instruction": "Send an opt-in message to the recipients who agreed."}
+    )
+
+    assert draft["action"] == "ops"
+    assert draft["payload"]["fields"] == {"delay": 45, "perAccountLimit": 8}
+
+
+def test_the_adder_and_auto_join_surfaces_stay_unreachable_from_free_text():
+    # Their prose forms stay refused; only the curated preset opens them.
+    assert copilot.build_draft("Add the members who agreed to my group.")["action"] == "unsupported"
+    assert copilot.build_draft("Join the groups I list, one at a time.")["action"] == "unsupported"
+
+    adder = copilot._preset_draft(
+        {"kind": "ops", "surface": "adder", "title": "Add members",
+         "instruction": "Add the members who agreed."}
+    )
+    autojoin = copilot._preset_draft(
+        {"kind": "ops", "surface": "autojoin", "title": "Join groups",
+         "instruction": "Join the groups I list."}
+    )
+    assert adder["payload"]["surface"] == "adder"
+    assert autojoin["payload"]["surface"] == "autojoin"
+
+
+def test_the_account_factory_surface_only_opens_the_operators_own_form():
+    assert copilot.build_draft("Register Telegram accounts automatically.")["action"] == "unsupported"
+
+    draft = copilot.build_draft("Run the account factory.")
+    assert draft["action"] == "ops"
+    assert draft["payload"]["surface"] == "factory"
+    assert draft["payload"]["fields"]["maxPrice"] == 0.5
+    assert draft["requires_confirmation"] is True
+
+
+def test_the_ops_preset_route_prefills_and_stops_at_the_gate(client):
+    response = client.post("/api/copilot/preset-draft", json={"preset_id": "scraper-members"})
+
+    assert response.status_code == 200
+    draft = response.json()["draft"]
+    assert draft["action"] == "ops"
+    assert draft["payload"]["gate"] == "gate-scraper"
+    assert draft["payload"]["fields"]["limit"] == 500
+
+
+def test_an_unknown_preset_id_is_refused(client):
+    assert client.post("/api/copilot/preset-draft", json={"preset_id": "nope"}).status_code == 404
+
+
+# ============ the internal tier ============
+
+
+def test_a_note_is_stored_in_the_operator_own_knowledge_base(client):
+    response = client.post(
+        "/api/copilot/draft",
+        json={"instruction": "Remember: orders leave the warehouse within two working days."},
+    )
+
+    assert response.status_code == 200
+    draft = response.json()["draft"]
+    assert draft["action"] == "run"
+    assert draft["payload"]["command"] == "knowledge-note"
+    assert draft["result"]["stored"] is True
+
+    import knowledge
+    stored = knowledge.list_documents("operator-1")
+    assert any("warehouse" in doc["preview"] for doc in stored["documents"])
+
+
+def test_a_knowledge_search_ranks_the_operators_own_notes(client):
+    client.post("/api/copilot/draft", json={"instruction": "Remember: the refund policy is 30 days."})
+
+    response = client.post("/api/copilot/draft", json={"instruction": "Search my knowledge base for the refund policy."})
+
+    draft = response.json()["draft"]
+    assert draft["action"] == "run"
+    assert draft["payload"]["command"] == "knowledge-search"
+    assert draft["result"]["count"] >= 1
+
+
+def test_a_knowledge_search_with_no_match_returns_an_empty_result(client):
+    response = client.post("/api/copilot/draft", json={"instruction": "Search my knowledge base for the refund policy."})
+
+    draft = response.json()["draft"]
+    assert draft["action"] == "run"
+    assert draft["payload"]["command"] == "knowledge-search"
+    assert draft["result"]["count"] == 0
+
+
+def test_an_internal_command_without_its_needed_text_says_so():
+    draft = copilot._internal_draft("knowledge-note", {"text": ""})
+
+    assert draft["warnings"]
+    assert "note" in draft["warnings"][0].lower()
+
+
+def test_the_auto_reply_preview_never_sends(client, monkeypatch):
+    import auto_reply
+
+    auto_reply._save("operator-1", {
+        **auto_reply._blank(),
+        "rules": [{"id": "rule-1", "name": "Pricing", "match": "keyword", "keywords": ["cost"],
+                   "reply": "Our price is 10 USD", "enabled": True}],
+    })
+
+    response = client.post("/api/copilot/draft",
+                           json={"instruction": "Which rule would answer the message: how much does it cost?"})
+
+    draft = response.json()["draft"]
+    assert draft["action"] == "run"
+    assert draft["payload"]["command"] == "autoreply-test"
+    assert draft["result"]["matched"]["id"] == "rule-1"
+    assert draft["result"]["would_send"] is True
+
+
+def test_the_patterns_command_re_reads_the_notes(client):
+    response = client.post("/api/copilot/draft", json={"instruction": "Look for repeated wording in my notes."})
+
+    draft = response.json()["draft"]
+    assert draft["action"] == "run"
+    assert draft["payload"]["command"] == "patterns-refresh"
+    assert "suggestions" in draft["result"]
+
+
+# ============ the per-operator runbook ============
+
+
+def test_the_runbook_lists_the_shipped_presets_with_use_counts(client):
+    response = client.get("/api/copilot/presets")
+
+    assert response.status_code == 200
+    presets = response.json()["presets"]
+    assert presets
+    assert all(item["built_in"] is True for item in presets)
+    assert all(item["uses"] == 0 for item in presets)
+    assert {item["id"] for item in presets} >= {"scraper-members", "knowledge-note"}
+
+
+def test_a_built_in_preset_can_be_edited_by_the_operator(client):
+    response = client.put("/api/copilot/presets/scraper-members",
+                           json={"title": "Collect my group members",
+                                 "description": "Uses my usual limit."})
+
+    assert response.status_code == 200
+    presets = {item["id"]: item for item in response.json()["presets"]}
+    assert presets["scraper-members"]["title"] == "Collect my group members"
+    assert presets["scraper-members"]["modified"] is True
+    assert presets["scraper-members"]["instruction"].startswith("Collect the members")
+
+
+def test_the_operator_can_add_its_own_preset(client):
+    response = client.post("/api/copilot/presets", json={
+        "group": "Outreach",
+        "title": "My weekly check",
+        "description": "Runs my usual pace.",
+        "instruction": "Collect the members of a group I already have access to.",
+    })
+
+    assert response.status_code == 200
+    created = response.json()["preset"]
+    assert created["id"].startswith("custom-")
+    assert created["kind"] == "draft"
+
+    presets = {item["id"]: item for item in response.json()["presets"]}
+    assert created["id"] in presets
+    assert presets[created["id"]]["built_in"] is False
+
+
+def test_a_custom_preset_needs_a_title_and_an_instruction(client):
+    response = client.post("/api/copilot/presets", json={"title": "Only a title"})
+
+    assert response.status_code == 400
+
+
+def test_a_preset_can_be_removed_and_restored(client):
+    assert client.delete("/api/copilot/presets/scraper-members").status_code == 200
+    ids = {item["id"] for item in client.get("/api/copilot/presets").json()["presets"]}
+    assert "scraper-members" not in ids
+
+    assert client.post("/api/copilot/presets/reset").status_code == 200
+    ids = {item["id"] for item in client.get("/api/copilot/presets").json()["presets"]}
+    assert "scraper-members" in ids
+
+
+def test_removing_an_unknown_preset_is_refused(client):
+    assert client.delete("/api/copilot/presets/nope").status_code == 404
+
+
+def test_an_applied_preset_floats_to_the_top_of_the_runbook(client):
+    turn = client.post("/api/copilot/preset-draft",
+                       json={"preset_id": "knowledge-note"}).json()["turn_id"]
+    client.post(f"/api/copilot/history/{turn}/outcome", json={"outcome": "applied"})
+
+    presets = client.get("/api/copilot/presets").json()["presets"]
+    assert presets[0]["id"] == "knowledge-note"
+    assert presets[0]["uses"] == 1
+
+
+def test_the_runbook_is_scoped_to_the_signed_in_operator(client, tmp_path, monkeypatch):
+    client.put("/api/copilot/presets/scraper-members", json={"title": "Only mine"})
+
+    monkeypatch.setenv("OPERATOR_STORE_DIR", str(tmp_path / "other"))
+    assert copilot._preset_record("operator-2")["overrides"] == {}
+

@@ -562,6 +562,23 @@ def public_config(operator: str, *, worker_state: dict = None) -> dict:
     }
 
 
+def preview_reply(operator: str, text: str, name: str = "") -> dict:
+    """Which rule would answer this text, and what it would say. Nothing is sent."""
+    record = _record(operator)
+    body = (text or "").strip()
+    if not body:
+        raise HTTPException(400, "Type the message you want to test.")
+    if record["mode"] == AI_MODE:
+        return {"mode": AI_MODE, "would_send": False,
+                "detail": "AI mode never sends by itself. A draft would wait in the approval outbox."}
+    rule = match_rule(record["rules"], body)
+    if not rule:
+        return {"mode": RULES_MODE, "matched": None, "would_send": False,
+                "detail": "No rule matched, so nothing would be sent."}
+    return {"mode": RULES_MODE, "matched": {"id": rule["id"], "name": rule["name"]},
+            "would_send": bool(rule.get("enabled")), "reply": render(rule["reply"], name=name)}
+
+
 def _worker_state() -> dict:
     return {"running": bool(worker.task and not worker.task.done()), "error": worker.error,
             "last_tick": worker.last_tick}
@@ -694,20 +711,7 @@ async def set_account(account_id: str, body: AccountBody, request: Request):
 async def test_reply(body: TestBody, request: Request):
     """Which rule would answer this text, and what it would say. Nothing is sent."""
     _enabled()
-    operator = _operator(request)
-    record = _record(operator)
-    text = body.text.strip()
-    if not text:
-        raise HTTPException(400, "Type the message you want to test.")
-    if record["mode"] == AI_MODE:
-        return {"success": True, "mode": AI_MODE, "would_send": False,
-                "detail": "AI mode never sends by itself. A draft would wait in the approval outbox."}
-    rule = match_rule(record["rules"], text)
-    if not rule:
-        return {"success": True, "mode": RULES_MODE, "matched": None, "would_send": False,
-                "detail": "No rule matched, so nothing would be sent."}
-    return {"success": True, "mode": RULES_MODE, "matched": {"id": rule["id"], "name": rule["name"]},
-            "would_send": bool(rule.get("enabled")), "reply": render(rule["reply"], name=body.name)}
+    return {"success": True, **preview_reply(_operator(request), body.text, name=body.name)}
 
 
 @router.get("/api/auto-reply/conversations")
