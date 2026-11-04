@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field
 
 from log_manager import log_manager
 from open_teleset.operator_store import feature_enabled, read_secret, secret_key_available, write_secret
-from outreach_policy import hash_identifier, outreach_policy
+from outreach_policy import OutreachDenied, hash_identifier, outreach_policy
 
 router = APIRouter(tags=["inbox"])
 log = logging.getLogger(__name__)
@@ -34,6 +34,7 @@ STORE = "inbox"
 OFF_MESSAGE = "Inbox is switched off. Turn it on under Integrations > Platform switches."
 SEND_FAILED = "Telegram did not deliver that reply. Try again or answer in your own client."
 SUPPRESSED = "That person asked not to be messaged. The reply is blocked."
+UNREADABLE_LEDGER = "The opt-out list could not be read, so nothing was sent. Check the outreach policy file."
 NO_REF = "That chat is not on this screen any more. Use Refresh now."
 NO_ACCOUNT = "No account here answers to that id."
 TOO_MANY_SUBSCRIBERS = "Four tabs already have this inbox open."
@@ -634,7 +635,11 @@ async def reply(ref: str, body: ReplyBody, request: Request):
     text = (body.text or "").strip()
     if not text:
         raise HTTPException(400, EMPTY_REPLY)
-    if outreach_policy.is_suppressed(_suppress_key(row)):
+    try:
+        suppressed = outreach_policy.is_suppressed(_suppress_key(row))
+    except OutreachDenied:
+        raise HTTPException(409, UNREADABLE_LEDGER) from None
+    if suppressed:
         raise HTTPException(409, SUPPRESSED)
     client = _CLIENTS.get(row["account_id"])
     if client is None:

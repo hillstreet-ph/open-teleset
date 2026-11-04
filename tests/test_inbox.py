@@ -16,6 +16,7 @@ from fastapi import HTTPException
 
 import inbox
 from open_teleset import operator_store
+from outreach_policy import OutreachPolicy
 
 
 class User(SimpleNamespace):
@@ -145,6 +146,12 @@ def test_a_thread_page_is_capped_at_one_telegram_page():
 def workspace(tmp_path, monkeypatch):
     monkeypatch.setenv("OPERATOR_STORE_DIR", str(tmp_path))
     monkeypatch.setenv("SESSION_ENCRYPTION_KEY", Fernet.generate_key().decode())
+    # A reply reads the opt-out ledger before sending. Point it at an empty ledger in
+    # this test's own directory, or the read lands on the developer's real file and the
+    # suite passes locally while failing on a clean checkout where that file is absent.
+    ledger = tmp_path / "outreach_policy.json"
+    ledger.write_text(json.dumps({"version": 1, "approvals": {}, "consents": [], "suppressions": []}))
+    monkeypatch.setattr(inbox, "outreach_policy", OutreachPolicy(ledger))
     operator_store.set_features({"inbox_enabled": True})
     monkeypatch.setattr(inbox.log_manager, "add_log", lambda *a, **k: None)
     inbox.WALLS.clear()
@@ -585,6 +592,19 @@ def test_a_reply_to_someone_asked_not_to_be_messaged_is_blocked(api, monkeypatch
     blocked = api.post(f"/api/inbox/chats/{ref}/messages", json={"text": "hello?"})
     assert blocked.status_code == 409
     assert "asked not to be messaged" in blocked.json()["detail"]
+    assert api.inbox_account["clients"][account_id].sent == []
+
+
+def test_an_unreadable_opt_out_ledger_refuses_the_reply_as_our_own_sentence(api):
+    """No ledger means no send, and the refusal stays a clean 409 rather than a crash."""
+    account_id = opted_in_api(api)
+    asyncio.run(inbox.note(account_id, an_event()))
+    ref = inbox.WALLS["op-1"].rows()[0]["ref"]
+    inbox.outreach_policy.path.unlink()
+
+    blocked = api.post(f"/api/inbox/chats/{ref}/messages", json={"text": "hi"})
+    assert blocked.status_code == 409
+    assert blocked.json()["detail"] == inbox.UNREADABLE_LEDGER
     assert api.inbox_account["clients"][account_id].sent == []
 
 
