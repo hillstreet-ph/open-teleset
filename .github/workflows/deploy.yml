@@ -269,9 +269,10 @@ jobs:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_TOKEN }}
         run: |
           supabase link --project-ref hoseohvgoiarxluxqwqv
-          supabase functions deploy health-ping  --project-ref hoseohvgoiarxluxqwqv --no-verify-jwt
-          supabase functions deploy run-schedules --project-ref hoseohvgoiarxluxqwqv
-          supabase functions deploy send-message  --project-ref hoseohvgoiarxluxqwqv
+          # The CLI refuses a non-interactive deploy without an explicit confirmation.
+          supabase functions deploy health-ping  --project-ref hoseohvgoiarxluxqwqv --no-verify-jwt --yes
+          supabase functions deploy run-schedules --project-ref hoseohvgoiarxluxqwqv --yes
+          supabase functions deploy send-message  --project-ref hoseohvgoiarxluxqwqv --yes
           echo "✅ Edge functions deployed"
 
   # ─── 7. SUMMARY ──────────────────────────────────────────────────
