@@ -26,10 +26,12 @@ operator actually applies float to the top of the runbook.
 from __future__ import annotations
 
 import re
+import threading
+from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel, Field
 
 import knowledge
@@ -44,6 +46,27 @@ MAX_TURNS = 100
 MAX_CUSTOM_PRESETS = 40
 INSTRUCTION_PREVIEW = 300
 OUTCOMES = ("drafted", "applied", "discarded")
+
+# Attachments live in this process only, scoped to the operator, and never touch
+# the disk. Text is read in-process; anything else is kept as a descriptor and
+# named as unreadable rather than pretending it was understood.
+MAX_ATTACHMENTS = 8
+ATTACHMENT_FILE_BYTES = 4 * 1024 * 1024
+ATTACHMENT_TOTAL_BYTES = 16 * 1024 * 1024
+ATTACHMENT_CHARS = 12000
+_ATTACHMENTS: dict[str, dict[str, dict]] = {}
+_ATTACHMENT_LOCK = threading.Lock()
+
+ATTACHMENT_KINDS = (
+    (".zip", "archive"),
+    ((".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".heic", ".svg"), "image"),
+    ((".mp4", ".mov", ".webm", ".mkv", ".avi"), "video"),
+    ((".pdf",), "pdf"),
+    ((".csv", ".tsv", ".xls", ".xlsx", ".ods"), "spreadsheet"),
+    ((".doc", ".docx", ".odt", ".rtf", ".pages"), "document"),
+    ((".mp3", ".wav", ".ogg", ".m4a", ".opus"), "audio"),
+)
+
 
 PRESET_TITLE = 60
 PRESET_GROUP = 40
@@ -78,6 +101,16 @@ _BLOCKED: list[tuple] = [
     (r"\bauto(?:matic(?:ally))?\s+(?:register|login|log\s+in)\b", "automate account registration or login"),
     (r"\bmass\s+(?:dm|dms|message|messages|send)\b", "mass-message cold audiences"),
     (r"\b(?:random|fake)\b.{0,30}\b(?:names?|usernames?|identit(?:y|ies))\b", "generate fake identities"),
+    (r"\b(?:avoid|bypass|evade|dodge|beat|get\s+around)\b.{0,40}"
+     r"\b(?:bans?|flags?|limits?|restrictions?|detection|moderation)\b",
+     "evade Telegram's limits or bans"),
+    (r"\b(?:warm[\s-]?up|warming)\b.{0,40}\baccounts?\b", "warm up accounts to avoid detection"),
+    (r"\b(?:accounts?|prox(?:y|ies)|sessions?)\b.{0,50}\brotat(?:e|ion|ing)\b", "rotate accounts or proxies"),
+    (r"\brotat(?:e|ion|ing)\b.{0,50}\b(?:bans?|flags?|limits?|detection)\b",
+     "rotate accounts or proxies to dodge limits"),
+    (r"\b(?:auto(?:matic(?:ally)?)?\s+)?switch\b.{0,40}\baccounts?\b.{0,40}\b(?:limit|ban|flag)\b",
+     "switch accounts to dodge limits"),
+    (r"\b(?:fingerprint|anti[\s-]?detect|stealth\s+mode)\b", "evade platform detection"),
 ]
 
 # ============ the ops surfaces ============
@@ -204,6 +237,10 @@ _FIELD_PATTERNS: dict[str, re.Pattern] = {
 # These run on the server and only read or write the operator's own workspace.
 
 INTERNAL_COMMANDS: dict[str, dict[str, str]] = {
+    "knowledge-import": {
+        "title": "Import the attached files",
+        "summary": "Stores the readable text of the attached files in your own encrypted knowledge base.",
+    },
     "knowledge-note": {
         "title": "Save a note in your knowledge base",
         "summary": "Stores the note in your own encrypted knowledge base.",
@@ -223,6 +260,12 @@ INTERNAL_COMMANDS: dict[str, dict[str, str]] = {
 }
 
 _INTERNAL_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("knowledge-import", (
+        r"\bimport\b.*\b(?:knowledge|notes?|files?|documents?|attachments?|zip)\b",
+        r"\b(?:knowledge|notes?)\b.*\bimport\b",
+        r"\b(?:add|save|store|load)\b\s+(?:these|those|the|my|this)\s+"
+        r"(?:files?|documents?|attachments?)\b",
+    )),
     ("knowledge-search", (
         r"\bsearch\b.*\b(?:knowledge|notes?)\b",
         r"\b(?:knowledge|notes?)\b.*\bsearch\b",
@@ -258,6 +301,26 @@ _OPS_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("knowledge", (r"\bknowledge\s*base\b", r"\bexport\b.*\bknowledge\b")),
     ("automation", (r"\bautomation\b",)),
     ("inbox", (r"\binbox\b",)),
+)
+
+# Plain page switches. They only match behind an explicit open/show verb, so a
+# sentence that merely mentions the accounts page still drafts something real.
+_NAV_VERB = re.compile(r"\b(?:open|show|go\s+to|switch\s+to|take\s+me\s+to|navigate\s+to|view)\b", re.I)
+_PAGE_ALIASES: tuple[tuple[str, str, str], ...] = (
+    ("accounts", "Accounts", r"\baccounts?\b"),
+    ("contacts", "Contacts", r"\bcontacts?\b"),
+    ("proxies", "Proxies", r"\bprox(?:y|ies)\b"),
+    ("cloudphone", "Cloud Phone", r"\b(?:cloud\s*phone|recovery)\b"),
+    ("cloudbrowser", "Cloud Browser", r"\bcloud\s*browser\b"),
+    ("templates", "Templates", r"\btemplates?\b"),
+    ("schedule", "Schedule", r"\bschedules?\b"),
+    ("tasks", "Tasks", r"\btasks?\b"),
+    ("health", "Health", r"\bhealth\b"),
+    ("stats", "Statistics", r"\bstats\b|\bstatistics\b"),
+    ("logs", "Logs", r"\blogs?\b"),
+    ("integrations", "Integrations", r"\bintegrations?\b|\bconnections?\b"),
+    ("copilot", "Ops Copilot", r"\bcopilot\b"),
+    ("overview", "Overview", r"\boverview\b|\bdashboard\b"),
 )
 
 PRESETS: list[dict[str, Any]] = [
@@ -456,6 +519,12 @@ _HELP_EXAMPLES = [
 class CopilotRequest(BaseModel):
     instruction: str = Field(default="", max_length=2000)
     preset_id: str = Field(default="", max_length=64)
+    mode: str = Field(default="ask", max_length=8)
+    attachment_ids: list[str] = Field(default_factory=list, max_length=MAX_ATTACHMENTS)
+
+
+class EnhanceBody(BaseModel):
+    instruction: str = Field(default="", max_length=2000)
 
 
 class PresetBody(BaseModel):
@@ -680,8 +749,9 @@ def _unsupported(label: str) -> dict[str, Any]:
         "title": "Not available",
         "summary": (
             f"The Copilot cannot {label}. Account creation, number purchase, automatic "
-            "joining/adding and cold or scraped outreach violate Telegram's terms and are "
-            "not offered. It can draft templates, schedules and opt-in sends instead."
+            "joining/adding, cold or scraped outreach, and anything that dodges Telegram's "
+            "limits or bans break its terms and are not offered. It can draft templates, "
+            "schedules, opt-in sends and internal documents instead."
         ),
         "payload": {},
         "warnings": [],
@@ -702,6 +772,297 @@ def _help() -> dict[str, Any]:
         "requires_confirmation": False,
         "examples": _HELP_EXAMPLES,
     }
+
+
+# ============ attachments ============
+
+
+def _attachment_kind(name: str) -> str:
+    lowered = str(name or "").lower()
+    for suffixes, kind in ATTACHMENT_KINDS:
+        if lowered.endswith(tuple(suffixes) if isinstance(suffixes, tuple) else (suffixes,)):
+            return kind
+    return "text" if lowered.rsplit(".", 1)[-1] in {s.lstrip(".") for s in knowledge.IMPORT_SUFFIXES} else "file"
+
+
+def _human_size(size: int) -> str:
+    if size >= 1024 * 1024:
+        return f"{size / (1024 * 1024):.1f} MB"
+    if size >= 1024:
+        return f"{size / 1024:.0f} KB"
+    return f"{size} B"
+
+
+def _public_attachment(record: dict) -> dict:
+    return {key: record.get(key) for key in
+            ("id", "name", "mime", "size", "human", "kind", "characters", "readable", "reason")}
+
+
+def _operator_attachments(operator: str) -> dict:
+    with _ATTACHMENT_LOCK:
+        return dict(_ATTACHMENTS.get(operator) or {})
+
+
+def _attachments_by_ids(operator: str, ids: list) -> list:
+    store = _operator_attachments(operator)
+    return [store[str(item)] for item in (ids or []) if str(item) in store]
+
+
+def _store_attachments(operator: str, uploads: list) -> list:
+    """Add uploads to the operator's in-memory tray, enforcing every bound."""
+    with _ATTACHMENT_LOCK:
+        store = _ATTACHMENTS.setdefault(operator, {})
+        if len(store) + len(uploads) > MAX_ATTACHMENTS:
+            raise HTTPException(400, f"Attach at most {MAX_ATTACHMENTS} files to one prompt.")
+        total = sum(int(record.get("size") or 0) for record in store.values())
+        added = []
+        for name, mime, data in uploads:
+            if total + len(data) > ATTACHMENT_TOTAL_BYTES:
+                raise HTTPException(400, f"Keep the attachments under "
+                                         f"{ATTACHMENT_TOTAL_BYTES // (1024 * 1024)} MB in total.")
+            total += len(data)
+            label = knowledge.entry_name(name or "attachment")
+            pairs, reason = knowledge.extract_texts(name, data)
+            text = "\n\n".join(body for _, body in pairs).strip()
+            record = {
+                "id": uuid4().hex[:12],
+                "name": label,
+                "mime": mime or "",
+                "size": len(data),
+                "human": _human_size(len(data)),
+                "kind": _attachment_kind(label),
+                "characters": min(len(text), ATTACHMENT_CHARS),
+                "readable": bool(text),
+                "reason": reason or ("" if text else "no readable text"),
+                "text": text[:ATTACHMENT_CHARS],
+            }
+            store[record["id"]] = record
+            added.append(_public_attachment(record))
+        return added
+
+
+def _drop_attachments(operator: str, ids: list | None = None) -> int:
+    with _ATTACHMENT_LOCK:
+        store = _ATTACHMENTS.get(operator) or {}
+        targets = [str(i) for i in ids] if ids else list(store)
+        removed = sum(1 for item in targets if store.pop(item, None) is not None)
+        if not store:
+            _ATTACHMENTS.pop(operator, None)
+        return removed
+
+
+# ============ navigation and follow-ups ============
+
+
+def _navigate_draft(page: str, label: str) -> dict[str, Any]:
+    return {
+        "action": "navigate",
+        "title": f"Open {label}",
+        "summary": f"Switches the dashboard to {label}. Nothing else runs.",
+        "payload": {"tab": page, "label": label},
+        "warnings": [],
+        "requires_confirmation": False,
+    }
+
+
+def _navigate_intent(text: str) -> tuple[str, str] | None:
+    if not _NAV_VERB.search(text):
+        return None
+    for page, label, pattern in _PAGE_ALIASES:
+        if re.search(pattern, text, re.I):
+            return page, label
+    return None
+
+
+def _next_steps(draft: dict) -> list[dict[str, str]]:
+    """Up to three concrete things to do after this draft. Every one is a prompt."""
+    action = draft.get("action")
+    payload = draft.get("payload") or {}
+    steps: list[tuple[str, str]] = []
+    if action == "template":
+        steps = [
+            ("Schedule a weekly message with it",
+             "Schedule a weekly message at 10:00 saying: Hi {name}, here is this week's update."),
+            ("Turn it into an opt-in send",
+             "Send an opt-in message to the recipients who agreed."),
+            ("Look for repeated wording", "Look for repeated wording in my notes."),
+        ]
+    elif action == "schedule":
+        steps = [
+            ("Prepare the same message in BulkSend",
+             "Send an opt-in message to the recipients who agreed."),
+            ("Check the automation status", "Show the automation status."),
+        ]
+    elif action == "task":
+        steps = [
+            ("Save the wording as a template",
+             "Create a template named Follow-up that says: Hi {name}, checking in."),
+            ("Test a reply rule", "Which rule would answer the message: how much does it cost?"),
+        ]
+    elif action == "navigate":
+        steps = [("Refresh the automation status", "Show the automation status.")]
+    elif action == "run":
+        command = str(payload.get("command") or "")
+        result = draft.get("result") or {}
+        if command == "knowledge-import":
+            imported = int(result.get("imported") or 0)
+            steps = [("Search what you imported", "Search my knowledge base for the refund policy."),
+                     ("Look for repeated wording", "Look for repeated wording in my notes.")]
+            if not imported:
+                steps.insert(0, ("Attach a readable text file",
+                                 "Import these files into my knowledge base."))
+        elif command == "knowledge-search":
+            steps = [("Save the answer as a note", "Remember: the answer above is the current policy."),
+                     ("Look for repeated wording", "Look for repeated wording in my notes.")]
+        elif command == "knowledge-note":
+            steps = [("Search your notes", "Search my knowledge base for the note I just saved."),
+                     ("Look for repeated wording", "Look for repeated wording in my notes.")]
+        elif command == "patterns-refresh":
+            steps = [("Search the wording you kept", "Search my knowledge base for our reply wording."),
+                     ("Set up automatic replies", "Set up the automatic replies for the accounts I watch.")]
+        elif command == "autoreply-test":
+            steps = [("Open the inbox", "Refresh the inbox."),
+                     ("Set up automatic replies", "Set up the automatic replies for the accounts I watch.")]
+    elif action == "ops":
+        surface = str(payload.get("surface") or "")
+        steps = {
+            "scraper": [("Add the members who agreed", "Add the members who agreed to join.")],
+            "adder": [("Refresh the inbox", "Refresh the inbox.")],
+            "autojoin": [("Refresh the automation status", "Show the automation status.")],
+            "bulksend": [("Save the wording as a template",
+                          "Create a template named Welcome that says: Hi {name}, thanks for reaching out.")],
+            "autoreply": [("Test a message against the rules",
+                           "Which rule would answer the message: how much does it cost?")],
+            "knowledge": [("Search your notes", "Search my knowledge base for the refund policy.")],
+            "factory": [("Refresh the automation status", "Show the automation status.")],
+            "automation": [("Open the inbox", "Refresh the inbox.")],
+            "inbox": [("Set up automatic replies", "Set up the automatic replies for the accounts I watch.")],
+        }.get(surface, [])
+    if not steps:
+        steps = [(example.split(" says:")[0], example) for example in _HELP_EXAMPLES[:2]]
+    seen, out = set(), []
+    for label, instruction in steps:
+        if instruction.lower() in seen:
+            continue
+        seen.add(instruction.lower())
+        out.append({"label": label, "instruction": instruction})
+        if len(out) == 3:
+            break
+    return out
+
+
+# ============ enhance and suggestions ============
+
+
+def enhance_instruction(instruction: str) -> dict[str, Any]:
+    """Rewrite a prompt into the explicit form the deterministic drafter reads best.
+
+    The rewrite never invents a recipient, a message body or an approval id. It only
+    names the fields the draft already inferred and adds the missing operational
+    detail the operator can still change.
+    """
+    text = (instruction or "").strip()
+    if not text:
+        raise HTTPException(400, "Write a prompt before asking for a more detailed one.")
+    draft = build_draft(text)
+    action = draft.get("action")
+    payload = draft.get("payload") or {}
+    added: list[str] = []
+    if action == "template" and (payload.get("content") or "").strip():
+        name = str(payload.get("name") or "").strip()
+        enhanced = f"Create a template named {name} that says: {payload['content']}"
+        if name:
+            added.append("named the template")
+        added.append("quoted the exact message")
+    elif action == "template":
+        name = str(payload.get("name") or "").strip()
+        enhanced = (f"Create a template named {name}." if name else "Create a template.")
+        enhanced += " Add the exact message text you want stored, so nothing is guessed."
+        if name:
+            added.append("named the template")
+        added.append("asked for the exact message text")
+    elif action == "schedule" and (payload.get("message") or "").strip():
+        repeat = str(payload.get("repeat") or "once")
+        if repeat not in {"daily", "weekly", "workday"}:
+            repeat = "daily"
+            added.append("made it a daily schedule")
+        when = f"{int(payload.get('hour') or 10):02d}:{int(payload.get('minute') or 0):02d}"
+        enhanced = f"Schedule a {repeat} message at {when} saying: {payload['message']}"
+        added.append(f"set the send time to {when}")
+        recipients = payload.get("recipients") or []
+        if recipients:
+            enhanced += " Recipients: " + ", ".join(recipients)
+            added.append("listed the consenting recipients")
+        if payload.get("approvalId"):
+            enhanced += f" Approval id: {payload['approvalId']}"
+            added.append("carried the approval reference")
+    elif action == "task" and (payload.get("message") or "").strip():
+        enhanced = f"Create a task to send: {payload['message']}"
+        added.append("quoted the exact message")
+        targets = payload.get("targets") or []
+        if targets:
+            enhanced += " Recipients: " + ", ".join(targets)
+            added.append("listed the consenting recipients")
+    elif action == "ops":
+        surface = str(payload.get("surface") or "")
+        fields = payload.get("fields") or {}
+        label = OPS_SURFACES.get(surface, {}).get("title") or "the surface"
+        enhanced = text.rstrip(".") + ". "
+        enhanced += f"Open {label} with " + ", ".join(f"{k}={v}" for k, v in fields.items()) + "."
+        added.append("named the surface and its bounded fields")
+        added.append("kept the consent gate for you to press")
+    elif action == "run":
+        enhanced = text.rstrip(".") + "."
+        added.append("kept the command and made it a complete sentence")
+    elif action == "navigate":
+        enhanced = text.rstrip(".") + "."
+        added.append("made the page switch explicit")
+    else:
+        enhanced = (text.rstrip(".") + ". Give the exact message text, the recipients who agreed, "
+                    "and any send time or approval reference.")
+        added.append("asked for the message, recipients, time and approval")
+    return {"instruction": enhanced.strip(), "added": added, "action": action,
+            "warnings": draft.get("warnings") or []}
+
+
+def suggestions(operator: str, limit: int = 6) -> list[dict[str, str]]:
+    """What to offer when the panel opens: the operator's own notes, then real usage."""
+    out: list[dict[str, str]] = []
+    seen: set = set()
+
+    def add(label: str, instruction: str, source: str, detail: str = "") -> None:
+        key = instruction.lower().strip()
+        if not key or key in seen or len(out) >= limit:
+            return
+        seen.add(key)
+        out.append({"label": label, "instruction": instruction, "source": source, "detail": detail})
+
+    try:
+        documents = knowledge.list_documents(operator).get("documents") or []
+    except HTTPException:
+        documents = []
+    for doc in documents[:3]:
+        title = str(doc.get("title") or "").strip()
+        if title:
+            add(f"Search “{title[:40]}”", f"Search my knowledge base for {title}", "knowledge",
+                doc.get("preview") or "")
+    for preset in list_presets(operator):
+        if int(preset.get("uses") or 0) > 0:
+            add(str(preset.get("title") or ""), str(preset.get("instruction") or ""), "preset",
+                "You applied this before.")
+    applied = next((turn for turn in _turns(operator)
+                    if turn.get("outcome") == "applied" and turn.get("instruction")), None)
+    if applied:
+        add("Run that again", str(applied["instruction"]), "history", "Your last applied prompt.")
+    defaults = [
+        ("Import a knowledge file", "Import these files into my knowledge base."),
+        ("Save a note", _HELP_EXAMPLES[3]),
+        ("Create a welcome template", _HELP_EXAMPLES[0]),
+        ("Prepare an opt-in send", "Send an opt-in message to the recipients who agreed."),
+    ]
+    for label, instruction in defaults:
+        add(label, instruction, "starter")
+    return out
 
 
 # ============ the ops and internal tiers ============
@@ -782,6 +1143,8 @@ def _internal_intent(text: str) -> str:
 
 def _internal_params(command: str, text: str) -> dict[str, Any]:
     body = (text or "").strip()
+    if command == "knowledge-import":
+        return {"note": body}
     if command == "knowledge-note":
         cleaned = body
         head = re.match(r"^\s*([^:：]{0,60})[:：]\s*(.+)$", body, re.S)
@@ -825,6 +1188,17 @@ def _run_internal(operator: str, draft: dict) -> dict:
     payload = draft.get("payload") or {}
     command = str(payload.get("command") or "")
     params = payload.get("params") or {}
+    if command == "knowledge-import":
+        files = _attachments_by_ids(operator, params.get("attachment_ids") or [])
+        readable = [record for record in files if record.get("readable") and record.get("text")]
+        if not files:
+            raise HTTPException(400, "Attach a text file before importing.")
+        if not readable:
+            raise HTTPException(400, "None of the attached files could be read as text.")
+        summary = knowledge.import_files(operator, [{"name": record["name"], "text": record["text"]}
+                                                    for record in readable])
+        summary["attachments"] = [_public_attachment(record) for record in files]
+        return summary
     if command == "knowledge-note":
         body = str(params.get("text") or "").strip()
         if not body:
@@ -848,9 +1222,50 @@ def _run_internal(operator: str, draft: dict) -> dict:
     raise HTTPException(400, "That is not an internal command the Copilot can run.")
 
 
-def build_draft(instruction: str) -> dict[str, Any]:
+def _with_files_only(draft: dict, files: list) -> dict:
+    """Show the tray on a draft that is not an import, without claiming it was read."""
+    if not files:
+        return draft
+    payload = draft.setdefault("payload", {})
+    payload["attachments"] = [_public_attachment(record) for record in files]
+    unreadable = [record["name"] for record in files if not record.get("readable")]
+    if unreadable:
+        draft.setdefault("warnings", []).append(
+            "Only text documents are read: " + ", ".join(unreadable[:4]) + ".")
+    return draft
+
+
+def _with_attachments(draft: dict, files: list) -> dict:
+    """Record the tray on the draft and hand the ids to the import command."""
+    _with_files_only(draft, files)
+    payload = draft.setdefault("payload", {})
+    if payload.get("command") == "knowledge-import":
+        params = payload.setdefault("params", {})
+        params["attachment_ids"] = [record["id"] for record in files]
+        if not files:
+            draft.setdefault("warnings", []).append("Attach at least one text file before importing.")
+    return draft
+
+
+def _import_draft(files: list) -> dict[str, Any]:
+    readable = [record for record in files if record.get("readable")]
+    if not readable:
+        draft = _help()
+        draft["title"] = "Attach a text document to import"
+        draft["summary"] = ("Images, video, PDFs, Word files and spreadsheets cannot be read here. "
+                            "Attach markdown, text, csv, json, yaml, html or a zip of them.")
+        draft["warnings"] = [f"{record['name']}: {record.get('reason') or 'not readable'}"
+                             for record in files[:4]]
+        return draft
+    return _with_attachments(_internal_draft("knowledge-import", {}), files)
+
+
+def build_draft(instruction: str, attachments: list | None = None) -> dict[str, Any]:
     """Parse an instruction into a draft. Pure: no I/O and no side effects."""
+    files = list(attachments or [])
     text = (instruction or "").strip()
+    if files and (not text or _import_intent(text)):
+        return _import_draft(files)
     if not text:
         return _help()
 
@@ -865,23 +1280,35 @@ def build_draft(instruction: str) -> dict[str, Any]:
             return _unsupported(reason)
         command = _internal_intent(text)
         if command:
-            return _internal_draft(command, _internal_params(command, text))
+            draft = _internal_draft(command, _internal_params(command, text))
+            return _with_attachments(draft, files) if command == "knowledge-import" else _with_files_only(draft, files)
         surface = _ops_surface(text)
         if surface:
             spec = OPS_SURFACES[surface]
             fields = _apply_instruction(dict(spec["fields"]), text, surface)
-            return _ops_draft(surface, fields, title=spec["title"])
-        return _help()
+            return _with_files_only(_ops_draft(surface, fields, title=spec["title"]), files)
+        page = _navigate_intent(text)
+        if page:
+            return _navigate_draft(*page)
+        return _with_files_only(_help(), files)
 
     reason = _blocked_reason(_command_region(text))
     if reason:
         return _unsupported(reason)
 
     if is_schedule:
-        return _draft_schedule(text)
-    if is_template:
-        return _draft_template(text)
-    return _draft_task(text)
+        draft = _draft_schedule(text)
+    elif is_template:
+        draft = _draft_template(text)
+    else:
+        draft = _draft_task(text)
+    return _with_files_only(draft, files)
+
+
+def _import_intent(text: str) -> bool:
+    return bool(re.search(r"\b(?:import|ingest|upload)\b", text, re.I)
+                or re.search(r"\b(?:add|save|store|load)\b\s+(?:these|those|the|my|this)\s+"
+                             r"(?:files?|documents?|attachments?)\b", text, re.I))
 
 
 def _preset_draft(preset: dict, instruction: str = "") -> dict[str, Any]:
@@ -915,12 +1342,69 @@ def _safe_run(operator: str, draft: dict) -> dict:
 @router.post("/api/copilot/draft")
 async def draft_command(body: CopilotRequest, http_request: Request):
     operator = _operator(http_request)
-    draft = build_draft(body.instruction)
+    files = _attachments_by_ids(operator, body.attachment_ids)
+    draft = build_draft(body.instruction, files)
     turn = _remember(operator, body.instruction, draft, body.preset_id)
     if draft.get("action") == "run":
         draft["result"] = _safe_run(operator, draft)
+    draft["mode"] = "work" if str(body.mode or "").lower() == "work" else "ask"
+    draft["next"] = _next_steps(draft)
     return {"success": True, "draft": draft, "presets": list_presets(operator),
+            "attachments": [_public_attachment(record) for record in _operator_attachments(operator).values()],
             "turn_id": turn["id"] if turn else ""}
+
+
+@router.post("/api/copilot/enhance")
+async def enhance_command(body: EnhanceBody, http_request: Request):
+    """Rewrite a prompt into the explicit form the drafter reads best. No model call."""
+    _operator(http_request)
+    return {"success": True, **enhance_instruction(body.instruction)}
+
+
+@router.get("/api/copilot/suggest")
+async def suggest_command(http_request: Request, limit: int = 6):
+    operator = _operator(http_request)
+    return {"success": True, "suggestions": suggestions(operator, max(1, min(int(limit), 8)))}
+
+
+@router.get("/api/copilot/attachments")
+async def list_attachments(http_request: Request):
+    operator = _operator(http_request)
+    return {"success": True,
+            "attachments": [_public_attachment(record)
+                            for record in _operator_attachments(operator).values()]}
+
+
+@router.post("/api/copilot/attachments")
+async def add_attachments(http_request: Request, files: list[UploadFile] = File(...)):
+    operator = _operator(http_request)
+    if not files:
+        raise HTTPException(400, "Choose at least one file to attach.")
+    if len(files) > MAX_ATTACHMENTS:
+        raise HTTPException(400, f"Attach at most {MAX_ATTACHMENTS} files to one prompt.")
+    uploads = []
+    for upload in files:
+        data = await upload.read(ATTACHMENT_FILE_BYTES + 1)
+        if len(data) > ATTACHMENT_FILE_BYTES:
+            raise HTTPException(400, f"{knowledge.entry_name(upload.filename or 'attachment')}: "
+                                     f"keep each attachment under {ATTACHMENT_FILE_BYTES // (1024 * 1024)} MB.")
+        uploads.append((upload.filename or "attachment", upload.content_type or "", data))
+    added = _store_attachments(operator, uploads)
+    return {"success": True, "added": added,
+            "attachments": [_public_attachment(record)
+                            for record in _operator_attachments(operator).values()]}
+
+
+@router.delete("/api/copilot/attachments/{attachment_id}")
+async def remove_attachment(attachment_id: str, http_request: Request):
+    if not _drop_attachments(_operator(http_request), [attachment_id]):
+        raise HTTPException(404, "No attachment with that id.")
+    return {"success": True}
+
+
+@router.delete("/api/copilot/attachments")
+async def clear_attachments(http_request: Request):
+    return {"success": True, "removed": _drop_attachments(_operator(http_request))}
 
 
 @router.post("/api/copilot/preset-draft")
@@ -936,6 +1420,7 @@ async def preset_draft_command(body: PresetDraftBody, http_request: Request):
                      draft, preset["id"])
     if draft.get("action") == "run":
         draft["result"] = _safe_run(operator, draft)
+    draft["next"] = _next_steps(draft)
     return {"success": True, "draft": draft, "presets": list_presets(operator),
             "turn_id": turn["id"] if turn else ""}
 

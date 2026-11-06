@@ -18,7 +18,7 @@ import re
 import zipfile
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFile
 from pydantic import BaseModel, Field
 
 from log_manager import log_manager
@@ -36,6 +36,15 @@ PREVIEW_CHARS = 180
 MIN_SNIPPET_CHARS = 40
 
 SOURCES = ("manual", "copilot", "auto_reply", "template", "import")
+
+# Import bounds. A zip is unpacked defensively: only text members, never a path.
+IMPORT_SUFFIXES = frozenset({".md", ".markdown", ".txt", ".text", ".csv", ".tsv", ".json",
+                             ".log", ".yml", ".yaml", ".xml", ".html", ".htm"})
+MAX_IMPORT_FILES = 25
+MAX_IMPORT_FILE_BYTES = 2 * 1024 * 1024
+MAX_IMPORT_ENTRY_BYTES = 512 * 1024
+MAX_IMPORT_ENTRIES = 80
+MAX_IMPORT_BYTES = 6 * 1024 * 1024
 
 DEFAULT_SETTINGS = {
     "auto_collect_copilot": True,
@@ -297,6 +306,181 @@ def _zip_name(value: str, fallback: str) -> str:
     return cleaned[:60] or fallback
 
 
+def entry_name(value: str, fallback: str = "upload") -> str:
+    """An uploaded name reduced to its basename, so a zip member cannot escape."""
+    base = str(value or "").replace("\\", "/").split("/")[-1].strip()
+    base = re.sub(r"[\x00-\x1f]", "", base)
+    return base[:120] or fallback
+
+
+def _decode(data: bytes) -> str | None:
+    """Text bytes to a string. None when the payload is binary rather than a note."""
+    if not data:
+        return ""
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        try:
+            return data.decode("utf-16")
+        except UnicodeDecodeError:
+            return None
+    if b"\x00" in data[:4096]:
+        return None
+    for encoding in ("utf-8-sig", "utf-8", "cp1252"):
+        try:
+            text = data.decode(encoding)
+        except (UnicodeDecodeError, LookupError):
+            continue
+        probe = text[:2000]
+        readable = sum(1 for ch in probe if ch.isprintable() or ch in "\r\n\t")
+        if readable / max(1, len(probe)) < 0.85:
+            continue
+        return text
+    return None
+
+
+def split_chunks(text: str, limit: int = MAX_DOC_CHARS) -> list:
+    """Break a long note on blank lines so each stored entry fits the doc limit."""
+    body = (text or "").strip()
+    if not body:
+        return []
+    if len(body) <= limit:
+        return [body]
+    chunks: list = []
+    current = ""
+    for block in re.split(r"\n\s*\n", body):
+        block = block.strip()
+        if not block:
+            continue
+        if len(block) > limit:
+            if current:
+                chunks.append(current)
+                current = ""
+            for start in range(0, len(block), limit):
+                chunks.append(block[start:start + limit])
+            continue
+        candidate = f"{current}\n\n{block}" if current else block
+        if len(candidate) > limit:
+            chunks.append(current)
+            current = block
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return [chunk for chunk in chunks if chunk.strip()]
+
+
+def extract_texts(name: str, data: bytes) -> tuple:
+    """Read one upload into (entry_name, text) pairs, plus a reason when unreadable.
+
+    A zip is walked in memory: no extraction to disk, no directory entries, no
+    member larger than the entry cap, and only suffixes a note can actually be.
+    """
+    label = entry_name(name)
+    suffix = ("." + label.rsplit(".", 1)[-1].lower()) if "." in label else ""
+    if suffix != ".zip":
+        if suffix not in IMPORT_SUFFIXES:
+            return [], f"{label}: only text notes, markdown, csv, json, yaml or a zip of them can be read"
+        text = _decode(data)
+        if text is None:
+            return [], f"{label}: that file is not text"
+        if not text.strip():
+            return [], f"{label}: the file is empty"
+        return [(label, text)], None
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(data))
+    except (zipfile.BadZipFile, OSError):
+        return [], f"{label}: that zip could not be opened"
+    entries: list = []
+    skipped: list = []
+    with archive:
+        for info in archive.infolist():
+            if len(entries) >= MAX_IMPORT_ENTRIES:
+                skipped.append(f"{label}: stopped at {MAX_IMPORT_ENTRIES} members")
+                break
+            if info.is_dir():
+                continue
+            member = entry_name(info.filename)
+            member_suffix = ("." + member.rsplit(".", 1)[-1].lower()) if "." in member else ""
+            if member_suffix not in IMPORT_SUFFIXES:
+                continue
+            if info.file_size > MAX_IMPORT_ENTRY_BYTES:
+                skipped.append(f"{label}/{member}: larger than {MAX_IMPORT_ENTRY_BYTES // 1024} KB")
+                continue
+            try:
+                raw = archive.read(info)
+            except (zipfile.BadZipFile, OSError, RuntimeError):
+                skipped.append(f"{label}/{member}: could not be read")
+                continue
+            text = _decode(raw)
+            if text is None or not text.strip():
+                continue
+            entries.append((f"{label}/{member}", text))
+    if not entries:
+        detail = skipped[0] if skipped else f"{label}: no readable text member"
+        return [], detail
+    return entries, (skipped[0] if skipped else None)
+
+
+def import_files(operator: str, files: list) -> dict:
+    """Store each readable upload, chunked and masked, skipping duplicates."""
+    summary = {"imported": 0, "duplicates": 0, "masked": 0, "characters": 0,
+               "files": [], "entries": [], "skipped_files": [], "errors": []}
+    capacity = MAX_DOCS - len(_record(operator)["docs"])
+    for item in files:
+        name = entry_name(item.get("name") or "upload")
+        data = item.get("data")
+        supplied = item.get("text")
+        if supplied is not None:
+            pairs = [(name, str(supplied))] if str(supplied).strip() else []
+            reason = None if pairs else f"{name}: nothing to read"
+            data = b""
+        elif data is None:
+            reason = item.get("reason") or "could not be read"
+            summary["skipped_files"].append({"name": name, "reason": reason})
+            summary["files"].append({"name": name, "stored": 0, "duplicates": 0,
+                                     "chunks": 0, "reason": reason})
+            continue
+        else:
+            pairs, reason = extract_texts(name, data)
+        if not pairs:
+            reason = reason or f"{name}: nothing to import"
+            summary["skipped_files"].append({"name": name, "reason": reason})
+            summary["files"].append({"name": name, "stored": 0, "duplicates": 0,
+                                     "chunks": 0, "reason": reason})
+            continue
+        stored = duplicates = chunks = 0
+        for source_name, text in pairs:
+            chunks += 1
+            parts = split_chunks(text)
+            for index, chunk in enumerate(parts):
+                if capacity <= 0:
+                    summary["errors"].append(
+                        f"The knowledge base is full at {MAX_DOCS} entries; the rest was not imported.")
+                    break
+                title = f"{source_name} ({index + 1}/{len(parts)})" if len(parts) > 1 else source_name
+                try:
+                    doc = add_document(operator, title=title, text=chunk, source="import",
+                                       tags=["import"], dedupe=True)
+                except HTTPException as exc:
+                    summary["errors"].append(str(exc.detail))
+                    capacity = 0
+                    break
+                if doc is None:
+                    duplicates += 1
+                    continue
+                stored += 1
+                capacity -= 1
+                summary["masked"] += 1 if doc.get("masked") else 0
+                summary["characters"] += doc.get("characters") or 0
+                summary["entries"].append(doc)
+            if capacity <= 0:
+                break
+        summary["imported"] += stored
+        summary["duplicates"] += duplicates
+        summary["files"].append({"name": name, "stored": stored, "duplicates": duplicates,
+                                 "chunks": chunks, **({"note": reason} if reason else {})})
+    return summary
+
+
 def build_zip(operator: str, *, include_templates: bool = None) -> tuple[bytes, int]:
     """The operator's own notes as a zip of markdown files plus an index.
 
@@ -405,6 +589,33 @@ async def clear(request: Request, body: dict = None):
     source = str((body or {}).get("source") or "")
     removed = clear_documents(_operator(request), source=source)
     return {"success": True, "removed": removed}
+
+
+@router.post("/api/knowledge/import")
+async def import_knowledge(request: Request, files: list[UploadFile] = File(...)):
+    """Add text notes from uploads: plain text formats, or a zip of them."""
+    operator = _operator(request)
+    if not files:
+        raise HTTPException(400, "Choose at least one file to import.")
+    if len(files) > MAX_IMPORT_FILES:
+        raise HTTPException(400, f"Import at most {MAX_IMPORT_FILES} files at a time.")
+    payloads = []
+    total = 0
+    for upload in files:
+        label = entry_name(upload.filename or "upload")
+        data = await upload.read(MAX_IMPORT_FILE_BYTES + 1)
+        if len(data) > MAX_IMPORT_FILE_BYTES:
+            payloads.append({"name": label, "data": None,
+                             "reason": f"larger than {MAX_IMPORT_FILE_BYTES // (1024 * 1024)} MB"})
+            continue
+        total += len(data)
+        if total > MAX_IMPORT_BYTES:
+            raise HTTPException(400, f"Keep one import under {MAX_IMPORT_BYTES // (1024 * 1024)} MB in total.")
+        payloads.append({"name": label, "data": data})
+    result = import_files(operator, payloads)
+    log_manager.add_log("Knowledge", "-",
+                        f"Imported {result['imported']} knowledge entries from {len(files)} file(s)")
+    return {"success": True, **result}
 
 
 @router.get("/api/knowledge/export")

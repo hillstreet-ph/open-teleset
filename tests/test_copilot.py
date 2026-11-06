@@ -1,6 +1,8 @@
 """The copilot drafts only; it can never create accounts or bypass consent."""
 
 import json
+import zipfile
+from io import BytesIO
 from types import SimpleNamespace
 
 import pytest
@@ -9,6 +11,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import copilot
+import knowledge
 
 
 def test_template_instruction_extracts_name_and_content():
@@ -123,7 +126,12 @@ def test_empty_instruction_returns_help_with_examples():
 def test_router_exposes_drafting_history_and_the_preset_runbook():
     routes = sorted((route.path, tuple(sorted(route.methods))) for route in copilot.router.routes)
     assert routes == [
+        ("/api/copilot/attachments", ("DELETE",)),
+        ("/api/copilot/attachments", ("GET",)),
+        ("/api/copilot/attachments", ("POST",)),
+        ("/api/copilot/attachments/{attachment_id}", ("DELETE",)),
         ("/api/copilot/draft", ("POST",)),
+        ("/api/copilot/enhance", ("POST",)),
         ("/api/copilot/history", ("DELETE",)),
         ("/api/copilot/history", ("GET",)),
         ("/api/copilot/history/{turn_id}/outcome", ("POST",)),
@@ -133,6 +141,7 @@ def test_router_exposes_drafting_history_and_the_preset_runbook():
         ("/api/copilot/presets/reset", ("POST",)),
         ("/api/copilot/presets/{preset_id}", ("DELETE",)),
         ("/api/copilot/presets/{preset_id}", ("PUT",)),
+        ("/api/copilot/suggest", ("GET",)),
     ]
 
 
@@ -550,3 +559,205 @@ def test_the_runbook_is_scoped_to_the_signed_in_operator(client, tmp_path, monke
     monkeypatch.setenv("OPERATOR_STORE_DIR", str(tmp_path / "other"))
     assert copilot._preset_record("operator-2")["overrides"] == {}
 
+
+
+# ---------------------------------------------------------------- the assistant tray
+
+
+def _upload(name, data, mime="text/plain"):
+    return ("files", (name, data, mime))
+
+
+def test_attachments_are_listed_read_and_removed(client):
+    body = client.post("/api/copilot/attachments", files=[_upload("refunds.md", b"Refunds run 30 days.")]).json()
+
+    assert body["success"] is True
+    record = body["added"][0]
+    assert record["name"] == "refunds.md"
+    assert record["kind"] == "text"
+    assert record["readable"] is True
+    assert record["characters"] == len("Refunds run 30 days.")
+    assert client.get("/api/copilot/attachments").json()["attachments"][0]["id"] == record["id"]
+
+    assert client.delete(f"/api/copilot/attachments/{record['id']}").status_code == 200
+    assert client.get("/api/copilot/attachments").json()["attachments"] == []
+    assert client.delete(f"/api/copilot/attachments/{record['id']}").status_code == 404
+
+
+def test_a_binary_attachment_is_kept_but_named_unreadable(client):
+    record = client.post("/api/copilot/attachments",
+                         files=[_upload("photo.png", b"\x89PNG\r\n\x1a\n\x00\x00", "image/png")]).json()["added"][0]
+
+    assert record["kind"] == "image"
+    assert record["readable"] is False
+    assert "photo.png" in record["reason"]
+
+
+def test_attachments_are_capped_per_prompt(client):
+    files = [_upload(f"note-{i}.txt", b"A note.") for i in range(copilot.MAX_ATTACHMENTS + 1)]
+
+    assert client.post("/api/copilot/attachments", files=files).status_code == 400
+
+
+def test_an_oversized_attachment_is_refused(client):
+    oversized = b"a" * (copilot.ATTACHMENT_FILE_BYTES + 1)
+
+    response = client.post("/api/copilot/attachments", files=[_upload("huge.txt", oversized)])
+
+    assert response.status_code == 400
+    assert "4 MB" in response.json()["detail"]
+
+
+def test_a_zip_of_text_attaches_its_readable_members(client):
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("notes/refunds.md", "Refunds run 30 days.")
+        archive.writestr("notes/logo.png", b"\x89PNG\x00")
+
+    record = client.post("/api/copilot/attachments",
+                         files=[_upload("bundle.zip", buffer.getvalue(), "application/zip")]).json()["added"][0]
+
+    assert record["kind"] == "archive"
+    assert record["readable"] is True
+    assert record["characters"] == len("Refunds run 30 days.")
+
+
+def test_attachments_alone_become_a_knowledge_import(client):
+    record = client.post("/api/copilot/attachments",
+                         files=[_upload("refunds.md", b"Refunds run 30 days.")]).json()["added"][0]
+
+    body = client.post("/api/copilot/draft", json={"instruction": "", "attachment_ids": [record["id"]]}).json()
+
+    draft = body["draft"]
+    assert draft["action"] == "run"
+    assert draft["payload"]["command"] == "knowledge-import"
+    assert draft["result"]["imported"] == 1
+    assert draft["next"]
+    assert [doc["title"] for doc in
+            knowledge.list_documents("operator-1")["documents"]] == ["refunds.md"]
+
+
+def test_a_binary_only_tray_explains_what_can_be_read(client):
+    record = client.post("/api/copilot/attachments",
+                         files=[_upload("photo.png", b"\x89PNG\x00", "image/png")]).json()["added"][0]
+
+    draft = client.post("/api/copilot/draft",
+                        json={"instruction": "", "attachment_ids": [record["id"]]}).json()["draft"]
+
+    assert draft["action"] == "help"
+    assert "cannot be read" in draft["summary"]
+    assert any("photo.png" in warning for warning in draft["warnings"])
+
+
+def test_a_binary_attachment_does_not_block_a_text_draft(client):
+    record = client.post("/api/copilot/attachments",
+                         files=[_upload("photo.png", b"\x89PNG\x00", "image/png")]).json()["added"][0]
+
+    draft = client.post("/api/copilot/draft", json={
+        "instruction": "Create a template named Ping that says: Hello there.",
+        "attachment_ids": [record["id"]],
+    }).json()["draft"]
+
+    assert draft["action"] == "template"
+    assert draft["payload"]["attachments"][0]["name"] == "photo.png"
+    assert any("Only text documents are read" in warning for warning in draft["warnings"])
+
+
+def test_the_draft_echoes_ask_or_work(client):
+    ask = client.post("/api/copilot/draft", json={"instruction": "Open the logs"}).json()["draft"]
+    work = client.post("/api/copilot/draft",
+                       json={"instruction": "Open the logs", "mode": "work"}).json()["draft"]
+
+    assert ask["mode"] == "ask"
+    assert work["mode"] == "work"
+
+
+def test_enhance_names_the_fields_it_inferred(client):
+    body = client.post("/api/copilot/enhance", json={
+        "instruction": "Schedule a daily message at 10:00 saying: Hello"}).json()
+
+    assert body["success"] is True
+    assert body["instruction"] == "Schedule a daily message at 10:00 saying: Hello"
+    assert "set the send time to 10:00" in body["added"]
+
+
+def test_enhance_asks_for_what_a_vague_prompt_lacks(client):
+    body = client.post("/api/copilot/enhance", json={"instruction": "do the thing"}).json()
+
+    assert "Give the exact message text" in body["instruction"]
+
+
+def test_enhance_keeps_a_template_prompt_and_asks_for_its_body(client):
+    body = client.post("/api/copilot/enhance", json={
+        "instruction": "Create a template named Short."}).json()
+
+    assert body["action"] == "template"
+    assert body["instruction"].startswith("Create a template named Short.")
+    assert "exact message text" in body["instruction"]
+    assert any("exact message text" in item for item in body["added"])
+
+
+def test_enhance_rejects_an_empty_prompt(client):
+    assert client.post("/api/copilot/enhance", json={"instruction": "  "}).status_code == 400
+
+
+def test_suggestions_start_with_the_operators_own_notes(client):
+    knowledge.add_document("operator-1", title="Refund policy", text="Refunds run 30 days.")
+
+    body = client.get("/api/copilot/suggest").json()
+
+    assert body["suggestions"][0]["source"] == "knowledge"
+    assert "Refund policy" in body["suggestions"][0]["instruction"]
+    assert len(body["suggestions"]) <= 6
+    assert len({item["instruction"] for item in body["suggestions"]}) == len(body["suggestions"])
+
+
+def test_suggestions_include_the_last_prompt_the_operator_applied(client):
+    first = client.post("/api/copilot/draft", json={
+        "instruction": "Create a template named Ping that says: Hello there."}).json()
+    client.post(f"/api/copilot/history/{first['turn_id']}/outcome", json={"outcome": "applied"})
+
+    body = client.get("/api/copilot/suggest").json()
+
+    assert any(item["source"] == "history" for item in body["suggestions"])
+
+
+def test_suggestions_are_capped(client):
+    assert len(client.get("/api/copilot/suggest?limit=2").json()["suggestions"]) <= 2
+
+
+def test_navigation_switches_a_page_without_running_anything():
+    draft = copilot.build_draft("Open the logs")
+
+    assert draft["action"] == "navigate"
+    assert draft["payload"]["tab"] == "logs"
+    assert draft["requires_confirmation"] is False
+
+
+def test_ban_evasion_prompts_are_refused():
+    for prompt in (
+        "Add a greeting rotation to avoid flags and ban",
+        "Warm up the accounts before using them",
+        "Auto rotate accounts when a limit is reached",
+        "Use a fingerprint mask so Telegram cannot detect the sessions",
+    ):
+        draft = copilot.build_draft(prompt)
+        assert draft["action"] == "unsupported", prompt
+
+
+def test_attachments_require_an_operator(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPERATOR_STORE_DIR", str(tmp_path))
+    monkeypatch.setenv("SESSION_ENCRYPTION_KEY", Fernet.generate_key().decode())
+    app = FastAPI()
+
+    @app.middleware("http")
+    async def anonymous(request, call_next):
+        request.state.user = None
+        return await call_next(request)
+
+    app.include_router(copilot.router)
+    anon = TestClient(app)
+
+    assert anon.get("/api/copilot/attachments").status_code == 403
+    assert anon.get("/api/copilot/suggest").status_code == 403
+    assert anon.post("/api/copilot/enhance", json={"instruction": "Open the logs"}).status_code == 403

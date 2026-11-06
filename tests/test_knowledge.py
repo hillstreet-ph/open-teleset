@@ -6,6 +6,8 @@ written, and answering a search never calls a model provider.
 """
 
 import json
+import zipfile
+from io import BytesIO
 from types import SimpleNamespace
 
 import pytest
@@ -364,8 +366,8 @@ def test_router_exposes_only_the_operators_own_data():
     assert paths == [
         "/api/knowledge/clear", "/api/knowledge/documents", "/api/knowledge/documents",
         "/api/knowledge/documents/{doc_id}", "/api/knowledge/documents/{doc_id}",
-        "/api/knowledge/documents/{doc_id}", "/api/knowledge/export", "/api/knowledge/search",
-        "/api/knowledge/settings", "/api/knowledge/settings",
+        "/api/knowledge/documents/{doc_id}", "/api/knowledge/export", "/api/knowledge/import",
+        "/api/knowledge/search", "/api/knowledge/settings", "/api/knowledge/settings",
     ]
 
 
@@ -462,3 +464,117 @@ def test_an_empty_base_still_exports_an_index(client):
 
 def test_the_export_requires_an_operator(anon_client):
     assert anon_client.get("/api/knowledge/export").status_code == 403
+
+
+# ---------------------------------------------------------------- file import
+
+
+def _upload(name, data, mime="text/plain"):
+    return {"files": (name, data, mime)}
+
+
+def test_a_text_file_is_imported_as_a_note(client):
+    response = client.post("/api/knowledge/import",
+                           files=[("files", ("refunds.md", b"# Refunds\n\nRefunds run 30 days.", "text/markdown"))])
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["imported"] == 1
+    assert body["masked"] == 0
+    assert body["files"][0] == {"name": "refunds.md", "stored": 1, "duplicates": 0, "chunks": 1}
+    assert body["entries"][0]["title"] == "refunds.md"
+    assert body["entries"][0]["source"] == "import"
+
+    docs = client.get("/api/knowledge/documents").json()["documents"]
+    assert [doc["title"] for doc in docs] == ["refunds.md"]
+
+
+def test_a_zip_imports_each_text_member_and_skips_binaries(client):
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("docs/refunds.md", "Refunds run 30 days.")
+        archive.writestr("docs/hours.txt", "We reply within a day.")
+        archive.writestr("docs/logo.png", b"\x89PNG\x00binary")
+
+    body = client.post("/api/knowledge/import",
+                       files=[("files", ("bundle.zip", buffer.getvalue(), "application/zip"))]).json()
+
+    assert body["imported"] == 2
+    assert {entry["title"] for entry in body["entries"]} == {"bundle.zip/refunds.md", "bundle.zip/hours.txt"}
+
+
+def test_a_zip_member_name_cannot_escape_the_store(client):
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("../../etc/refunds.md", "A note that must stay a note.")
+
+    body = client.post("/api/knowledge/import",
+                       files=[("files", ("bundle.zip", buffer.getvalue(), "application/zip"))]).json()
+
+    titles = [entry["title"] for entry in body["entries"]]
+    assert titles == ["bundle.zip/refunds.md"]
+    assert not any(".." in title for title in titles)
+
+
+def test_a_binary_upload_is_reported_and_not_stored(client):
+    body = client.post("/api/knowledge/import",
+                       files=[("files", ("photo.png", b"\x89PNG\r\n\x1a\n\x00\x00", "image/png"))]).json()
+
+    assert body["imported"] == 0
+    assert body["skipped_files"][0]["name"] == "photo.png"
+    assert "text notes" in body["skipped_files"][0]["reason"]
+    assert client.get("/api/knowledge/documents").json()["documents"] == []
+
+
+def test_an_oversized_upload_is_skipped_without_failing_the_batch(client):
+    large = b"a" * (knowledge.MAX_IMPORT_FILE_BYTES + 1)
+    body = client.post("/api/knowledge/import", files=[
+        ("files", ("huge.txt", large, "text/plain")),
+        ("files", ("small.txt", b"A short note.", "text/plain")),
+    ]).json()
+
+    assert body["imported"] == 1
+    assert body["skipped_files"][0]["name"] == "huge.txt"
+    assert "larger than" in body["skipped_files"][0]["reason"]
+
+
+def test_imported_credentials_are_masked(client):
+    body = client.post("/api/knowledge/import", files=[
+        ("files", ("setup.txt", b"session string is 1234abcd5678efgh", "text/plain")),
+    ]).json()
+
+    assert body["masked"] == 1
+    stored = client.get("/api/knowledge/documents").json()["documents"]
+    assert stored[0]["masked"] is True
+    assert "1234abcd5678efgh" not in client.get(f"/api/knowledge/documents/{stored[0]['id']}").json()["document"]["text"]
+
+
+def test_importing_the_same_file_twice_reports_a_duplicate(client):
+    client.post("/api/knowledge/import", files=[("files", ("note.txt", b"One note.", "text/plain"))])
+
+    body = client.post("/api/knowledge/import",
+                       files=[("files", ("note.txt", b"One note.", "text/plain"))]).json()
+
+    assert body["imported"] == 0
+    assert body["duplicates"] == 1
+    assert len(client.get("/api/knowledge/documents").json()["documents"]) == 1
+
+
+def test_a_long_file_is_chunked_to_the_document_limit(client):
+    text = "\n\n".join("paragraph " + str(i) + " " + "x" * 100 for i in range(80)).encode()
+    body = client.post("/api/knowledge/import", files=[("files", ("long.txt", text, "text/plain"))]).json()
+
+    assert body["imported"] > 1
+    assert all(entry["characters"] <= knowledge.MAX_DOC_CHARS for entry in body["entries"])
+    assert body["entries"][0]["title"].startswith("long.txt (1/")
+
+
+def test_import_rejects_more_files_than_the_batch_bound(client):
+    files = [("files", (f"note-{i}.txt", b"A note.", "text/plain")) for i in range(knowledge.MAX_IMPORT_FILES + 1)]
+
+    assert client.post("/api/knowledge/import", files=files).status_code == 400
+
+
+def test_import_requires_an_operator(anon_client):
+    assert anon_client.post("/api/knowledge/import",
+                            files=[("files", ("note.txt", b"A note.", "text/plain"))]).status_code == 403
