@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional
 from outreach_client import ConsentTelegramClient as TelegramClient
 from outreach_policy import account_cooldown_remaining, record_provider_restriction, OutreachDenied
+from proxy_manager import proxy_transport
 from telethon.sessions import StringSession
 from telethon import functions
 from telethon.errors import (
@@ -179,6 +180,7 @@ class AccountManager:
             try:
                 client = TelegramClient(
                     session, API_ID, API_HASH, proxy=proxy,
+                    **proxy_transport(proxy),
                     outreach_account_id=account_id, preserve_saved_authorization=True,
                 )
 
@@ -227,7 +229,8 @@ class AccountManager:
                     with suppress(Exception):
                         await asyncio.wait_for(client.disconnect(), timeout=2)
 
-    async def generate_qr_code(self, account_id: str, proxy: Dict = None, proxy_settings=None) -> Dict:
+    async def generate_qr_code(self, account_id: str, proxy: Dict = None, proxy_settings=None,
+                               replace_account_id: str = None) -> Dict:
         """
         生成二维码用于登录
 
@@ -248,7 +251,10 @@ class AccountManager:
 
         if account_id in self.qr_sessions:
             return {"success": False, "error": "Cancel the existing QR login before starting again"}
-        pending = {"status": "connecting", "created_at": datetime.now()}
+        if replace_account_id and replace_account_id not in self.accounts:
+            return {"success": False, "error": "The account to re-login no longer exists. Refresh the account list."}
+        pending = {"status": "connecting", "created_at": datetime.now(),
+                   "replace_account_id": replace_account_id}
         self.qr_sessions[account_id] = pending
         temp_client = None
         retained = False
@@ -269,6 +275,7 @@ class AccountManager:
             # 添加代理配置
             if proxy:
                 client_kwargs["proxy"] = proxy
+                client_kwargs.update(proxy_transport(proxy))
             
             temp_client = TelegramClient(**client_kwargs)
             pending["client"] = temp_client
@@ -305,6 +312,7 @@ class AccountManager:
                 "created_at": datetime.now(),
                 "proxy": proxy,
                 "proxy_settings": proxy_settings or {"mode": "default"},
+                "replace_account_id": replace_account_id,
             }
             retained = True
 
@@ -373,6 +381,40 @@ class AccountManager:
             with suppress(Exception):
                 await asyncio.wait_for(client.disconnect(), LOGIN_DISCONNECT_TIMEOUT)
 
+    async def _adopt_relogin(self, session: Dict, me, session_string: str):
+        """Swap a fresh authorization into the existing account it belongs to.
+
+        Only the same Telegram user may be re-signed-in; a different account is
+        refused so a stored account can never be silently replaced.
+        Returns the account id that was updated, or None for a normal new login.
+        """
+        replace_id = session.get("replace_account_id")
+        if not replace_id:
+            return None
+        target = self.accounts.get(replace_id)
+        if target is None:
+            raise ValueError("The account to re-login no longer exists. Refresh the account list.")
+        if target.get("user_id") != me.id:
+            raise ValueError("That Telegram account is not the one being re-signed in. "
+                             "The saved account was not changed.")
+        self.accounts[replace_id] = {
+            **target,
+            "session_string": session_string,
+            "phone": me.phone,
+            "username": me.username or "N/A",
+            "first_name": me.first_name or "",
+            "last_name": me.last_name or "",
+            "is_premium": bool(getattr(me, "premium", False)),
+            "status": "online",
+            "last_online": datetime.now(timezone.utc).isoformat(),
+        }
+        self.connection_errors.pop(replace_id, None)
+        stale = self.clients.pop(replace_id, None)
+        if stale is not None:
+            with suppress(Exception):
+                await asyncio.wait_for(stale.disconnect(), 2)
+        return replace_id
+
     async def _complete_login(self, account_id: str, client, session: Dict):
         """完成登录，保存账号信息"""
         inserted = False
@@ -380,9 +422,17 @@ class AccountManager:
             me = await asyncio.wait_for(client.get_me(), timeout=LOGIN_RPC_TIMEOUT)
             if session.get("cancelled") or self.qr_sessions.get(account_id) is not session:
                 raise ValueError("Login was cancelled")
-            if account_id in self.accounts or any(a.get("user_id") == me.id for a in self.accounts.values()):
+            if account_id in self.accounts:
                 raise ValueError("Account already exists; the saved account was not changed.")
             session_string = client.session.save()
+            replaced = await self._adopt_relogin(session, me, session_string)
+            if replaced:
+                self._save_config()
+                session["status"] = "success"
+                session["relogin_account_id"] = replaced
+                return True
+            if any(a.get("user_id") == me.id for a in self.accounts.values()):
+                raise ValueError("Account already exists; the saved account was not changed.")
 
             # 保存账号
             self.accounts[account_id] = {
@@ -673,6 +723,7 @@ class AccountManager:
                 API_ID,
                 API_HASH,
                 proxy=proxy,
+                **proxy_transport(proxy),
                 outreach_account_id=account_id,
                 preserve_saved_authorization=True,
             )
@@ -745,6 +796,7 @@ class AccountManager:
         phone: str,
         proxy: Dict = None,
         proxy_settings=None,
+        replace_account_id: str = None,
     ) -> Dict:
         """
         发送验证码到手机号（支持所有国际号码）
@@ -765,8 +817,11 @@ class AccountManager:
             return {"success": False, "error": "Account ID already exists"}
         if account_id in self.phone_sessions:
             return {"success": False, "error": "Cancel the existing phone login before starting again"}
+        if replace_account_id and replace_account_id not in self.accounts:
+            return {"success": False, "error": "The account to re-login no longer exists. Refresh the account list."}
 
-        pending = {"status": "connecting", "phone": phone, "created_at": datetime.now(), "has_2fa": False}
+        pending = {"status": "connecting", "phone": phone, "created_at": datetime.now(), "has_2fa": False,
+                   "replace_account_id": replace_account_id}
         self.phone_sessions[account_id] = pending
         temp_client = None
         retained = False
@@ -790,6 +845,7 @@ class AccountManager:
 
             if proxy:
                 client_kwargs["proxy"] = proxy
+                client_kwargs.update(proxy_transport(proxy))
 
             temp_client = TelegramClient(**client_kwargs)
             pending["client"] = temp_client
@@ -829,6 +885,7 @@ class AccountManager:
                 "created_at": datetime.now(),
                 "proxy": proxy,
                 "proxy_settings": proxy_settings or {"mode": "default"},
+                "replace_account_id": replace_account_id,
             }
             retained = True
 
@@ -906,6 +963,11 @@ class AccountManager:
             return {"success": False, "needs_2fa": False, "error": "Invalid verification code"}
         except PhoneCodeExpiredError:
             return {"success": False, "needs_2fa": False, "error": "Verification code has expired"}
+        except ValueError:
+            # _complete_phone_login stores a user-facing reason (e.g. a re-login
+            # mismatch); never echo a ValueError from anywhere else.
+            return {"success": False, "needs_2fa": False,
+                    "error": session.get("error") or "Unable to finish sign-in. Check the connection and try again."}
         except Exception:
             return {"success": False, "needs_2fa": False, "error": "Unable to finish sign-in. Check the connection and try again."}
 
@@ -943,6 +1005,9 @@ class AccountManager:
 
         except PasswordHashInvalidError:
             return {"success": False, "error": "Incorrect two-step verification password"}
+        except ValueError:
+            return {"success": False,
+                    "error": session.get("error") or "Unable to finish sign-in. Check the connection and try again."}
         except Exception:
             return {"success": False, "error": "Unable to finish sign-in. Check the connection and try again."}
 
@@ -953,9 +1018,17 @@ class AccountManager:
             me = await asyncio.wait_for(client.get_me(), LOGIN_RPC_TIMEOUT)
             if session.get("cancelled") or self.phone_sessions.get(account_id) is not session:
                 raise ValueError("Login was cancelled")
-            if account_id in self.accounts or any(a.get("user_id") == me.id for a in self.accounts.values()):
+            if account_id in self.accounts:
                 raise ValueError("Account already exists; the saved account was not changed.")
             session_string = client.session.save()
+            replaced = await self._adopt_relogin(session, me, session_string)
+            if replaced:
+                self._save_config()
+                session["status"] = "success"
+                session["relogin_account_id"] = replaced
+                return True
+            if any(a.get("user_id") == me.id for a in self.accounts.values()):
+                raise ValueError("Account already exists; the saved account was not changed.")
 
             self.accounts[account_id] = {
                 "account_id": account_id,
@@ -1047,8 +1120,10 @@ class AccountManager:
         if not session_string:
             raise ValueError("账号没有有效的Session")
 
+        proxy = self.saved_proxy(account_id)
         client = TelegramClient(StringSession(session_string), API_ID, API_HASH,
-                                outreach_account_id=account_id, proxy=self.saved_proxy(account_id))
+                                outreach_account_id=account_id, proxy=proxy,
+                                **proxy_transport(proxy))
         friends = []
 
         try:
@@ -1102,8 +1177,10 @@ class AccountManager:
         if not session_string:
             raise ValueError("账号没有有效的Session")
 
+        proxy = self.saved_proxy(account_id)
         client = TelegramClient(StringSession(session_string), API_ID, API_HASH,
-                                outreach_account_id=account_id, proxy=self.saved_proxy(account_id))
+                                outreach_account_id=account_id, proxy=proxy,
+                                **proxy_transport(proxy))
         valid = []
         invalid = []
 

@@ -586,6 +586,25 @@
         .proxy-info p { font-size: 12.5px; color: var(--text-dim); overflow-wrap: anywhere; }
         .proxy-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 
+        /* ---------- MTProto catalog cards ---------- */
+        .mtproxy-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(272px, 1fr)); gap: 12px; }
+        .mtproxy-card { border: 1px solid var(--border); border-radius: 14px; background: var(--surface-2); padding: 14px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+        .mtproxy-head { display: flex; align-items: center; gap: 10px; }
+        .mtproxy-flag { font-size: 22px; line-height: 1; }
+        .mtproxy-title { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+        .mtproxy-title b { font-size: 13.5px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .mtproxy-ping { flex: 0 0 auto; padding: 3px 9px; border-radius: 999px; font-size: 11.5px; font-weight: 600; font-variant-numeric: tabular-nums; background: var(--surface-3); color: var(--text-dim); }
+        .mtproxy-ping.good { background: var(--accent-soft); color: var(--accent); }
+        .mtproxy-ping.ok { background: var(--warning-soft); color: var(--warning); }
+        .mtproxy-ping.bad { background: var(--danger-soft); color: var(--danger); }
+        .mtproxy-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+        .mtproxy-row > span { flex: 0 0 42px; }
+        .mtproxy-row code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--text); }
+        .mtproxy-actions { display: flex; gap: 8px; align-items: center; margin-top: auto; }
+        .mtproxy-actions .btn { flex: 1; }
+        .mtproxy-verified { font-size: 11.5px; color: var(--accent); }
+        .mtproxy-verified.bad { color: var(--danger); }
+
         /* ---------- Collapsed record lists ---------- */
         .record-list { display: grid; gap: 8px; }
         .record-row { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-2); overflow: hidden; }
@@ -1747,6 +1766,7 @@
                                         <option v-for="proxy in proxies" :key="proxy.proxy_id" :value="'proxy:' + proxy.proxy_id">{{ proxy.proxy_id }} · {{ proxy.host }}:{{ proxy.port }}</option>
                                         <option v-if="acc.proxy_settings?.mode === 'selected' && !proxies.some(p => p.proxy_id === acc.proxy_settings.proxy_id)" :value="'proxy:' + acc.proxy_settings.proxy_id" disabled>Missing proxy — choose another</option>
                                     </select>
+                                    <button v-if="accountNeedsRelogin(acc)" class="btn btn-sm btn-primary" @click="openRelogin(acc)">Re-login</button>
                                     <button class="btn btn-sm btn-outline" :disabled="checkingAccounts[acc.account_id]" @click="checkAccountConnection(acc.account_id)">{{ checkingAccounts[acc.account_id] ? 'Checking…' : 'Check connection' }}</button>
                                     <button class="btn btn-sm btn-outline" @click="loadAccountSessions(acc.account_id)">{{ accountSessionsLoading[acc.account_id] ? 'Loading…' : 'Login sessions' }}</button>
                                     <label class="btn btn-sm btn-outline" style="cursor:pointer;margin:0;">
@@ -2116,6 +2136,64 @@
 
             <!-- Proxies -->
             <div v-show="tab === 'proxies'">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>Free MTProto proxies</h3>
+                        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                            <input class="form-control" style="max-width:230px;" v-model="mtCatalog.search" placeholder="Search host or source">
+                            <label class="muted small" style="display:flex;align-items:center;gap:6px;margin:0;">
+                                <input type="checkbox" v-model="mtCatalog.onlyReachable"> Reachable only
+                            </label>
+                            <button class="btn btn-outline btn-sm" @click="loadMtprotoCatalog(true)" :disabled="mtCatalog.loading">{{ mtCatalog.loading ? 'Reading catalog…' : 'Refresh' }}</button>
+                        </div>
+                    </div>
+                    <p class="muted small" style="margin-bottom:10px;">Public MTProto relays from the allowlisted sources. A card counts as reachable only after a TCP probe; Verify proves a real Telegram handshake. Public relays are untrusted — they see that this account uses Telegram, not your messages. The secrets below are published by the sources.</p>
+                    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px;">
+                        <span v-for="source in mtCatalog.sources" :key="source.id" class="badge" :class="source.status === 'ok' ? 'badge-info' : 'badge-warning'" :title="source.error || ''">{{ source.label }} · {{ source.status === 'ok' ? source.count + ' links' : source.status }}</span>
+                        <div class="form-group" v-if="accounts.length" style="margin:0 0 0 auto;min-width:210px;">
+                            <select v-model="mtCatalog.accountId" class="form-control">
+                                <option value="">Global default (all accounts)</option>
+                                <option v-for="account in accounts" :key="account.account_id" :value="account.account_id">{{ accountLabel(account) }}</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div v-if="mtCatalog.error" class="empty-state" style="padding:20px;"><p>{{ mtCatalog.error }}</p></div>
+                    <div v-else-if="!filteredMtCatalog.length" class="empty-state">
+                        <div class="icon">🌐</div>
+                        <p>{{ mtCatalog.loading ? 'Reading the free proxy lists…' : 'No MTProto proxy matches right now. Refresh or widen the search.' }}</p>
+                    </div>
+                    <div v-else class="mtproxy-grid">
+                        <div class="mtproxy-card" v-for="item in filteredMtCatalog" :key="mtKey(item)">
+                            <div class="mtproxy-head">
+                                <span class="mtproxy-flag">{{ mtFlag(item) }}</span>
+                                <div class="mtproxy-title">
+                                    <b>{{ item.country || item.source_label }}</b>
+                                    <span class="muted small">{{ item.country ? item.source_label : 'MTProto relay' }}</span>
+                                </div>
+                                <span class="mtproxy-ping" :class="mtPingClass(item)">{{ mtPingText(item) }}</span>
+                            </div>
+                            <div class="mtproxy-row">
+                                <span class="muted small">Host</span><code>{{ item.host }}</code>
+                                <button class="btn btn-sm btn-outline" @click="copyText(item.host, 'mt-host-' + mtKey(item))">{{ settings.copied === 'mt-host-' + mtKey(item) ? 'Copied' : 'Copy' }}</button>
+                            </div>
+                            <div class="mtproxy-row">
+                                <span class="muted small">Port</span><code>{{ item.port }}</code>
+                                <button class="btn btn-sm btn-outline" @click="copyText(String(item.port), 'mt-port-' + mtKey(item))">{{ settings.copied === 'mt-port-' + mtKey(item) ? 'Copied' : 'Copy' }}</button>
+                            </div>
+                            <div class="mtproxy-row">
+                                <span class="muted small">Secret</span><code>{{ mtSecretShown(item) ? item.secret : '••••••••••••' }}</code>
+                                <button class="btn btn-sm btn-outline" @click="toggleMtSecret(item)">{{ mtSecretShown(item) ? 'Hide' : 'Show' }}</button>
+                                <button class="btn btn-sm btn-outline" @click="copyText(item.secret, 'mt-secret-' + mtKey(item))">{{ settings.copied === 'mt-secret-' + mtKey(item) ? 'Copied' : 'Copy' }}</button>
+                            </div>
+                            <div class="mtproxy-actions">
+                                <span v-if="mtCatalog.verified[mtKey(item)]" class="mtproxy-verified" :class="{ bad: !mtCatalog.verified[mtKey(item)].success }">{{ mtCatalog.verified[mtKey(item)].text }}</span>
+                                <button class="btn btn-sm btn-outline" @click="verifyMtProxy(item)" :disabled="!!mtCatalog.verifying[mtKey(item)]">{{ mtCatalog.verifying[mtKey(item)] ? 'Verifying…' : 'Verify' }}</button>
+                                <button class="btn btn-sm btn-primary" @click="connectMtProxy(item)" :disabled="mtCatalog.connecting === mtKey(item) || !item.reachable">{{ mtCatalog.connecting === mtKey(item) ? 'Connecting…' : (mtCatalog.accountId ? 'Assign' : 'Connect') }}</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <div class="card">
                     <div class="card-header">
                         <h3>Global proxy</h3>
@@ -4121,8 +4199,12 @@
         <div v-if="showQrModal" class="modal" @click.self="closeQrModal">
             <div class="modal-content" style="min-width: 450px;">
                 <div v-if="loginMode === 'select'" style="text-align: center; margin-bottom: 18px;">
-                    <h2>Add account</h2>
-                    <p class="subtitle" style="margin-bottom: 0;">Choose a login method and, if needed, a connection.</p>
+                    <h2>{{ reloginAccount ? 'Re-login account' : 'Add account' }}</h2>
+                    <p class="subtitle" style="margin-bottom: 0;">{{ reloginAccount ? 'Sign in again to restore the saved account. Its ID, usage and proxy stay the same.' : 'Choose a login method and, if needed, a connection.' }}</p>
+                </div>
+                <div v-if="reloginAccount && loginMode === 'select'" style="text-align:left;margin-bottom:16px;padding:10px 12px;border-radius:8px;background:rgba(245,183,177,0.10);border:1px solid rgba(245,183,177,0.35);">
+                    <strong style="font-size:12.5px;">{{ accountLabel(reloginAccount) }} · {{ reloginAccount.account_id }}</strong>
+                    <p class="small" style="margin:4px 0 0;color:var(--text-dim);">{{ reloginNotice() }}</p>
                 </div>
                 <div v-if="loginMode === 'select' || (loginMode === 'phone' && phoneStep === 'input') || loginMode === 'hex'" style="margin-bottom: 18px; text-align: left;">
                     <label for="login-connection">Connection</label>
@@ -4161,7 +4243,7 @@
                 <!-- QR login -->
                 <div v-else-if="loginMode === 'qr'">
                     <h2 style="cursor: pointer;" @click="loginMode = 'select'">Back</h2>
-                    <p class="subtitle">Scan the QR code with Telegram to add an account</p>
+                    <p class="subtitle">{{ reloginAccount ? 'Scan with the Telegram app already signed in to ' + accountLabel(reloginAccount) + ' to restore it' : 'Scan the QR code with Telegram to add an account' }}</p>
 
                     <div class="qr-container">
                         <img v-if="qrCode" :src="qrCode" alt="QR Code">
@@ -4929,6 +5011,8 @@
                     testing: false,
                     logs: [],
                     proxyPasswordVisible: {},  // Proxy password visibility
+                    mtCatalog: { items: [], sources: [], loading: false, search: '', onlyReachable: true, accountId: '', verifying: {}, verified: {}, connecting: '', error: '' },
+                    mtSecretVisible: {},
 
                     // Login Modal (QR + Phone)
                     showQrModal: false,
@@ -4943,6 +5027,8 @@
                     qrRemaining: 30,
                     qrError: '',
                     qrAccountId: '',
+                    reloginAccountId: '',
+                    reloginAccount: null,
                     qrPolling: null,
                     twoFaPassword: '',
                     twoFaError: '',
@@ -5493,6 +5579,14 @@
                         c.name.toLowerCase().includes(search) ||
                         c.code.includes(search)
                     )
+                },
+                filteredMtCatalog() {
+                    const search = this.mtCatalog.search.trim().toLowerCase()
+                    return this.mtCatalog.items.filter(item => {
+                        if (this.mtCatalog.onlyReachable && !item.reachable) return false
+                        if (!search) return true
+                        return `${item.host}:${item.port} ${item.secret} ${item.country || ''} ${item.source_label}`.toLowerCase().includes(search)
+                    })
                 }
             },
             methods: {
@@ -5521,6 +5615,7 @@
                     }
                     else this.stopMailboxStream()
                     if (tab === 'scraper' || tab === 'adder') this.loadGroups(tab)
+                    if (tab === 'proxies') this.loadMtprotoCatalog()
                     if (tab === 'schedule') this.loadSchedules()
                     if (tab === 'logs') this.loadLogs()
                     if (tab === 'templates') this.loadTemplates()
@@ -6707,6 +6802,7 @@
                 // QR & Phone Login
                 openQrModal() {
                     this.loginMode = 'select'
+                    this.reloginAccountId = ''; this.reloginAccount = null
                     this.loginProxyMode = 'default'; this.loginProxyId = ''
                     this.hexData = { key: '', dc: null }; this.hexError = ''
                     this.loadProxies()
@@ -6728,7 +6824,49 @@
                     this.phoneStep = 'input'
                     this.phoneAccountId = 'account_' + Date.now()
                     this.phoneData = { phone: '', code: '', password: '', countryCode: '63' }
+                    if (this.reloginAccount) {
+                        // Saved numbers usually carry the country code without "+"; split it
+                        // so the prefilled field holds only the national part.
+                        const digits = String(this.reloginAccount.phone || '').replace(/\D/g, '')
+                        const code = this.countryCodeForPhone(digits)
+                        this.phoneData.phone = code ? digits.slice(code.length) : (digits ? '+' + digits : '')
+                        this.phoneData.countryCode = code || '63'
+                    }
                     this.phoneError = ''
+                },
+
+                openRelogin(acc) {
+                    this.openQrModal()
+                    this.reloginAccountId = acc.account_id
+                    this.reloginAccount = acc
+                    const choice = this.accountConnectionChoice(acc)
+                    this.loginProxyMode = choice === 'direct' ? 'direct' : (choice.startsWith('proxy:') ? 'selected' : 'default')
+                    this.loginProxyId = choice.startsWith('proxy:') ? choice.slice(6) : ''
+                },
+
+                accountNeedsRelogin(acc) {
+                    return /session expired or revoked|requires a wait of|different data center/i.test(acc.connection_error || '')
+                },
+
+                reloginNotice() {
+                    const account = this.reloginAccount
+                    if (!account) return ''
+                    const error = account.connection_error || ''
+                    const wait = /wait of (\d+) seconds/i.exec(error)
+                    if (wait) {
+                        const minutes = Math.ceil(Number(wait[1]) / 60)
+                        return `Telegram is holding a ${minutes} minute cooldown for this account. QR sign-in can run now; phone-code sign-in needs the cooldown to pass.`
+                    }
+                    return error || 'Sign in again to restore this account.'
+                },
+
+                countryCodeForPhone(phone) {
+                    const digits = String(phone || '').replace(/\D/g, '')
+                    if (!digits) return ''
+                    return (this.countries || [])
+                        .filter((c) => digits.startsWith(String(c.code)))
+                        .sort((a, b) => String(b.code).length - String(a.code).length)
+                        .map((c) => String(c.code))[0] || ''
                 },
 
                 closeQrModal() {
@@ -6737,6 +6875,7 @@
                     if (this.phoneAccountId && this.phoneStep !== 'success') _api.delete(`/api/accounts/${this.phoneAccountId}/phone-login`).catch(() => {});
                     if (this.qrAccountId && this.qrStatus !== 'success') _api.delete(`/api/accounts/${this.qrAccountId}/qr-login`).catch(() => {});
                     this.phoneAccountId = ''; this.qrAccountId = '';
+                    this.reloginAccountId = ''; this.reloginAccount = null
                     this.stopQrPolling()
                     this.showQrModal = false
                     this.loginMode = 'select'
@@ -6786,6 +6925,7 @@
                     const revision = this.authRevision;
                     try {
                         const payload = { account_id: this.qrAccountId }
+                        if (this.reloginAccountId) payload.replace_account_id = this.reloginAccountId
                         Object.assign(payload, this.loginConnectionPayload())
                         const res = await _api.post('/api/accounts/generate-qr', payload, {timeout: 65000})
                         if (revision !== this.authRevision || !this.showQrModal) return;
@@ -6815,7 +6955,7 @@
                             if (res.data.status === 'success') {
                                 this.qrStatus = 'success'
                                 this.stopQrPolling()
-                                this.showToast('Login successful.')
+                                this.showToast(this.reloginAccountId ? 'Account restored with the new sign-in.' : 'Login successful.')
                                 this.addLog('Login successful', this.qrAccountId)
                                 this.loadAccounts()
                                 setTimeout(() => this.closeQrModal(), 1500)
@@ -6873,8 +7013,9 @@
                         }, {timeout: 65000})
                         if (res.data.success) {
                             this.qrStatus = 'success'
-                            this.showToast('Login successful.')
-                            this.addLog('Login successful(2FA)', this.qrAccountId)
+                            const restored = Boolean(this.reloginAccountId)
+                            this.showToast(restored ? 'Account restored with the new sign-in.' : 'Login successful.')
+                            this.addLog(restored ? 'Account restored(2FA)' : 'Login successful(2FA)', this.qrAccountId)
                             this.loadAccounts()
                             setTimeout(() => this.closeQrModal(), 1500)
                         } else {
@@ -6901,6 +7042,7 @@
                             account_id: this.phoneAccountId,
                             phone: fullPhone
                         }
+                        if (this.reloginAccountId) payload.replace_account_id = this.reloginAccountId
                         Object.assign(payload, this.loginConnectionPayload())
                         const res = await _api.post('/api/accounts/send-code', payload, {timeout: 65000})
                         if (revision !== this.authRevision || !this.showQrModal) return;
@@ -6926,8 +7068,9 @@
                         }, {timeout: 45000})
                         if (res.data.success) {
                             this.phoneStep = 'success'
-                            this.showToast('Login successful.')
-                            this.addLog('Phone login successful', this.phoneAccountId)
+                            const restored = Boolean(this.reloginAccountId)
+                            this.showToast(restored ? 'Account restored with the new sign-in.' : 'Login successful.')
+                            this.addLog(restored ? 'Account restored' : 'Phone login successful', this.phoneAccountId)
                             this.loadAccounts()
                             setTimeout(() => this.closeQrModal(), 1500)
                         } else if (res.data.needs_2fa) {
@@ -6951,8 +7094,9 @@
                         }, {timeout: 45000})
                         if (res.data.success) {
                             this.phoneStep = 'success'
-                            this.showToast('Login successful.')
-                            this.addLog('Phone login successful(2FA)', this.phoneAccountId)
+                            const restored = Boolean(this.reloginAccountId)
+                            this.showToast(restored ? 'Account restored with the new sign-in.' : 'Login successful.')
+                            this.addLog(restored ? 'Account restored(2FA)' : 'Phone login successful(2FA)', this.phoneAccountId)
                             this.loadAccounts()
                             setTimeout(() => this.closeQrModal(), 1500)
                         } else {
@@ -8521,6 +8665,94 @@
                         this.showToast(e.response?.data?.detail || 'Could not save that setting.', true)
                     } finally {
                         this.features.saving = ''
+                    }
+                },
+                // ---- Free MTProto catalog ----
+                accountLabel(account) {
+                    if (account.username && account.username !== 'N/A') return account.username
+                    if (account.phone && account.phone !== 'N/A') return account.phone
+                    return account.account_id
+                },
+                mtKey(item) {
+                    return `${item.host}:${item.port}`
+                },
+                mtFlag(item) {
+                    const code = String(item.country_code || '').toUpperCase()
+                    if (!/^[A-Z]{2}$/.test(code)) return '🌐'
+                    return String.fromCodePoint(...[...code].map(c => 0x1F1E6 + c.charCodeAt(0) - 65))
+                },
+                mtPingClass(item) {
+                    if (!item.reachable) return 'bad'
+                    if (item.latency_ms <= 300) return 'good'
+                    if (item.latency_ms <= 800) return 'ok'
+                    return 'bad'
+                },
+                mtPingText(item) {
+                    if (!item.reachable) return 'Unreachable'
+                    return `${item.latency_ms} ms`
+                },
+                mtSecretShown(item) {
+                    return !!this.mtSecretVisible[this.mtKey(item)]
+                },
+                toggleMtSecret(item) {
+                    const key = this.mtKey(item)
+                    this.mtSecretVisible = { ...this.mtSecretVisible, [key]: !this.mtSecretVisible[key] }
+                },
+                async loadMtprotoCatalog(refresh = false) {
+                    if (this.mtCatalog.loading) return
+                    this.mtCatalog.loading = true
+                    this.mtCatalog.error = ''
+                    try {
+                        const { data } = await _api.get('/api/proxies/catalog',
+                            { params: { limit: 40, refresh: refresh === true }, timeout: 60000 })
+                        this.mtCatalog.items = data.items || []
+                        this.mtCatalog.sources = data.sources || []
+                    } catch (e) {
+                        this.mtCatalog.error = e.response?.data?.detail
+                            || 'The free proxy lists could not be read. Try again later.'
+                    } finally {
+                        this.mtCatalog.loading = false
+                    }
+                },
+                async verifyMtProxy(item) {
+                    const key = this.mtKey(item)
+                    if (this.mtCatalog.verifying[key]) return
+                    this.mtCatalog.verifying = { ...this.mtCatalog.verifying, [key]: true }
+                    try {
+                        const { data } = await _api.post('/api/proxies/catalog/verify',
+                            { host: item.host, port: item.port, secret: item.secret }, { timeout: 30000 })
+                        const result = data.result || {}
+                        this.mtCatalog.verified = { ...this.mtCatalog.verified, [key]: result.success
+                            ? { success: true, text: `Verified ${Number(result.latency_ms || 0)} ms` }
+                            : { success: false, text: result.error || 'Handshake failed' } }
+                    } catch (e) {
+                        this.mtCatalog.verified = { ...this.mtCatalog.verified, [key]: {
+                            success: false, text: e.response?.data?.detail || 'Verification failed' } }
+                    } finally {
+                        const verifying = { ...this.mtCatalog.verifying }
+                        delete verifying[key]
+                        this.mtCatalog.verifying = verifying
+                    }
+                },
+                async connectMtProxy(item) {
+                    const key = this.mtKey(item)
+                    if (this.mtCatalog.connecting || !item.reachable) return
+                    this.mtCatalog.connecting = key
+                    try {
+                        await _api.post('/api/proxies/catalog/save', {
+                            host: item.host, port: item.port, secret: item.secret,
+                            mode: this.mtCatalog.accountId ? 'assign' : 'global',
+                            account_id: this.mtCatalog.accountId || null,
+                        }, { timeout: 30000 })
+                        await this.loadProxies()
+                        this.showToast(this.mtCatalog.accountId
+                            ? 'MTProto proxy assigned. Reconnect the account to apply it.'
+                            : 'MTProto proxy set as the global default. New connections will use it.')
+                        this.addLog('MTProto proxy', `${item.host}:${item.port}`)
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not save the MTProto proxy.', true)
+                    } finally {
+                        this.mtCatalog.connecting = ''
                     }
                 },
                 // ---- Free proxies ----

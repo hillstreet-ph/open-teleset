@@ -16,11 +16,26 @@ from datetime import datetime
 from typing import Dict, Optional
 import aiohttp
 
+from mtproxy import normalize_secret, tcp_latency
+
 
 ACCOUNTS_DIR = "./accounts"
 FREE_PROXY_SOURCE = "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/protocols/socks5/data.txt"
 VERIFIED_PROXY_SOURCE = "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/all.txt"
 PROXIES_FILE = os.path.join(ACCOUNTS_DIR, "proxies.json")
+
+
+def proxy_transport(proxy):
+    """Extra TelegramClient kwargs required by an MTProto proxy.
+
+    Telethon only builds the obfuscated MTProxy transport when the connection
+    class is a TcpMTProxy subclass; a bare (host, port, secret) tuple is not
+    enough on its own.
+    """
+    if not isinstance(proxy, tuple):
+        return {}
+    from telethon.network.connection import ConnectionTcpMTProxyRandomizedIntermediate
+    return {"connection": ConnectionTcpMTProxyRandomizedIntermediate}
 
 
 class ProxyManager:
@@ -97,35 +112,47 @@ class ProxyManager:
         host: str,
         port: int,
         username: str = None,
-        password: str = None
+        password: str = None,
+        secret: str = None
     ) -> bool:
         """
         添加代理
 
         Args:
             proxy_id: 代理ID
-            protocol: 协议 (socks5, http, https, socks4)
+            protocol: 协议 (socks5, http, https, socks4, mtproto)
             host: 主机地址
             port: 端口
             username: 用户名
             password: 密码
+            secret: MTProto 密钥
 
         Returns:
             是否成功
         """
-        if (protocol.lower() not in ["socks5", "http", "socks4"] or not host.strip()
-                or not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535):
+        protocol = (protocol or "").lower()
+        if protocol not in ["socks5", "http", "socks4", "mtproto"]:
             return False
+        if not host or not host.strip() or not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
+            return False
+        if protocol == "mtproto":
+            secret = normalize_secret(secret)
+            if not secret:
+                return False
 
         self.proxies[proxy_id] = {
             "proxy_id": proxy_id,
-            "protocol": protocol.lower(),
+            "protocol": protocol,
             "host": host,
             "port": port,
             "username": username,
             "password": password,
             "created_at": datetime.now().isoformat()
         }
+        if protocol == "mtproto":
+            self.proxies[proxy_id]["secret"] = secret
+        else:
+            self.proxies[proxy_id].pop("secret", None)
 
         # 初始化统计
         if proxy_id not in self.proxy_stats:
@@ -166,7 +193,8 @@ class ProxyManager:
         host: str,
         port: int,
         username: str = None,
-        password: str = None
+        password: str = None,
+        secret: str = None
     ) -> bool:
         """
         设置全局代理
@@ -177,22 +205,31 @@ class ProxyManager:
             port: 端口
             username: 用户名
             password: 密码
+            secret: MTProto 密钥
 
         Returns:
             是否成功
         """
-        if (protocol.lower() not in ["socks5", "http", "socks4"] or not host.strip()
-                or not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535):
+        protocol = (protocol or "").lower()
+        if protocol not in ["socks5", "http", "socks4", "mtproto"]:
             return False
+        if not host or not host.strip() or not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
+            return False
+        if protocol == "mtproto":
+            secret = normalize_secret(secret)
+            if not secret:
+                return False
 
         self.global_proxy = {
-            "protocol": protocol.lower(),
+            "protocol": protocol,
             "host": host,
             "port": port,
             "username": username,
             "password": password,
             "updated_at": datetime.now().isoformat()
         }
+        if secret:
+            self.global_proxy["secret"] = secret
         self.maintenance = {}
 
         self._save_proxies()
@@ -274,8 +311,13 @@ class ProxyManager:
             Telethon 格式的代理配置
         """
         protocol = proxy_config.get("protocol", "socks5")
+        if protocol == "mtproto":
+            secret = normalize_secret(proxy_config.get("secret"))
+            if not secret:
+                raise ValueError("MTProto proxy secret is missing or invalid. Import it again.")
+            return (proxy_config.get("host"), proxy_config.get("port"), secret)
         if protocol not in {"socks5", "socks4", "http"}:
-            raise ValueError("Telegram supports SOCKS5, SOCKS4 and HTTP CONNECT proxies. Choose a supported proxy.")
+            raise ValueError("Telegram supports SOCKS5, SOCKS4, HTTP CONNECT and MTProto proxies. Choose a supported proxy.")
         host = proxy_config.get('host')
         port = proxy_config.get('port')
         username = proxy_config.get('username')
@@ -571,6 +613,13 @@ class ProxyManager:
         start_time = datetime.now()
 
         try:
+            if proxy_config.get("protocol") == "mtproto":
+                # Reachability only; a real Telegram handshake is an explicit,
+                # rate-limited verification action in the catalog.
+                latency = await tcp_latency(proxy_config.get("host"), proxy_config.get("port"), timeout)
+                if latency is None:
+                    return {"success": False, "error": "Connection timed out"}
+                return {"success": True, "response_time": latency}
             if proxy_config.get("protocol") in {"socks5", "socks4"}:
                 success = await asyncio.wait_for(self.test_socks_proxy(proxy_config, timeout), timeout * 3)
                 return {"success": success, "response_time": (datetime.now() - start_time).total_seconds() * 1000}

@@ -4,6 +4,7 @@ Web 管理后台
 FastAPI + WebSocket 实现实时状态推送
 """
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -22,6 +23,7 @@ import uvicorn
 # 导入管理模块
 from account_manager import account_manager
 from proxy_manager import proxy_manager
+import mtproxy
 from health_monitor import health_monitor
 from stats_tracker import stats_tracker
 from log_manager import log_manager
@@ -165,11 +167,12 @@ async def api_keys_revoke(request: Request, key_id: str):
 
 class AddProxyRequest(BaseModel):
     proxy_id: str
-    protocol: str  # socks5, http, https, socks4
+    protocol: str  # socks5, http, https, socks4, mtproto
     host: str
     port: int
     username: Optional[str] = None
     password: Optional[str] = None
+    secret: Optional[str] = None
 
 
 class SetGlobalProxyRequest(BaseModel):
@@ -178,6 +181,19 @@ class SetGlobalProxyRequest(BaseModel):
     port: int
     username: Optional[str] = None
     password: Optional[str] = None
+    secret: Optional[str] = None
+
+
+class MtprotoEndpoint(BaseModel):
+    host: str
+    port: int
+    secret: str
+
+
+class SaveMtprotoProxyRequest(MtprotoEndpoint):
+    mode: str = "save"  # save | global | assign
+    account_id: Optional[str] = None
+    proxy_id: Optional[str] = None
 
 
 class AssignProxyRequest(BaseModel):
@@ -306,10 +322,15 @@ async def generate_qr_code(request: dict):
     if not account_id:
         raise HTTPException(status_code=400, detail="缺少 account_id")
 
+    replace_account_id = request.get("replace_account_id")
+    if replace_account_id and replace_account_id not in account_manager.accounts:
+        raise HTTPException(status_code=404, detail="The account to re-login no longer exists.")
+
     stats_tracker.record_use(account_id)
 
     proxy, settings = login_connection(request, account_id)
-    result = await account_manager.generate_qr_code(account_id, proxy, proxy_settings=settings)
+    result = await account_manager.generate_qr_code(
+        account_id, proxy, proxy_settings=settings, replace_account_id=replace_account_id)
     return result
 
 
@@ -454,8 +475,13 @@ async def send_phone_code(request: dict):
     if not account_id or not phone:
         raise HTTPException(status_code=400, detail="缺少必要参数")
 
+    replace_account_id = request.get("replace_account_id")
+    if replace_account_id and replace_account_id not in account_manager.accounts:
+        raise HTTPException(status_code=404, detail="The account to re-login no longer exists.")
+
     proxy, settings = login_connection(request, account_id)
-    result = await account_manager.send_phone_code(account_id, phone, proxy, proxy_settings=settings)
+    result = await account_manager.send_phone_code(
+        account_id, phone, proxy, proxy_settings=settings, replace_account_id=replace_account_id)
 
     if result.get("success"):
         log_manager.add_log("账号管理", account_id, f"发送验证码到 {phone}", "info")
@@ -533,14 +559,15 @@ async def add_proxy(request: AddProxyRequest):
         request.host,
         request.port,
         request.username,
-        request.password
+        request.password,
+        request.secret
     )
 
     if success:
         log_manager.add_log("代理管理", request.proxy_id, f"添加代理 {request.protocol}://{request.host}:{request.port}", "success")
         return {"success": True, "message": "代理添加成功"}
     else:
-        raise HTTPException(status_code=400, detail="Use SOCKS5, SOCKS4 or HTTP CONNECT with a valid host and port (1–65535)")
+        raise HTTPException(status_code=400, detail="Use SOCKS5, SOCKS4, HTTP CONNECT or MTProto with a valid host, port (1–65535) and secret")
 
 
 @app.post("/api/proxies/set-global")
@@ -551,14 +578,15 @@ async def set_global_proxy(request: SetGlobalProxyRequest):
         request.host,
         request.port,
         request.username,
-        request.password
+        request.password,
+        request.secret
     )
 
     if success:
         log_manager.add_log("代理管理", "global", f"设置全局代理 {request.protocol}://{request.host}:{request.port}", "success")
         return {"success": True, "message": "全局代理设置成功"}
     else:
-        raise HTTPException(status_code=400, detail="Use SOCKS5, SOCKS4 or HTTP CONNECT with a valid host and port (1–65535)")
+        raise HTTPException(status_code=400, detail="Use SOCKS5, SOCKS4, HTTP CONNECT or MTProto with a valid host, port (1–65535) and secret")
 
 
 @app.delete("/api/proxies/global")
@@ -586,6 +614,49 @@ async def configure_free_global_proxy():
     log_manager.add_log("FreeProxy", "global", result["status"],
                         "success" if result["success"] else "warning")
     return result
+
+
+@app.get("/api/proxies/catalog")
+async def mtproto_proxy_catalog(limit: int = 40, refresh: bool = False):
+    """Free MTProto proxy catalog with TCP reachability for every page item."""
+    catalog = await mtproxy.fetch_catalog(limit=limit, force=refresh)
+    items = await mtproxy.probe_items(catalog["items"])
+    return {"success": True, "items": items, "sources": catalog["sources"],
+            "cached": catalog["cached"]}
+
+
+@app.post("/api/proxies/catalog/verify")
+async def verify_mtproto_proxy(request: MtprotoEndpoint):
+    """Prove a catalog entry completes a real Telegram MTProto handshake."""
+    result = await mtproxy.deep_verify(request.model_dump())
+    return {"success": bool(result.get("success")), "result": result}
+
+
+@app.post("/api/proxies/catalog/save")
+async def save_mtproto_proxy(request: SaveMtprotoProxyRequest):
+    endpoint = {"host": request.host, "port": request.port, "secret": request.secret}
+    if not mtproxy.normalize_secret(request.secret):
+        raise HTTPException(400, "The MTProto secret is invalid.")
+    if request.proxy_id:
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,60}", request.proxy_id):
+            raise HTTPException(400, "Proxy ID must be 1–60 letters, digits, underscores or hyphens.")
+        proxy_id = request.proxy_id
+    else:
+        digest = hashlib.sha256(f"{request.host}:{request.port}:{request.secret}".encode()).hexdigest()[:12]
+        proxy_id = f"mt-{digest}"
+    if request.mode not in {"save", "global", "assign"}:
+        raise HTTPException(400, "Choose save, global or assign.")
+    if request.mode == "assign" and request.account_id not in account_manager.accounts:
+        raise HTTPException(404, "Account does not exist")
+    if not proxy_manager.add_proxy(proxy_id, "mtproto", **endpoint):
+        raise HTTPException(400, "The MTProto proxy could not be saved.")
+    if request.mode == "global":
+        proxy_manager.set_global_proxy("mtproto", **endpoint)
+    elif request.mode == "assign":
+        proxy_manager.assign_proxy_to_account(request.account_id, proxy_id)
+        await update_account_connection(request.account_id, {"proxy_mode": "selected", "proxy_id": proxy_id})
+    log_manager.add_log("代理管理", proxy_id, f"MTProto {endpoint['host']}:{endpoint['port']}", "success")
+    return {"success": True, "proxy_id": proxy_id, "mode": request.mode}
 
 
 @app.put("/api/accounts/{account_id}/connection")
