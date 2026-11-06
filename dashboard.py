@@ -1016,13 +1016,18 @@ async def add_schedule(request: dict):
         add_usernames=request.get("add_usernames", []),
         add_limit=request.get("add_limit", 10),
         add_delay=request.get("add_delay", 35),
+        scrape_target=request.get("scrape_target"),
+        scrape_limit=request.get("scrape_limit", 200),
+        filter_bots=request.get("filter_bots", True),
+        join_urls=request.get("join_urls", []),
+        join_delay=request.get("join_delay", 35),
     )
 
     if success:
         log_manager.add_log("定时任务", schedule_id, f"添加定时任务: {name}", "success")
         return {"success": True, "message": "定时任务添加成功"}
     else:
-        raise HTTPException(status_code=400, detail="任务添加失败")
+        raise HTTPException(status_code=400, detail="Check the automation: a target, limits within their bounds and a supported action are required")
 
 
 @app.delete("/api/schedules/{schedule_id}")

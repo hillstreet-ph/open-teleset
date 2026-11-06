@@ -16,16 +16,43 @@ from template_manager import template_manager
 from log_manager import log_manager
 from outreach_policy import outreach_policy, dispatch_outreach, valid_bounds
 from open_teleset.operator_store import feature_enabled
-from telethon import utils
+from telethon import errors, utils
 
 
 ACCOUNTS_DIR = "./accounts"
 SCHEDULE_FILE = os.path.join(ACCOUNTS_DIR, "schedules.json")
 
+SCRAPE_LIMIT_MAX = 1000
+JOIN_LIMIT = 10
+JOIN_MIN_DELAY = 35
+
+
+def join_plan(schedule):
+    """Validate an Auto Join automation; joining is a self-action, never outreach."""
+    from telegram_ops import _parse_join_target
+
+    urls = schedule.get("join_urls")
+    delay = schedule.get("join_delay", JOIN_MIN_DELAY)
+    if (not isinstance(urls, list) or not 1 <= len(urls) <= JOIN_LIMIT
+            or type(delay) not in (int, float) or delay < JOIN_MIN_DELAY):
+        raise ValueError("invalid_join_schedule")
+    parsed = [_parse_join_target(url) for url in urls]
+    if not all(parsed):
+        raise ValueError("invalid_join_schedule")
+    return parsed, delay
+
 
 def schedule_requirements(schedule):
     action = schedule.get("action")
     if action == "scrape_members":
+        target = (schedule.get("scrape_target") or "").strip()
+        limit = schedule.get("scrape_limit", 200)
+        if (not target or len(target) > 256
+                or type(limit) is not int or not 1 <= limit <= SCRAPE_LIMIT_MAX):
+            raise ValueError("invalid_scrape_schedule")
+        return None, [], 0
+    if action == "auto_join":
+        join_plan(schedule)
         return None, [], 0
     if action not in {"send_message", "send_template", "ai_execute", "add_members"}:
         raise ValueError("unsupported_schedule_action")
@@ -137,6 +164,10 @@ class TaskScheduler:
                 "add_usernames": kwargs.get("add_usernames", []),
                 "add_limit": kwargs.get("add_limit", 10),
                 "add_delay": kwargs.get("add_delay", 35),
+                "scrape_target": kwargs.get("scrape_target"),
+                "scrape_limit": kwargs.get("scrape_limit", 200),
+                "join_urls": kwargs.get("join_urls", []),
+                "join_delay": kwargs.get("join_delay", JOIN_MIN_DELAY),
             })
         except ValueError:
             return False
@@ -183,6 +214,11 @@ class TaskScheduler:
             "add_usernames": kwargs.get("add_usernames", []),
             "add_limit": kwargs.get("add_limit", 10),
             "add_delay": kwargs.get("add_delay", 35),
+            "scrape_target": kwargs.get("scrape_target"),
+            "scrape_limit": kwargs.get("scrape_limit", 200),
+            "filter_bots": kwargs.get("filter_bots", True),
+            "join_urls": list(kwargs.get("join_urls") or []),
+            "join_delay": kwargs.get("join_delay", JOIN_MIN_DELAY),
         }
 
         self._save_schedules()
@@ -311,7 +347,7 @@ class TaskScheduler:
                 # ---- Action: scrape_members ----
                 if action == "scrape_members":
                     scrape_target = schedule.get("scrape_target", "")
-                    scrape_limit = schedule.get("scrape_limit", 200)
+                    scrape_limit = min(int(schedule.get("scrape_limit", 200) or 200), SCRAPE_LIMIT_MAX)
                     filter_bots = schedule.get("filter_bots", True)
                     if not scrape_target:
                         log_manager.add_log("定时任务", account_id, "scrape_members: no target specified", "error")
@@ -342,6 +378,35 @@ class TaskScheduler:
                         log_manager.add_log("定时任务", account_id,
                             f"Scrape failed for {scrape_target}: {type(e).__name__}", "error")
                         results.append({"account": account_id, "success": False, "error": type(e).__name__})
+
+                # ---- Action: auto_join ----
+                elif action == "auto_join":
+                    from telethon import functions as tl_functions
+                    targets, join_delay = join_plan(schedule)
+                    joined = skipped = failed = 0
+                    for idx, (kind, value) in enumerate(targets):
+                        try:
+                            if kind == "invite":
+                                await client(tl_functions.messages.ImportChatInviteRequest(value))
+                            else:
+                                entity = await client.get_entity(value)
+                                await client(tl_functions.channels.JoinChannelRequest(entity))
+                            joined += 1
+                        except errors.UserAlreadyParticipantError:
+                            skipped += 1
+                        except errors.FloodWaitError as exc:
+                            failed += 1
+                            log_manager.add_log("定时任务", account_id,
+                                f"Auto join stopped by a Telegram cooldown of {exc.seconds}s", "warning")
+                            break
+                        except Exception as exc:
+                            failed += 1
+                            log_manager.add_log("定时任务", account_id,
+                                f"Auto join failed for one target: {type(exc).__name__}", "error")
+                        if idx < len(targets) - 1:
+                            await asyncio.sleep(join_delay)
+                    results.append({"account": account_id, "success": failed == 0,
+                                    "joined": joined, "skipped": skipped, "failed": failed})
 
                 # ---- Action: add_members ----
                 elif action == "add_members":

@@ -1403,6 +1403,49 @@
                                 <div class="panel-foot"><button class="btn btn-outline btn-sm" @click="go('schedule')">Manage schedule</button></div>
                             </section>
                         </div>
+
+                        <div class="overview-grid">
+                            <section class="panel">
+                                <div class="panel-head"><h3>Internal automation</h3><span class="panel-sub">Recurring, with your own account</span></div>
+                                <div class="status-row">
+                                    <span class="status-key">Scrape members</span>
+                                    <span class="status-val">
+                                        <span class="badge badge-normal">{{ automationScheduleCount('scrape_members') }} scheduled</span>
+                                        <button class="btn btn-outline btn-sm" @click="openAutomationModal('scrape_members')">Create</button>
+                                    </span>
+                                </div>
+                                <div class="status-row">
+                                    <span class="status-key">Auto join</span>
+                                    <span class="status-val">
+                                        <span class="badge badge-normal">{{ automationScheduleCount('auto_join') }} scheduled</span>
+                                        <button class="btn btn-outline btn-sm" @click="openAutomationModal('auto_join')">Create</button>
+                                    </span>
+                                </div>
+                                <div class="status-row">
+                                    <span class="status-key">Add members</span>
+                                    <span class="status-val"><button class="btn btn-outline btn-sm" @click="go('adder')">Open adder · consent required</button></span>
+                                </div>
+                                <div class="status-row">
+                                    <span class="status-key">Bulk send</span>
+                                    <span class="status-val"><button class="btn btn-outline btn-sm" @click="go('bulksend')">Open bulk send · consent required</button></span>
+                                </div>
+                                <div class="status-row">
+                                    <span class="status-key">Auto reply</span>
+                                    <span class="status-val"><button class="btn btn-outline btn-sm" @click="go('autoreply')">Open rules · keyword matching</button></span>
+                                </div>
+                                <p class="muted small" style="margin-top:12px;">Scraping and auto join only touch channels and groups you point at with your own account. Adding members and bulk sending always run from their own surfaces with the consent confirmation left to you.</p>
+                            </section>
+
+                            <section class="panel">
+                                <div class="panel-head"><h3>Running cycles</h3><span class="panel-sub">{{ internalAutomations.length }} internal</span></div>
+                                <div v-if="!internalAutomations.length" class="empty-inline">No internal automation yet. Create one on the left.</div>
+                                <div v-for="sch in internalAutomations" :key="sch.schedule_id" class="status-row">
+                                    <span class="status-key">{{ sch.name }}</span>
+                                    <span class="status-val"><span class="badge" :class="sch.enabled ? 'badge-success' : 'badge-normal'">{{ getScheduleDescription(sch) }} · {{ sch.enabled ? 'On' : 'Off' }}</span></span>
+                                </div>
+                                <div class="panel-foot"><button class="btn btn-outline btn-sm" @click="go('schedule')">Manage schedule</button></div>
+                            </section>
+                        </div>
                     </div>
 
                     <!-- ============ Integrations ============ -->
@@ -4441,6 +4484,75 @@
         </div>
 
         <!-- Schedule Modal -->
+        <div v-if="showAutomationModal" class="modal" @click.self="closeAutomationModal">
+            <div class="modal-content" style="text-align: left; min-width: 560px; max-width: 720px; max-height: 90vh; overflow-y: auto;">
+                <h2 style="margin-bottom: 6px;">New automation</h2>
+                <p class="muted small" style="margin-bottom: 18px;">
+                    {{ automationForm.action === 'scrape_members'
+                        ? 'Reads the member list of one channel or group on a schedule. Nothing is sent and no one is contacted.'
+                        : 'Joins the channels and groups you list, one at a time, with your own account.' }}
+                </p>
+
+                <div class="form-group">
+                    <label>Name</label>
+                    <input v-model="automationForm.name" class="form-control" placeholder="Weekly member refresh">
+                </div>
+
+                <div class="form-group">
+                    <label>Account</label>
+                    <select v-model="automationForm.accountId" class="form-control">
+                        <option value="">-- Select an account --</option>
+                        <option v-for="acc in accounts" :key="acc.account_id" :value="acc.account_id">{{ accountLabel(acc) }}</option>
+                    </select>
+                </div>
+
+                <template v-if="automationForm.action === 'scrape_members'">
+                    <div class="form-group">
+                        <label>Channel or group</label>
+                        <input v-model="automationForm.scrapeTarget" class="form-control" placeholder="@channel or t.me link">
+                    </div>
+                    <div class="form-group">
+                        <label>Members to read</label>
+                        <input type="number" min="1" max="1000" v-model.number="automationForm.scrapeLimit" class="form-control">
+                    </div>
+                    <div class="form-group">
+                        <label><input type="checkbox" v-model="automationForm.filterBots"> Skip bot accounts</label>
+                    </div>
+                </template>
+
+                <template v-else>
+                    <div class="form-group">
+                        <label>Links or usernames, one per line</label>
+                        <textarea v-model="automationForm.joinUrls" class="form-control" rows="4" placeholder="https://t.me/+invite&#10;@publicchannel"></textarea>
+                        <p class="muted small" style="margin-top:5px;">Up to 10 links. Each join is separated by {{ automationForm.joinDelay }} seconds.</p>
+                    </div>
+                </template>
+
+                <div class="form-group">
+                    <label>Run</label>
+                    <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                        <select v-model="automationForm.repeat" class="form-control" style="width: 140px;">
+                            <option value="once">Once</option>
+                            <option value="daily">Daily</option>
+                            <option value="weekly">Weekly</option>
+                            <option value="workday">Weekdays</option>
+                        </select>
+                        <select v-model.number="automationForm.hour" class="form-control" style="width: 90px;">
+                            <option v-for="h in 24" :key="h-1" :value="h-1">{{ (h-1).toString().padStart(2,'0') }}h</option>
+                        </select>
+                        <select v-model.number="automationForm.minute" class="form-control" style="width: 90px;">
+                            <option v-for="m in 60" :key="m-1" :value="m-1">{{ (m-1).toString().padStart(2,'0') }}m</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 22px;">
+                    <button class="btn btn-outline" @click="closeAutomationModal">Cancel</button>
+                    <button class="btn btn-primary" @click="saveAutomation" :disabled="automationSaving">{{ automationSaving ? 'Saving…' : 'Create automation' }}</button>
+                </div>
+            </div>
+        </div>
+
         <div v-if="showScheduleModal" class="modal" @click.self="closeScheduleModal">
             <div class="modal-content" style="text-align: left; min-width: 700px; max-width: 900px; max-height: 90vh; overflow-y: auto;">
                 <h2 style="text-align: center; margin-bottom: 20px;">Add schedule</h2>
@@ -5274,6 +5386,22 @@
                     scheduleStep: 1,
                     scheduleSubmitting: false,
                     schedules: [],
+                    // Internal automation creator (scrape / auto join)
+                    showAutomationModal: false,
+                    automationSaving: false,
+                    automationForm: {
+                        action: 'scrape_members',
+                        name: '',
+                        accountId: '',
+                        scrapeTarget: '',
+                        scrapeLimit: 200,
+                        filterBots: true,
+                        joinUrls: '',
+                        joinDelay: 35,
+                        repeat: 'weekly',
+                        hour: 9,
+                        minute: 0
+                    },
                     newSchedule: {
                         messageSource: 'input',
                         message: '',
@@ -5466,6 +5594,9 @@
                 },
                 enabledSchedules() {
                     return this.schedules.filter(s => s.enabled).length
+                },
+                internalAutomations() {
+                    return this.schedules.filter(s => ['scrape_members', 'auto_join'].includes(s.action))
                 },
                 automationStateLabel() {
                     if (this.automation.loading && !this.automation.status) return 'Loading'
@@ -9959,6 +10090,77 @@
                     this.showScheduleModal = false
                     this.scheduleStep = 1
                 },
+                automationScheduleCount(action) {
+                    return this.schedules.filter(s => s.action === action).length
+                },
+                openAutomationModal(action) {
+                    this.automationForm = {
+                        action,
+                        name: action === 'scrape_members' ? 'Member scrape' : 'Auto join',
+                        accountId: this.accounts.length ? this.accounts[0].account_id : '',
+                        scrapeTarget: '',
+                        scrapeLimit: 200,
+                        filterBots: true,
+                        joinUrls: '',
+                        joinDelay: 35,
+                        repeat: 'weekly',
+                        hour: 9,
+                        minute: 0
+                    }
+                    this.automationSaving = false
+                    this.showAutomationModal = true
+                },
+                closeAutomationModal() {
+                    this.showAutomationModal = false
+                },
+                async saveAutomation() {
+                    const form = this.automationForm
+                    const urls = form.joinUrls.split('\n').map(v => v.trim()).filter(Boolean)
+                    if (!form.name.trim()) return this.showToast('Name the automation.', true)
+                    if (!form.accountId) return this.showToast('Choose the account that runs it.', true)
+                    if (form.action === 'scrape_members' && !form.scrapeTarget.trim()) {
+                        return this.showToast('Enter the channel or group to read.', true)
+                    }
+                    if (form.action === 'auto_join') {
+                        if (!urls.length) return this.showToast('Add at least one link or username.', true)
+                        if (urls.length > 10) return this.showToast('Add at most 10 links per run.', true)
+                    }
+                    // "Once" needs a concrete day; a time already past today means tomorrow.
+                    const when = new Date()
+                    when.setHours(form.hour, form.minute, 0, 0)
+                    if (when <= new Date()) when.setDate(when.getDate() + 1)
+                    const payload = {
+                        schedule_id: 'sched_auto_' + Date.now(),
+                        name: form.name.trim(),
+                        action: form.action,
+                        repeat: form.repeat,
+                        execute_time: { day: when.getDate(), month: when.getMonth() + 1,
+                                        hour: form.hour, minute: form.minute },
+                        account_id: form.accountId,
+                        account_ids: [form.accountId],
+                        enabled: true
+                    }
+                    if (form.action === 'scrape_members') {
+                        payload.scrape_target = form.scrapeTarget.trim()
+                        payload.scrape_limit = Math.max(1, Math.min(1000, Number(form.scrapeLimit) || 200))
+                        payload.filter_bots = Boolean(form.filterBots)
+                    } else {
+                        payload.join_urls = urls
+                        payload.join_delay = Math.max(35, Number(form.joinDelay) || 35)
+                    }
+                    this.automationSaving = true
+                    try {
+                        await _api.post('/api/schedules', payload)
+                        this.showToast('Automation created.')
+                        this.addLog('Create automation', payload.name)
+                        this.showAutomationModal = false
+                        await this.loadSchedules()
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not create the automation.', true)
+                    } finally {
+                        this.automationSaving = false
+                    }
+                },
                 async loadAccountFriends() {
                     if (!this.newSchedule.selectedAccount) {
                         this.accountFriends = []
@@ -10118,7 +10320,9 @@
                         'send_template': 'Send template',
                         'ai_execute': 'AI run',
                         'health_check': 'Health check',
-                        'join_channel': 'Join channel'
+                        'join_channel': 'Join channel',
+                        'scrape_members': 'Scrape members',
+                        'auto_join': 'Auto join'
                     }
                     const action = actionMap[sch.action] || (sch.action ? String(sch.action).replace(/_/g, ' ') : 'Scheduled task')
                     const target = sch.target || sch.chat || sch.recipient || ''
@@ -10128,6 +10332,10 @@
                         detail = sch.message.substring(0, 50) + (sch.message.length > 50 ? '...' : '')
                     } else if (sch.action === 'send_template' && sch.template_id) {
                         detail = `Template: ${sch.template_id}`
+                    } else if (sch.action === 'scrape_members' && sch.scrape_target) {
+                        detail = sch.scrape_target
+                    } else if (sch.action === 'auto_join' && sch.join_urls?.length) {
+                        detail = `${sch.join_urls.length} link${sch.join_urls.length === 1 ? '' : 's'}`
                     }
 
                     return `${action}${target ? ' → ' + target : ''}${detail ? ': ' + detail : ''}`
