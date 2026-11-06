@@ -51,6 +51,7 @@ function harness(draftResponse) {
   const state = {
     copilot: {
       instruction: '', loading: false, draft: null, presets: [], error: '', turnId: '', history: [],
+      mode: 'ask', enhanced: [], attachments: [], suggestions: [], files: [],
       editing: '', saving: false, formError: '',
       form: { group: '', title: '', description: '', instruction: '', command: '' },
     },
@@ -86,7 +87,7 @@ const FORBIDDEN = /send|bulk|outreach|autojoin|adder|\/api\/schedules/i;
 test('copilot navigation and page metadata are wired', () => {
   assert.ok(html.includes("{ tab: 'copilot', label: 'Copilot', icon: 'copilot' }"));
   assert.ok(html.includes("copilot: ['Copilot', 'Draft templates, schedules and opt-in sends in plain language.']"));
-  assert.match(html, /if \(tab === 'copilot'\) \{ this\.loadCopilot\(\); this\.loadCopilotHistory\(\) \}/);
+  assert.match(html, /if \(tab === 'copilot'\) \{ this\.loadCopilot\(\); this\.loadCopilotHistory\(\); this\.loadCopilotSuggestions\(\); this\.loadCopilotAttachments\(\) \}/);
   assert.ok(html.includes('v-show="tab === \'copilot\'"'));
 });
 

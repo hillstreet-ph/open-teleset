@@ -87,7 +87,9 @@ function freshState() {
     config: { success: true, enabled: true, accounts: [], limit: 8, state: {}, watched: [], chats: 0,
       subscribers: 0, skipped_unknown: 0, labels: { lost: 'The connection stopped.' }, buckets: ['personal', 'group', 'channel', 'bot'] },
     chats: [], bucket: '', account: '', query: '', ref: '',
-    messages: [], reply: '', loading: false, busy: '', error: '', live: false, streamError: '',
+    messages: [], reply: '', loading: false, busy: '', error: '',
+    media: {}, mediaError: {},
+    live: false, streamError: '',
   };
 }
 
@@ -132,6 +134,8 @@ function harness({ responses = {}, fail = [] } = {}) {
     },
     _apiOrigin: 'http://localhost',
     _mailboxStream: null,
+    // Module-scope constant: the extracted methods reference it but do not define it.
+    MAX_MAILBOX_MEDIA: Number(/const MAX_MAILBOX_MEDIA = (\d+)/.exec(html)?.[1]),
     console,
     JSON,
     Date,
