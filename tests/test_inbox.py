@@ -208,6 +208,63 @@ def test_a_corrupt_record_falls_back_to_nothing_watched(workspace):
     assert inbox.counters("op-1") == {}
 
 
+class FakePhotoSize:
+    def __init__(self, payload):
+        self.size = len(payload)
+        self.payload = payload
+
+
+class FakePhoto:
+    """A real photo carries one entry per thumbnail and picks the biggest itself."""
+
+    def __init__(self, payload, thumb=b"t"):
+        self.sizes = [FakePhotoSize(thumb), FakePhotoSize(payload)]
+
+    def get_biggest(self):
+        return self.sizes[-1]
+
+
+class DocumentAttributeFilename(SimpleNamespace):
+    """Named to match Telethon: _file_name reads the attribute by type, as the real client sets it."""
+
+
+class FakeDocument:
+    def __init__(self, payload, mime="application/pdf", name=""):
+        self.size = len(payload)
+        self.mime_type = mime
+        self.attributes = [DocumentAttributeFilename(file_name=name)] if name else []
+        # Only the fake connection knows the bytes; the product never reads this back.
+        self.payload = payload
+        # Handles a fake would happily leak, to prove the descriptor never carries one.
+        self.file_id = "AgADbTestFileId"
+        self.access_hash = 1234567890123
+
+
+FAKE_PNG = b"\x89PNG\r\n\x1a\n" + b"a tiny picture"
+FAKE_PDF = b"%PDF-1.4 fake body"
+
+
+def an_attachment(kind, payload=FAKE_PNG, *, name="", mime="", mid=701, text="", peer=4242):
+    """One message carrying one file, shaped the way Telethon hands it to get_messages.
+
+    Telegram also sets `document` for every non-photo file, so the fake does the same - that is
+    precisely why the descriptor has to check `document` last.
+    """
+    event = SimpleNamespace(id=mid, raw_text=text, date=time.time(), out=False, sender=None,
+                            chat=a_user(pid=peer), chat_id=peer,
+                            file_name=name, mime_type=mime, photo=None, sticker=None,
+                            voice=None, video_note=None, gif=None, video=None, audio=None,
+                            document=None)
+    if kind == "photo":
+        event.photo = FakePhoto(payload)
+    else:
+        found = FakeDocument(payload, mime or "application/pdf", name)
+        event.document = found
+        if kind != "document":
+            setattr(event, kind, found)
+    return event
+
+
 class FakeClient:
     """Stands a Telethon client in at the seams the inbox actually touches."""
 
@@ -218,6 +275,10 @@ class FakeClient:
         self.removed = []
         self.sent = []
         self.read = 0
+        # Telegram resolves an id inside the chat it was read from, so the fake keys the same way.
+        self.attachments = {}
+        self.threads = {}
+        self.downloads = []
 
     def add_event_handler(self, handler, *args, **kwargs):
         if self.fail_add:
@@ -236,9 +297,21 @@ class FakeClient:
         yield SimpleNamespace(entity=SimpleNamespace(id=999), name="a chat we cannot file",
                               message=None, date=time.time(), unread_count=0)
 
-    async def get_messages(self, peer, limit=50, offset_id=0):
+    async def get_messages(self, peer, limit=50, offset_id=0, ids=None):
+        if ids is not None:
+            wanted = ids[0] if isinstance(ids, (list, tuple)) else ids
+            return self.attachments.get((peer, wanted))
+        if peer in self.threads:
+            return self.threads[peer]
         return [SimpleNamespace(id=index, raw_text=f"line {index}", date=time.time(),
                                 out=False, sender=None) for index in range(min(limit, 5))]
+
+    async def iter_download(self, target, file_size=None, chunk_size=None):
+        self.downloads.append({"file_size": file_size, "chunk_size": chunk_size})
+        payload = target.payload
+        step = int(chunk_size or len(payload)) or len(payload)
+        for start in range(0, len(payload), step):
+            yield payload[start:start + step]
 
     async def send_message(self, peer, text):
         self.sent.append((peer, text))
@@ -246,6 +319,19 @@ class FakeClient:
 
     async def mark_read(self, entity):
         self.read += 1
+
+
+class UndownloadableClient:
+    """A connection with no download method at all. The guard should stop before Telegram is read."""
+
+    def __init__(self, account_id="acct-0"):
+        self.account_id = account_id
+        self.reads = 0
+
+    async def get_messages(self, peer, limit=50, offset_id=0, ids=None):
+        self.reads += 1
+        return None
+
 
 
 @pytest.fixture
@@ -507,7 +593,7 @@ def test_every_route_refuses_while_the_switch_is_off(api):
     operator_store.set_features({"inbox_enabled": False})
     for method, path in [("get", "/api/inbox/config"), ("get", "/api/inbox/chats"),
                          ("post", "/api/inbox/refresh"), ("delete", "/api/inbox/cache"),
-                         ("get", "/api/inbox/stream")]:
+                         ("get", "/api/inbox/media/r1/1"), ("get", "/api/inbox/stream")]:
         response = getattr(api, method)(path)
         assert response.status_code == 403, path
         assert response.json()["detail"] == inbox.OFF_MESSAGE
@@ -659,13 +745,184 @@ def test_the_stream_opens_ready_then_the_wall_then_live_events(api):
     assert inbox.HUB.subscribers("op-1") == 0
 
 
+def seed_chat(api, event):
+    """Put one message on the wall and make it that chat's, so the route can find it by id."""
+    account_id = opted_in_api(api)
+    asyncio.run(inbox.note(account_id, event))
+    ref = inbox.WALLS["op-1"].rows()[0]["ref"]
+    fake = api.inbox_account["clients"][account_id]
+    fake.attachments[(event.chat_id, event.id)] = event
+    fake.threads[event.chat_id] = [event]
+    return ref, fake
+
+
+def test_media_describes_the_file_and_leaves_the_telegram_handles_out():
+    photo = inbox.media_of(an_attachment("photo", mime="image/png"))
+    assert photo["kind"] == "photo" and photo["label"] == "Photo"
+    assert photo["mime"] == "image/png" and photo["inline"] is True
+    assert photo["size"] == len(FAKE_PNG) and photo["human"] == f"{len(FAKE_PNG)} B"
+
+    paper = inbox.media_of(an_attachment("document", payload=FAKE_PDF, name="notes.pdf",
+                                         mime="application/pdf"))
+    assert paper["kind"] == "document" and paper["name"] == "notes.pdf"
+    assert paper["inline"] is False
+    assert "AgAD" not in str(paper) and "1234567890123" not in str(paper)
+
+
+def test_a_photo_with_no_declared_type_is_still_worth_rendering():
+    assert inbox.media_of(an_attachment("photo"))["mime"] == "image/jpeg"
+
+
+@pytest.mark.parametrize("kind,label", [("sticker", "Sticker"), ("voice", "Voice message"),
+                                        ("video_note", "Video note"), ("gif", "GIF"),
+                                        ("video", "Video"), ("audio", "Audio")])
+def test_every_telegram_media_kind_gets_a_name(kind, label):
+    shape = inbox.media_of(an_attachment(kind, payload=b"x" * 10, mime="video/mp4"))
+    assert shape["kind"] == kind and shape["label"] == label
+
+
+def test_a_file_is_the_last_choice_because_telegram_marks_gifs_as_documents_too():
+    event = an_attachment("gif", payload=b"x" * 10, mime="video/mp4")
+    assert event.document is not None          # the fake mirrors what Telethon actually sets
+    assert inbox.media_of(event)["kind"] == "gif"
+
+
+def test_a_file_gives_the_chat_a_line_instead_of_a_blank_preview():
+    shot = inbox.message_shape(an_attachment("photo"))
+    assert inbox.preview_of(shot) == f"Photo · {len(FAKE_PNG)} B"
+
+    paper = inbox.message_shape(an_attachment("document", payload=FAKE_PDF,
+                                              name="quarterly-report.pdf", mime="application/pdf"))
+    assert inbox.preview_of(paper) == f"quarterly-report.pdf · {len(FAKE_PDF)} B"
+
+    said = inbox.message_shape(an_attachment("photo", text="look at this"))
+    assert inbox.preview_of(said) == "look at this"
+
+
+def test_a_photo_on_the_wall_is_a_line_not_a_blank(accounts):
+    account_id = watched_operator(accounts)
+    asyncio.run(inbox.note(account_id, an_attachment("photo")))
+    assert inbox.WALLS["op-1"].rows()[0]["preview"] == f"Photo · {len(FAKE_PNG)} B"
+
+
+def test_a_thread_page_carries_the_descriptor_and_no_telegram_handle(api):
+    paper = an_attachment("document", payload=FAKE_PDF, name="notes.pdf",
+                          mime="application/pdf", text="see the chart")
+    ref, _ = seed_chat(api, paper)
+    page = api.get(f"/api/inbox/chats/{ref}/messages", params={"limit": 10}).json()
+    shot = page["messages"][0]
+    assert shot["text"] == "see the chart"
+    assert shot["media"]["name"] == "notes.pdf" and shot["media"]["inline"] is False
+    assert "AgAD" not in str(page) and "file_id" not in str(page)
+    assert "payload" not in str(page)
+
+
+def test_a_photo_streams_inline_and_a_file_is_offered_as_a_download(api):
+    ref, fake = seed_chat(api, an_attachment("photo", mime="image/png"))
+    shot = api.get(f"/api/inbox/media/{ref}/701")
+    assert shot.status_code == 200
+    assert shot.content == FAKE_PNG
+    assert shot.headers["content-type"] == "image/png"
+    assert shot.headers["content-disposition"] == 'inline; filename="photo"'
+    assert shot.headers["cache-control"] == "no-store"
+    assert shot.headers["x-content-type-options"] == "nosniff"
+    assert fake.downloads == [{"file_size": len(FAKE_PNG), "chunk_size": inbox.MEDIA_CHUNK_BYTES}]
+
+
+def test_a_document_is_served_as_a_named_download(api):
+    ref, _ = seed_chat(api, an_attachment("document", payload=FAKE_PDF,
+                                         name="quarterly report.pdf", mime="application/pdf"))
+    answer = api.get(f"/api/inbox/media/{ref}/701")
+    assert answer.status_code == 200
+    assert answer.content == FAKE_PDF
+    assert answer.headers["content-type"] == "application/octet-stream"
+    assert answer.headers["content-disposition"] == 'attachment; filename="quarterly report.pdf"'
+
+
+def test_a_file_name_arriving_with_a_path_cannot_bear_a_header(api):
+    ref, _ = seed_chat(api, an_attachment("document", name='../../evil";x.pdf',
+                                         mime="application/pdf"))
+    answer = api.get(f"/api/inbox/media/{ref}/701")
+    assert answer.headers["content-disposition"] == 'attachment; filename="evilx.pdf"'
+
+
+def test_a_message_with_no_file_attached_says_so(api):
+    ref, fake = seed_chat(api, an_attachment("photo", mime="image/png"))
+    fake.attachments[(4242, 900)] = SimpleNamespace(id=900, raw_text="plain words",
+                                                    date=time.time(), out=False, sender=None)
+    refusal = api.get(f"/api/inbox/media/{ref}/900")
+    assert refusal.status_code == 404 and refusal.json()["detail"] == inbox.NO_MEDIA
+
+
+def test_an_id_only_a_different_chat_has_is_not_a_file_here(api):
+    """The id is resolved inside this chat, so a message id from another conversation is nothing."""
+    account_id = opted_in_api(api)
+    asyncio.run(inbox.note(account_id, an_event(peer=4242)))
+    ref = inbox.WALLS["op-1"].rows()[0]["ref"]
+    fake = api.inbox_account["clients"][account_id]
+    fake.attachments[(999999, 701)] = an_attachment("photo", peer=999999, mime="image/png")
+
+    denial = api.get(f"/api/inbox/media/{ref}/701")
+    assert denial.status_code == 404 and denial.json()["detail"] == inbox.NO_MEDIA
+    assert fake.downloads == []
+
+
+def test_another_operators_ref_is_not_a_chat_you_can_download(api):
+    account_id = opted_in_api(api)
+    asyncio.run(inbox.note(account_id, an_event(peer=4242)))
+    foreign = inbox.peer_ref("op-2", account_id, 4242)
+    assert api.get(f"/api/inbox/media/{foreign}/701").status_code == 404
+
+
+def test_a_file_past_the_cap_is_refused_before_the_bytes_move(api):
+    event = an_attachment("document", payload=b"x" * 16, name="huge.bin",
+                          mime="application/octet-stream")
+    event.document.size = inbox.MAX_MEDIA_BYTES + 1
+    ref, fake = seed_chat(api, event)
+    refusal = api.get(f"/api/inbox/media/{ref}/701")
+    assert refusal.status_code == 413 and refusal.json()["detail"] == inbox.MEDIA_TOO_BIG
+    assert fake.downloads == []
+
+
+def test_bytes_past_the_cap_are_dropped_when_telegram_declared_no_size(api, monkeypatch):
+    """Telegram sometimes says nothing about the size, so the cap is held while streaming too."""
+    monkeypatch.setattr(inbox, "MAX_MEDIA_BYTES", 20)
+    monkeypatch.setattr(inbox, "MEDIA_CHUNK_BYTES", 8)
+    event = an_attachment("document", payload=b"y" * 40, name="stream.bin",
+                          mime="application/octet-stream")
+    event.document.size = 0
+    ref, _ = seed_chat(api, event)
+    answer = api.get(f"/api/inbox/media/{ref}/701")
+    assert answer.status_code == 200 and len(answer.content) <= 20
+    assert answer.content == b"y" * 16
+
+
+def test_a_connection_that_cannot_hand_back_bytes_keeps_our_sentence(api):
+    account_id = opted_in_api(api)
+    asyncio.run(inbox.note(account_id, an_event(peer=4242)))
+    ref = inbox.WALLS["op-1"].rows()[0]["ref"]
+    plain = UndownloadableClient(account_id)
+    inbox._CLIENTS[account_id] = plain
+
+    refusal = api.get(f"/api/inbox/media/{ref}/701")
+    assert refusal.status_code == 400 and refusal.json()["detail"] == inbox.MEDIA_FAILED
+    assert plain.reads == 0
+
+
+def test_the_config_publishes_the_media_bounds(api):
+    body = api.get("/api/inbox/config").json()
+    assert body["media_limit"] == inbox.MAX_MEDIA_BYTES
+    assert "image/png" in body["media_inline"] and "application/pdf" not in body["media_inline"]
+
+
 def test_the_dashboard_mounts_the_inbox_routes():
     """The MCP app is mounted at "/", so the product routers must be registered too."""
     import dashboard
 
     paths = dashboard.app.openapi()["paths"]
     for path in ["/api/inbox/config", "/api/inbox/chats", "/api/inbox/chats/{ref}/messages",
-                 "/api/inbox/chats/{ref}/read", "/api/inbox/refresh", "/api/inbox/cache",
+                 "/api/inbox/chats/{ref}/read", "/api/inbox/media/{ref}/{message_id}",
+                 "/api/inbox/refresh", "/api/inbox/cache",
                  "/api/inbox/stream", "/api/inbox/accounts/{account_id}"]:
         assert path in paths, path
 

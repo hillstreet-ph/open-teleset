@@ -28,7 +28,8 @@ how many chats could not be classified instead of filing them somewhere plausibl
 
 Each row carries the name, the bucket, the account it belongs to, the last preview and an
 unread pill. The sidebar badge on **Inbox** is the sum of those unreads, so it goes down as
-you read.
+you read. A chat whose last message is a file gets a line for that file — `Photo · 101 B`,
+`report.pdf · 240 KB` — instead of a blank row.
 
 Filters are local to the screen: the account selector, the four bucket buttons and the search
 box narrow the same wall without another round trip.
@@ -46,6 +47,51 @@ inbox open." A tab that stops keeping up is dropped from the fan-out and reports
 reload it and it catches up from the wall again.
 
 Leaving the tab closes the stream. Nothing keeps running in the background on your behalf.
+
+## Files and photos
+
+A message that carries something besides text is described, not shipped. Every thread row and
+every chat preview gets a small descriptor:
+
+| Field | What the browser is told |
+| --- | --- |
+| `kind` | which Telegram attachment it is: `photo`, `sticker`, `voice`, `video_note`, `gif`, `video`, `audio`, `document` |
+| `label` | the word the operator reads: Photo, Sticker, Voice message, File |
+| `name` | the file name Telegram attached, if the message has one |
+| `mime` | the declared content type; a photo with no type is treated as `image/jpeg` |
+| `size` / `human` | the byte count, and the same number already formatted |
+| `inline` | whether this screen renders it as a picture |
+
+The `file_id` and `access_hash` never leave the process. They are re-resolved server-side, inside
+the chat the reference already points at, so guessing an id from another conversation gets nothing.
+`document` is matched last on purpose: Telegram sets it for gifs, videos and voice notes too, and a
+descriptor that matched it first would label all of those as a plain file.
+
+`inline` is decided by the server, from `image/jpeg`, `image/png`, `image/gif` and `image/webp`,
+so the thread that renders a picture and the route that serves it cannot drift apart. Anything
+else arrives as a chip with its name, its size and **Save file**.
+
+The bytes come from `GET /api/inbox/media/{ref}/{message_id}`, stream straight out of Telegram into
+the response, and are never written to disk. Each one carries `Cache-Control: no-store`,
+`X-Content-Type-Options: nosniff` and a `Content-Disposition` built from a sanitized name, because
+Telegram file names arrive with paths, quotes and semicolons in them. The declared size is checked
+before anything moves, and the 8 MB cap is enforced again as chunks arrive for a sender that
+declared nothing. What the thread shows is the server's own sentence, never a blank box:
+
+| Response | When |
+| --- | --- |
+| 404 — "That message has no file to open here." | a text message, or an id this chat does not have |
+| 413 — "That file is bigger than the 8 MB this screen will carry." | over the cap |
+| 400 — "Telegram did not hand back that file. Use Refresh now and try again." | Telegram refused |
+
+The page asks for these bytes with its authenticated client and renders a blob URL rather than
+pointing an `<img src>` at the route. Authentication on this product is a Bearer header and tokens
+in URLs are not supported, so an image tag could never pass the check — and a token in a URL is a
+credential in browser history, server logs and every proxy in between.
+
+Screens are bounded on this side too. Opening a chat fetches at most the 12 newest inline
+attachments, one at a time, and stops if you move to another chat mid-fetch. Switching chats or
+pressing **Clear this screen** revokes every blob the browser was holding.
 
 ## Replying
 
@@ -92,7 +138,8 @@ Only your own settings are persisted. The encrypted store sees the list of opted
 and the unread counters — nothing else. Message bodies, sender names and chat previews live
 in this process's memory and are gone when the container restarts, so no corpus of other
 people's messages accumulates on disk. A restart costs a re-read, which is what **Refresh
-now** is for.
+now** is for. Attachments follow the same rule: a file is fetched when you ask for it and
+streams past the server, so nothing of theirs is kept here either.
 
 Other people's chats are addressed by an opaque reference: the account id and peer id are
 hashed with your operator id and truncated to 16 characters. The API never returns the raw
@@ -115,6 +162,9 @@ stops every stream immediately.
 | Reply length | 700 |
 | Simultaneous stream tabs | 4 |
 | Stale events | dropped after 30 minutes |
+| One attachment | 8 MB, streamed and never written to disk |
+| Kinds rendered as a picture | jpeg, png, gif, webp |
+| Pictures fetched when a chat opens | 12 newest, one at a time |
 
 These are deliberate. Eight accounts is already a wide surface to be watching, and Telegram
 does not reward an aggressive one.

@@ -39,6 +39,9 @@ NO_REF = "That chat is not on this screen any more. Use Refresh now."
 NO_ACCOUNT = "No account here answers to that id."
 TOO_MANY_SUBSCRIBERS = "Four tabs already have this inbox open."
 EMPTY_REPLY = "Type a reply before sending it."
+NO_MEDIA = "That message has no file to open here."
+MEDIA_FAILED = "Telegram did not hand back that file. Use Refresh now and try again."
+MEDIA_TOO_BIG = "That file is bigger than the 8 MB this screen will carry."
 BUCKETS = ("personal", "group", "channel", "bot")
 
 MAX_WATCHED = 8
@@ -53,6 +56,28 @@ REPLY_MAX = 700
 QUEUE_MAXSIZE = 200
 PEER_REF_LENGTH = 16
 NAME_MAX = 60
+MEDIA_NAME_MAX = 80
+
+# A download is streamed from Telegram into the browser and never touches disk. The cap keeps
+# one operator from holding a container's whole memory budget in one request.
+MAX_MEDIA_BYTES = 8 * 1024 * 1024
+MEDIA_CHUNK_BYTES = 64 * 1024
+# Anything outside this list is served as a download, never rendered by the browser.
+INLINE_MEDIA_TYPES = ("image/jpeg", "image/png", "image/gif", "image/webp")
+
+# Checked in this order: Telegram sets one media accessor per message, and "document" is true
+# for gifs, videos and voice notes too, so it has to come last.
+MEDIA_FIELDS = ("photo", "sticker", "voice", "video_note", "gif", "video", "audio", "document")
+MEDIA_LABELS = {
+    "photo": "Photo",
+    "sticker": "Sticker",
+    "voice": "Voice message",
+    "video_note": "Video note",
+    "gif": "GIF",
+    "video": "Video",
+    "audio": "Audio",
+    "document": "File",
+}
 
 STATE_LABELS = {
     "off": "Inbox is switched off.",
@@ -354,15 +379,100 @@ def _seconds(value: Any) -> float:
     return time.time()
 
 
+def _human_size(value: Any) -> str:
+    try:
+        size = int(value)
+    except (TypeError, ValueError):
+        return ""
+    if size < 0:
+        return ""
+    for unit, limit in (("GB", 1024 ** 3), ("MB", 1024 ** 2), ("KB", 1024)):
+        if size >= limit:
+            return f"{size / limit:.1f} {unit}"
+    return f"{size} B"
+
+
+def _file_name(event: Any, found: Any) -> str:
+    name = str(getattr(event, "file_name", "") or "")
+    if not name:
+        for attr in getattr(found, "attributes", None) or []:
+            if type(attr).__name__ == "DocumentAttributeFilename":
+                name = str(getattr(attr, "file_name", "") or "")
+                break
+    if not name:
+        name = str(getattr(found, "name", "") or "")
+    return name[:MEDIA_NAME_MAX]
+
+
+def _file_size(kind: str, found: Any) -> int:
+    if kind == "photo":
+        sizes = [int(getattr(size, "size", 0) or 0) for size in (getattr(found, "sizes", None) or [])]
+        return max(sizes) if any(sizes) else 0
+    return int(getattr(found, "size", 0) or 0)
+
+
+def media_of(event: Any) -> Optional[dict]:
+    """What a message carries besides text, with every Telegram file handle left out.
+
+    The browser sees kind, name, mime and size only. The access hash and file id stay in this
+    process, so a download can be resolved only against a chat this operator already has open.
+    """
+    if event is None:
+        return None
+    found = None
+    kind = ""
+    for field in MEDIA_FIELDS:
+        candidate = getattr(event, field, None)
+        if candidate is None or (isinstance(candidate, (list, tuple)) and not candidate):
+            continue
+        found, kind = candidate, field
+        break
+    if found is None:
+        return None
+
+    mime = str(getattr(event, "mime_type", "") or getattr(found, "mime_type", "") or "")
+    if not mime and kind == "photo":
+        mime = "image/jpeg"
+    return {
+        "kind": kind,
+        "label": MEDIA_LABELS[kind],
+        "name": _file_name(event, found),
+        "mime": mime[:80],
+        "size": _file_size(kind, found),
+        # Formatted here as well, so the page and the chat preview never invent two size rules.
+        "human": _human_size(_file_size(kind, found)),
+        # Decided here, not in the browser: what this server is willing to render inline is the
+        # same list it will serve inline, so the two can never drift apart.
+        "inline": mime in INLINE_MEDIA_TYPES,
+    }
+
+
 def message_shape(event: Any) -> dict:
     sender = getattr(event, "sender", None)
     return {
         "id": getattr(event, "id", None),
         "text": str(getattr(event, "raw_text", None) or "")[:STORED_MESSAGE_CHARS],
+        "media": media_of(event),
         "time": _seconds(getattr(event, "date", None)),
         "outgoing": bool(getattr(event, "out", False)),
         "sender": str(getattr(sender, "username", "") or getattr(sender, "first_name", "") or ""),
     }
+
+
+def preview_of(message: dict) -> str:
+    """The line under a chat name. A photo with no caption is a Photo, never blank."""
+    text = (message.get("text") or "").strip()
+    if text:
+        return text[:CHAT_PREVIEW_CHARS]
+    media = message.get("media") or {}
+    kind = str(media.get("kind") or "")
+    label = MEDIA_LABELS.get(kind)
+    if not label:
+        return ""
+    if kind == "document" and media.get("name"):
+        label = str(media["name"])
+    size = _human_size(media.get("size"))
+    return f"{label} · {size}"[:CHAT_PREVIEW_CHARS] if size else label[:CHAT_PREVIEW_CHARS]
 
 
 def _display_name(entity: Any, dialog_name: str = "") -> str:
@@ -430,7 +540,7 @@ async def note(account_id: str, event: Any) -> dict:
             "username": str(getattr(entity, "username", "") or ""),
             "bucket": kind,
             "name": _display_name(entity),
-            "preview": message["text"][:CHAT_PREVIEW_CHARS],
+            "preview": preview_of(message),
             "time": at,
             "unread": unread,
             "outgoing": message["outgoing"],
@@ -470,7 +580,7 @@ async def snapshot(operator: str) -> dict:
                     "username": str(getattr(entity, "username", "") or ""),
                     "bucket": kind,
                     "name": _display_name(entity, getattr(dialog, "name", "") or ""),
-                    "preview": str(getattr(last, "raw_text", "") or "")[:CHAT_PREVIEW_CHARS],
+                    "preview": preview_of(message_shape(last)),
                     "time": _seconds(getattr(dialog, "date", None)),
                     "unread": record["counters"].get(ref, 0),
                     "outgoing": bool(getattr(last, "out", False)),
@@ -538,6 +648,8 @@ def public_config(operator: str) -> dict:
         "skipped_unknown": _record(operator)["skipped_unknown"],
         "labels": STATE_LABELS,
         "buckets": BUCKETS,
+        "media_limit": MAX_MEDIA_BYTES,
+        "media_inline": list(INLINE_MEDIA_TYPES),
     }
 
 
@@ -607,6 +719,101 @@ async def thread(ref: str, request: Request, before: int = 0, limit: int = PAGE_
     return {"success": True, "messages": page, "state": "live"}
 
 
+def _media_target(item: Any) -> Any:
+    """The object the connection downloads. A photo hands back its biggest size."""
+    photo = getattr(item, "photo", None)
+    if photo is not None:
+        biggest = getattr(photo, "get_biggest", None)
+        if callable(biggest):
+            return biggest()
+        sizes = getattr(photo, "sizes", None) or []
+        return sizes[-1] if sizes else None
+    for field in MEDIA_FIELDS[1:]:
+        found = getattr(item, field, None)
+        if found is None or (isinstance(found, (list, tuple)) and not found):
+            continue
+        return found
+    return None
+
+
+def _safe_filename(value: Any, kind: str) -> str:
+    """One printable token for a header. Telegram names arrive with paths, quotes and spaces."""
+    raw = str(value or "").replace("\\", "/").split("/")[-1]
+    cleaned = "".join(ch for ch in raw if ch.isprintable() and ch not in '"<>;')
+    return " ".join(cleaned.split())[:MEDIA_NAME_MAX] or (kind or "file")
+
+
+async def _stream_media(client: Any, target: Any, size: int):
+    total = 0
+    async for chunk in client.iter_download(target, file_size=size or None,
+                                            chunk_size=MEDIA_CHUNK_BYTES):
+        if total + len(chunk) > MAX_MEDIA_BYTES:
+            return
+        total += len(chunk)
+        yield chunk
+
+
+@router.get("/api/inbox/media/{ref}/{message_id}")
+async def media_file(ref: str, message_id: int, request: Request):
+    """Fetch one attachment from Telegram for the operator who can already see it.
+
+    The bytes stream through and are never written to disk, so no copy of other people's files
+    collects on the server. The id is resolved inside this chat only, so a downloaded file can
+    never be reached by guessing an id from another conversation.
+    """
+    _enabled()
+    operator = _operator(request)
+    row = resolve(operator, ref)
+    client = _CLIENTS.get(row["account_id"])
+    if client is None or not hasattr(client, "iter_download"):
+        raise HTTPException(400, MEDIA_FAILED)
+    try:
+        item = await client.get_messages(row["peer"], ids=[message_id])
+    except Exception:
+        log.exception("Inbox could not read a message for download")
+        raise HTTPException(400, MEDIA_FAILED) from None
+    if isinstance(item, (list, tuple)):
+        item = item[0] if item else None
+
+    media = media_of(item)
+    target = _media_target(item) if media else None
+    if not media or target is None:
+        raise HTTPException(404, NO_MEDIA)
+    size = int(media.get("size") or 0)
+    if size > MAX_MEDIA_BYTES:
+        raise HTTPException(413, MEDIA_TOO_BIG)
+
+    stream = _stream_media(client, target, size)
+    try:
+        first = await stream.__anext__()
+    except StopAsyncIteration:
+        raise HTTPException(404, NO_MEDIA) from None
+    except HTTPException:
+        raise
+    except Exception:
+        log.exception("Inbox media download failed")
+        raise HTTPException(400, MEDIA_FAILED) from None
+
+    async def body():
+        yield first
+        async for chunk in stream:
+            yield chunk
+
+    mime = str(media.get("mime") or "")
+    inline = mime in INLINE_MEDIA_TYPES
+    kind = str(media.get("kind") or "")
+    filename = _safe_filename(media.get("name"), kind)
+    return StreamingResponse(
+        body(),
+        media_type=mime if inline else "application/octet-stream",
+        headers={
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Disposition": f'{"inline" if inline else "attachment"}; filename="{filename}"',
+        },
+    )
+
+
 @router.post("/api/inbox/chats/{ref}/read")
 async def mark_read(ref: str, request: Request):
     _enabled()
@@ -649,8 +856,8 @@ async def reply(ref: str, body: ReplyBody, request: Request):
     except Exception:
         log.exception("Inbox reply failed")
         raise HTTPException(400, SEND_FAILED) from None
-    message = {"id": None, "text": text[:STORED_MESSAGE_CHARS], "time": time.time(),
-               "outgoing": True, "sender": ""}
+    message = {"id": None, "text": text[:STORED_MESSAGE_CHARS], "media": None,
+               "time": time.time(), "outgoing": True, "sender": ""}
     WALLS[operator].upsert({**row, "preview": text[:CHAT_PREVIEW_CHARS], "time": message["time"],
                             "outgoing": True})
     HUB.publish(operator, {"type": "message", "ref": ref, "message": message})
