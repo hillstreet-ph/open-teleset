@@ -54,6 +54,43 @@ invalidates the old session so its completion cannot overwrite a retry. An
 uncertain code-request response is not automatically retried; check Telegram
 before retrying manually. Telegram controls delivery, 2FA and flood waits.
 
+## Per-account Telegram app credentials
+
+Every sign-in form (QR, phone and Hex import) accepts an optional **App (API) ID**
+and **API hash**. Use the pair from your own Telegram application so the
+authorization stays a recognized login instead of a new app session; leave both
+blank to use the server default (`TELEGRAM_API_ID` / `TELEGRAM_API_HASH`).
+
+- Both fields are validated together: one without the other, a non-numeric App
+  ID, or a hash that is not exactly 32 hexadecimal characters is refused before
+  Telegram is contacted, and the message stays in the form where it can be fixed.
+- A saved pair is stored with the account and its hash is encrypted by the same
+  cipher as the session string (`api_hash_encrypted` in `accounts/config.json`).
+  The list API exposes only the App ID and whether the account has its own app.
+- Reconnect, contact listing, session listing and re-login use the account's own
+  pair when present. A re-login that omits credentials reuses the saved pair
+  instead of falling back to the server default, so restoring a logged-out
+  account keeps the same recognized app.
+- App ID and hash are identifiers for the application, not a login password.
+  They are still configuration: do not paste them into issues, commits or chat.
+
+## Hex session export
+
+Each account can export its authorization key as 512 hexadecimal characters
+together with its DC and App ID (**Export** on the account row). Paste that key
+with the same DC into **Import Hex session** to restore the account elsewhere.
+
+`GET /api/accounts/{account_id}/export-hex-session` returns
+`hex_key`, `dc_id` and `api_id`. It is administrator-only and returns `404` when
+the account or session is missing. The key is returned only to the requesting
+browser; it is not written into logs, Airtable or another store. The dashboard
+shows it in the export dialog with the string session folded away by default,
+and copies nothing until the operator presses **Copy hex**.
+
+Treat the exported key as a password: anyone holding it and the DC can act as
+that account. Keep backups private, and re-import only on connections you
+control.
+
 ## Verification and rollback
 
 Tests use a synthetic byte sequence only; they make no Telegram connections.

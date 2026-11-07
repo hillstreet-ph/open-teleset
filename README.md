@@ -21,6 +21,7 @@ telegram-mcp is a powerful tool for managing multiple Telegram accounts. This ap
 - **Internal automation:** Create recurring cycles that run with your own account — a scheduled member scrape and a scheduled auto join, each bounded and visible in the Automation tab — while actions that contact other people stay on their own consent-gated surfaces. See [docs/INTERNAL_AUTOMATION.md](docs/INTERNAL_AUTOMATION.md).
 - **Free MTProto proxies and re-login:** Browse three public MTProto lists as cards, prove a relay with a real handshake, and save it globally or per account — and restore a logged-out account in place, keeping its ID, usage and proxy, when Telegram reports the same user. See [docs/PROXY_CATALOG_AND_RELOGIN.md](docs/PROXY_CATALOG_AND_RELOGIN.md).
 - **Compact record lists:** Job history, chats, contacts, logs and presets render as short collapsed heads with one button for the rest, so a section never turns into a long scroll as records pile up. See [docs/RECORD_LISTS.md](docs/RECORD_LISTS.md).
+- **Own app credentials, session backup and data tables:** Give an account your own Telegram App (API) ID and hash so its sign-in stays a recognized login, reuse that pair on reconnect and re-login, export the authorization key as a 512-character hex backup you can paste back, and keep supplier or follow-up lists in encrypted spreadsheet-style tables. See [docs/HEX_SESSION_IMPORT.md](docs/HEX_SESSION_IMPORT.md) and [docs/DATA_TABLES.md](docs/DATA_TABLES.md).
 
 ## 🚀 Getting Started
 

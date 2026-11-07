@@ -37,6 +37,29 @@ LOGIN_PASSWORD_TIMEOUT = 45  # 2FA check = two RPCs; dashboard waits up to 65s
 LOGIN_DISCONNECT_TIMEOUT = 2
 
 
+def validate_api_credentials(api_id, api_hash):
+    """Normalise optional per-account Telegram app credentials.
+
+    Returns (None, None) when neither is supplied (use the server default).
+    Raises ValueError with a user-facing message otherwise.
+    """
+    raw_id = "" if api_id in (None, 0) else str(api_id).strip()
+    raw_hash = (api_hash or "").strip() if isinstance(api_hash, str) else ""
+    if not raw_id and not raw_hash:
+        return None, None
+    if not raw_id or not raw_hash:
+        raise ValueError("Enter both the App (API) ID and API hash, or leave both blank.")
+    try:
+        api_id_int = int(raw_id)
+    except (TypeError, ValueError):
+        raise ValueError("App ID must be a whole number.")
+    if not 0 < api_id_int <= 2_147_483_647:
+        raise ValueError("App ID is not a valid Telegram application ID.")
+    if re.fullmatch(r"[0-9a-fA-F]{32}", raw_hash) is None:
+        raise ValueError("API hash must be exactly 32 hexadecimal characters.")
+    return api_id_int, raw_hash.lower()
+
+
 class AccountManager:
     """账号管理器"""
 
@@ -67,6 +90,9 @@ class AccountManager:
                 raise SessionCryptoError("Legacy plaintext account configuration requires offline migration")
             encrypted = item.pop("session_encrypted", "")
             item["session_string"] = decrypt_session(encrypted)
+            api_encrypted = item.pop("api_hash_encrypted", "")
+            if api_encrypted:
+                item["api_hash"] = decrypt_session(api_encrypted)
             decoded[account_id] = item
         self.accounts = decoded
 
@@ -76,6 +102,10 @@ class AccountManager:
         for account_id, record in self.accounts.items():
             item = dict(record)
             item["session_encrypted"] = encrypt_session(item.pop("session_string", ""))
+            item.pop("api_hash_encrypted", None)
+            api_hash = item.pop("api_hash", "")
+            if api_hash:
+                item["api_hash_encrypted"] = encrypt_session(api_hash)
             stored[account_id] = item
         fd, temporary = tempfile.mkstemp(prefix=".accounts-", dir=ACCOUNTS_DIR)
         try:
@@ -118,6 +148,8 @@ class AccountManager:
                 "status": "online" if is_online else "offline",
                 "connection_error": self.connection_errors.get(account_id),
                 "proxy_settings": account.get("proxy_settings"),
+                "has_custom_api": bool(account.get("api_id") and account.get("api_hash")),
+                "api_id": account.get("api_id"),
                 "last_online": account.get("last_online", "N/A"),
                 "use_count": account.get("use_count", 0)
             })
@@ -141,6 +173,14 @@ class AccountManager:
                 return False
         return False
 
+    def _api_credentials(self, account_id=None):
+        """Per-account Telegram app credentials, falling back to the server default."""
+        if account_id and account_id in self.accounts:
+            record = self.accounts[account_id]
+            if record.get("api_id") and record.get("api_hash"):
+                return int(record["api_id"]), record["api_hash"]
+        return API_ID, API_HASH
+
     async def add_account_with_session(
         self, account_id: str, session_string: str, phone: str = None,
         username: str = None, user_id: int = None,
@@ -149,15 +189,18 @@ class AccountManager:
         result = await self.import_session(account_id, session_string)
         return result["success"]
 
-    async def import_hex_session(self, account_id, hex_key, dc_id, proxy=None, proxy_settings=None):
+    async def import_hex_session(self, account_id, hex_key, dc_id, proxy=None, proxy_settings=None,
+                                 api_id=None, api_hash=None):
         from hex_session import hex_to_string_session
         try:
             session = hex_to_string_session(hex_key, dc_id)
         except ValueError as exc:
             return {"success": False, "error": str(exc)}
-        return await self.import_session(account_id, session, proxy=proxy, proxy_settings=proxy_settings)
+        return await self.import_session(account_id, session, proxy=proxy, proxy_settings=proxy_settings,
+                                         api_id=api_id, api_hash=api_hash)
 
-    async def import_session(self, account_id, session_string, proxy=None, proxy_settings=None):
+    async def import_session(self, account_id, session_string, proxy=None, proxy_settings=None,
+                             api_id=None, api_hash=None):
         """Verify an existing authorization, then atomically save encrypted state.
 
         Serialize imports so double submissions cannot overwrite each other.
@@ -165,6 +208,12 @@ class AccountManager:
         """
         if not isinstance(account_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", account_id):
             return {"success": False, "error": "Account ID must be 1–100 letters, digits, underscores or hyphens."}
+        try:
+            custom_api_id, custom_api_hash = validate_api_credentials(api_id, api_hash)
+        except ValueError as exc:
+            return {"success": False, "error": str(exc)}
+        auth_api_id = custom_api_id or API_ID
+        auth_api_hash = custom_api_hash or API_HASH
         async with self._session_import_lock:
             if account_id == "default" or account_id in self.accounts or account_id in self.qr_sessions or account_id in self.phone_sessions:
                 return {"success": False, "error": "Account ID is already in use. Choose a new ID."}
@@ -179,7 +228,7 @@ class AccountManager:
                 return {"success": False, "error": "Invalid Telegram string session."}
             try:
                 client = TelegramClient(
-                    session, API_ID, API_HASH, proxy=proxy,
+                    session, auth_api_id, auth_api_hash, proxy=proxy,
                     **proxy_transport(proxy),
                     outreach_account_id=account_id, preserve_saved_authorization=True,
                 )
@@ -207,6 +256,9 @@ class AccountManager:
                     "created_at": now, "last_online": now, "use_count": 0,
                     "proxy_settings": proxy_settings or {"mode": "default"},
                 }
+                if custom_api_id:
+                    self.accounts[account_id]["api_id"] = custom_api_id
+                    self.accounts[account_id]["api_hash"] = custom_api_hash
                 try:
                     self._save_config()
                 except Exception:
@@ -230,13 +282,14 @@ class AccountManager:
                         await asyncio.wait_for(client.disconnect(), timeout=2)
 
     async def generate_qr_code(self, account_id: str, proxy: Dict = None, proxy_settings=None,
-                               replace_account_id: str = None) -> Dict:
+                               replace_account_id: str = None, api_id=None, api_hash=None) -> Dict:
         """
         生成二维码用于登录
 
         Args:
             account_id: 账号ID
             proxy: 代理配置
+            api_id/api_hash: 可选的每账号 Telegram 应用凭据
 
         Returns:
             {
@@ -253,6 +306,16 @@ class AccountManager:
             return {"success": False, "error": "Cancel the existing QR login before starting again"}
         if replace_account_id and replace_account_id not in self.accounts:
             return {"success": False, "error": "The account to re-login no longer exists. Refresh the account list."}
+        try:
+            custom_api_id, custom_api_hash = validate_api_credentials(api_id, api_hash)
+        except ValueError as exc:
+            return {"success": False, "error": str(exc)}
+        if not custom_api_id and replace_account_id:
+            saved = self.accounts.get(replace_account_id) or {}
+            if saved.get("api_id") and saved.get("api_hash"):
+                custom_api_id, custom_api_hash = int(saved["api_id"]), saved["api_hash"]
+        auth_api_id = custom_api_id or API_ID
+        auth_api_hash = custom_api_hash or API_HASH
         pending = {"status": "connecting", "created_at": datetime.now(),
                    "replace_account_id": replace_account_id}
         self.qr_sessions[account_id] = pending
@@ -263,8 +326,8 @@ class AccountManager:
             client_kwargs = {
                 "session": StringSession(),
                 "outreach_account_id": account_id,
-                "api_id": API_ID,
-                "api_hash": API_HASH,
+                "api_id": auth_api_id,
+                "api_hash": auth_api_hash,
                 "device_model": "Desktop",
                 "system_version": "Windows 10",
                 "app_version": "4.8.1",
@@ -314,6 +377,9 @@ class AccountManager:
                 "proxy_settings": proxy_settings or {"mode": "default"},
                 "replace_account_id": replace_account_id,
             }
+            if custom_api_id:
+                self.qr_sessions[account_id]["api_id"] = custom_api_id
+                self.qr_sessions[account_id]["api_hash"] = custom_api_hash
             retained = True
 
             # 后台等待登录
@@ -408,6 +474,9 @@ class AccountManager:
             "status": "online",
             "last_online": datetime.now(timezone.utc).isoformat(),
         }
+        if session.get("api_id") and session.get("api_hash"):
+            self.accounts[replace_id]["api_id"] = session["api_id"]
+            self.accounts[replace_id]["api_hash"] = session["api_hash"]
         self.connection_errors.pop(replace_id, None)
         stale = self.clients.pop(replace_id, None)
         if stale is not None:
@@ -450,6 +519,9 @@ class AccountManager:
                 "use_count": 0
             }
             self.accounts[account_id]["proxy_settings"] = session.get("proxy_settings", {"mode": "default"})
+            if session.get("api_id") and session.get("api_hash"):
+                self.accounts[account_id]["api_id"] = session["api_id"]
+                self.accounts[account_id]["api_hash"] = session["api_hash"]
             inserted = True
             self._save_config()
             session["status"] = "success"
@@ -718,10 +790,11 @@ class AccountManager:
 
         client = None
         try:
+            auth_api_id, auth_api_hash = self._api_credentials(account_id)
             client = TelegramClient(
                 StringSession(session_string),
-                API_ID,
-                API_HASH,
+                auth_api_id,
+                auth_api_hash,
                 proxy=proxy,
                 **proxy_transport(proxy),
                 outreach_account_id=account_id,
@@ -788,6 +861,22 @@ class AccountManager:
             return None
         return self.accounts[account_id].get("session_string")
 
+    def export_hex_session(self, account_id: str) -> Optional[Dict]:
+        """Export the stored authorization key as a hex session for backup or relogin."""
+        if account_id not in self.accounts:
+            return None
+        session_string = self.accounts[account_id].get("session_string")
+        if not session_string:
+            return None
+        session = StringSession(session_string)
+        if session.auth_key is None:
+            return None
+        return {
+            "hex_key": session.auth_key.key.hex(),
+            "dc_id": session.dc_id,
+            "api_id": self.accounts[account_id].get("api_id"),
+        }
+
     # ==================== 手机号登录功能 ====================
 
     async def send_phone_code(
@@ -797,6 +886,8 @@ class AccountManager:
         proxy: Dict = None,
         proxy_settings=None,
         replace_account_id: str = None,
+        api_id=None,
+        api_hash=None,
     ) -> Dict:
         """
         发送验证码到手机号（支持所有国际号码）
@@ -819,9 +910,22 @@ class AccountManager:
             return {"success": False, "error": "Cancel the existing phone login before starting again"}
         if replace_account_id and replace_account_id not in self.accounts:
             return {"success": False, "error": "The account to re-login no longer exists. Refresh the account list."}
+        try:
+            custom_api_id, custom_api_hash = validate_api_credentials(api_id, api_hash)
+        except ValueError as exc:
+            return {"success": False, "error": str(exc)}
+        if not custom_api_id and replace_account_id:
+            saved = self.accounts.get(replace_account_id) or {}
+            if saved.get("api_id") and saved.get("api_hash"):
+                custom_api_id, custom_api_hash = int(saved["api_id"]), saved["api_hash"]
+        auth_api_id = custom_api_id or API_ID
+        auth_api_hash = custom_api_hash or API_HASH
 
         pending = {"status": "connecting", "phone": phone, "created_at": datetime.now(), "has_2fa": False,
                    "replace_account_id": replace_account_id}
+        if custom_api_id:
+            pending["api_id"] = custom_api_id
+            pending["api_hash"] = custom_api_hash
         self.phone_sessions[account_id] = pending
         temp_client = None
         retained = False
@@ -834,8 +938,8 @@ class AccountManager:
             client_kwargs = {
                 "session": StringSession(),
                 "outreach_account_id": account_id,
-                "api_id": API_ID,
-                "api_hash": API_HASH,
+                "api_id": auth_api_id,
+                "api_hash": auth_api_hash,
                 "device_model": "Desktop",
                 "system_version": "Windows 10",
                 "app_version": "4.8.1",
@@ -887,6 +991,9 @@ class AccountManager:
                 "proxy_settings": proxy_settings or {"mode": "default"},
                 "replace_account_id": replace_account_id,
             }
+            if custom_api_id:
+                self.phone_sessions[account_id]["api_id"] = custom_api_id
+                self.phone_sessions[account_id]["api_hash"] = custom_api_hash
             retained = True
 
             return {
@@ -1046,6 +1153,9 @@ class AccountManager:
             }
             inserted = True
             self.accounts[account_id]["proxy_settings"] = session.get("proxy_settings", {"mode": "default"})
+            if session.get("api_id") and session.get("api_hash"):
+                self.accounts[account_id]["api_id"] = session["api_id"]
+                self.accounts[account_id]["api_hash"] = session["api_hash"]
             self._save_config()
             session["status"] = "success"
         except Exception as exc:
@@ -1121,7 +1231,8 @@ class AccountManager:
             raise ValueError("账号没有有效的Session")
 
         proxy = self.saved_proxy(account_id)
-        client = TelegramClient(StringSession(session_string), API_ID, API_HASH,
+        auth_api_id, auth_api_hash = self._api_credentials(account_id)
+        client = TelegramClient(StringSession(session_string), auth_api_id, auth_api_hash,
                                 outreach_account_id=account_id, proxy=proxy,
                                 **proxy_transport(proxy))
         friends = []
@@ -1178,7 +1289,8 @@ class AccountManager:
             raise ValueError("账号没有有效的Session")
 
         proxy = self.saved_proxy(account_id)
-        client = TelegramClient(StringSession(session_string), API_ID, API_HASH,
+        auth_api_id, auth_api_hash = self._api_credentials(account_id)
+        client = TelegramClient(StringSession(session_string), auth_api_id, auth_api_hash,
                                 outreach_account_id=account_id, proxy=proxy,
                                 **proxy_transport(proxy))
         valid = []

@@ -200,12 +200,14 @@ async def test_send_code_route_rejects_a_deleted_target(monkeypatch):
 async def test_login_routes_pass_the_replacement_account_through(monkeypatch):
     seen = {}
 
-    async def fake_qr(account_id, proxy, proxy_settings=None, replace_account_id=None):
-        seen["qr"] = (account_id, replace_account_id)
+    async def fake_qr(account_id, proxy, proxy_settings=None, replace_account_id=None,
+                      api_id=None, api_hash=None):
+        seen["qr"] = (account_id, replace_account_id, api_id, api_hash)
         return {"success": True}
 
-    async def fake_phone(account_id, phone, proxy, proxy_settings=None, replace_account_id=None):
-        seen["phone"] = (account_id, replace_account_id)
+    async def fake_phone(account_id, phone, proxy, proxy_settings=None, replace_account_id=None,
+                         api_id=None, api_hash=None):
+        seen["phone"] = (account_id, replace_account_id, api_id, api_hash)
         return {"success": True}
 
     monkeypatch.setattr(dashboard, "account_manager", SimpleNamespace(
@@ -218,9 +220,11 @@ async def test_login_routes_pass_the_replacement_account_through(monkeypatch):
     monkeypatch.setattr(dashboard, "log_manager", SimpleNamespace(add_log=lambda *args, **kwargs: None))
 
     await dashboard.generate_qr_code({"account_id": "temporary-login",
-                                      "replace_account_id": "account_1792075145144"})
+                                      "replace_account_id": "account_1792075145144",
+                                      "api_id": "4242", "api_hash": "0" * 32})
     await dashboard.send_phone_code({"account_id": "temporary-login", "phone": "+918207275001",
-                                     "replace_account_id": "account_1792075145144"})
+                                     "replace_account_id": "account_1792075145144",
+                                     "api_id": "4242", "api_hash": "0" * 32})
 
-    assert seen["qr"] == ("temporary-login", "account_1792075145144")
-    assert seen["phone"] == ("temporary-login", "account_1792075145144")
+    assert seen["qr"] == ("temporary-login", "account_1792075145144", "4242", "0" * 32)
+    assert seen["phone"] == ("temporary-login", "account_1792075145144", "4242", "0" * 32)

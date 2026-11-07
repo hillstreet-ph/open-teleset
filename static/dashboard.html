@@ -571,6 +571,14 @@
         tbody tr:hover { background: rgba(255, 255, 255, 0.025); }
         tbody tr:last-child td { border-bottom: 0; }
 
+        /* ---------- Data-table sheet ---------- */
+        .sheet { min-width: 640px; }
+        .sheet th { white-space: nowrap; }
+        .sheet th .icon-btn { margin-left: 6px; font-size: 15px; line-height: 1; color: var(--text-dim); }
+        .sheet td { padding: 6px; }
+        .sheet td .form-control { min-width: 130px; padding: 7px 9px; font-size: 13px; }
+        .sheet input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
+
         /* ---------- Stats / empty ---------- */
         .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(158px, 1fr)); gap: 12px; margin-bottom: 16px; }
         .stat-card { background: var(--surface); border: 1px solid var(--border); padding: 18px; border-radius: 14px; text-align: left; }
@@ -1821,6 +1829,7 @@
                                     <span><b>Account ID</b><span class="mono" style="cursor:pointer;" @click="copyAccountId(acc.account_id)" title="Copy account ID">{{ acc.account_id }}</span></span>
                                     <span><b>Phone</b>{{ acc.phone || '—' }}</span>
                                     <span><b>Type</b>{{ acc.is_premium ? 'Premium' : 'Standard' }}</span>
+                                    <span><b>Telegram app</b>{{ acc.has_custom_api ? 'Own app · ' + acc.api_id : 'Server default' }}</span>
                                     <span><b>Last online</b>{{ formatTime(acc.last_online) }}</span>
                                     <span><b>Usage</b>{{ acc.use_count || 0 }}</span>
                                 </div>
@@ -3248,6 +3257,98 @@
                 </div>
             </div>
 
+            <!-- Data tables -->
+            <div v-show="tab === 'tables'">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>Data tables</h3>
+                        <span class="muted small">{{ tables.list.length }} / {{ tables.capacity.limit }} tables</span>
+                    </div>
+                    <p class="muted small" style="margin-bottom:14px;">Spreadsheet-style lists for working data: suppliers, leads, delivery windows, follow-ups. Stored encrypted and scoped to you. Credentials and session strings are refused here, so keep those in the account setup.</p>
+                    <div class="form-row">
+                        <div class="form-group" style="flex:1;">
+                            <label for="table-new-name">New table</label>
+                            <input id="table-new-name" class="form-control" v-model="tables.newName" maxlength="80" placeholder="Suppliers" @keyup.enter="createTable">
+                        </div>
+                        <div class="form-group" style="flex:0;align-self:flex-end;">
+                            <button id="gate-tables" class="btn btn-primary" @click="createTable" :disabled="!!tables.busy || !tables.newName.trim()">Create table</button>
+                        </div>
+                    </div>
+                    <p v-if="tables.loading" class="muted small">Loading tables…</p>
+                    <p v-else-if="tables.error && !tables.active" role="alert" style="color:var(--danger);">{{ tables.error }}</p>
+                    <div v-else-if="!tables.list.length" class="empty-state"><p>No tables yet. Name one above to start.</p></div>
+                    <div v-else style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;">
+                        <button v-for="t in tables.list" :key="t.id" class="btn btn-sm" :class="tables.active && tables.active.id === t.id ? 'btn-primary' : 'btn-outline'" style="display:block;text-align:left;padding:12px 14px;" @click="openTable(t.id)">
+                            <strong style="display:block;">{{ t.name }}</strong>
+                            <span class="muted small">{{ t.rows }} rows · {{ t.columns }} columns</span>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="card" v-if="tables.active" data-testid="table-sheet">
+                    <div class="card-header">
+                        <h3>{{ tables.active.name }}</h3>
+                        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                            <button class="btn btn-sm btn-outline" @click="addTableRow" :disabled="!!tables.busy">Add row</button>
+                            <button class="btn btn-sm btn-danger" @click="deleteTable" :disabled="!!tables.busy">Delete table</button>
+                        </div>
+                    </div>
+                    <div class="form-row" style="margin-bottom:14px;">
+                        <div class="form-group" style="flex:1;">
+                            <label for="table-rename">Table name</label>
+                            <input id="table-rename" class="form-control" v-model="tables.nameDraft" maxlength="80">
+                        </div>
+                        <div class="form-group" style="flex:0;align-self:flex-end;">
+                            <button class="btn btn-outline" @click="renameTable" :disabled="!!tables.busy || !tables.nameDraft.trim()">Save name</button>
+                        </div>
+                    </div>
+                    <div class="form-row" style="margin-bottom:14px;">
+                        <div class="form-group" style="flex:1;">
+                            <label for="table-column-name">New column</label>
+                            <input id="table-column-name" class="form-control" v-model="tables.columnForm.name" maxlength="80" placeholder="Due date">
+                        </div>
+                        <div class="form-group">
+                            <label for="table-column-type">Type</label>
+                            <select id="table-column-type" class="form-control" v-model="tables.columnForm.type">
+                                <option value="text">Text</option>
+                                <option value="number">Number</option>
+                                <option value="date">Date</option>
+                                <option value="checkbox">Checkbox</option>
+                            </select>
+                        </div>
+                        <div class="form-group" style="flex:0;align-self:flex-end;">
+                            <button class="btn btn-outline" @click="addTableColumn" :disabled="!!tables.busy || !tables.columnForm.name.trim()">Add column</button>
+                        </div>
+                    </div>
+                    <p v-if="tables.error" role="alert" style="color:var(--danger);">{{ tables.error }}</p>
+                    <div style="overflow-x:auto;">
+                        <table class="sheet">
+                            <thead>
+                                <tr>
+                                    <th v-for="c in tables.active.columns" :key="c.id">
+                                        {{ c.name }} <span class="muted small">{{ c.type }}</span>
+                                        <button class="icon-btn" title="Delete column" aria-label="Delete column" @click="deleteTableColumn(c)" :disabled="!!tables.busy">×</button>
+                                    </th>
+                                    <th style="width:44px;"></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr v-for="row in tables.active.rows" :key="row.id">
+                                    <td v-for="c in tables.active.columns" :key="c.id">
+                                        <input v-if="c.type === 'checkbox'" type="checkbox" :checked="!!row.cells[c.id]" @change="setTableCell(row, c, $event.target.checked)">
+                                        <input v-else-if="c.type === 'number'" type="number" class="form-control" :value="row.cells[c.id] ?? ''" @change="setTableCell(row, c, $event.target.value)">
+                                        <input v-else-if="c.type === 'date'" type="date" class="form-control" :value="row.cells[c.id] || ''" @change="setTableCell(row, c, $event.target.value)">
+                                        <input v-else type="text" class="form-control" :maxlength="500" :value="row.cells[c.id] || ''" @change="setTableCell(row, c, $event.target.value)">
+                                    </td>
+                                    <td><button class="icon-btn" title="Delete row" aria-label="Delete row" @click="deleteTableRow(row)" :disabled="!!tables.busy">×</button></td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div v-if="!tables.active.rows.length" class="empty-state" style="padding:18px;"><p>No rows yet. Add one, then type into the cells.</p></div>
+                </div>
+            </div>
+
             <!-- Templates -->
             <div v-show="tab === 'templates'">
                 <div class="card">
@@ -4306,6 +4407,16 @@
                     <p v-if="loginProxyMode === 'direct'" class="subtitle">Connect directly to Telegram, even when a global proxy exists.</p>
                     <p v-if="!proxies.length" class="subtitle">Add a proxy in the Proxies tab to make it available here.</p>
                     <button v-if="!globalProxy?.host" class="btn btn-sm btn-outline" @click="findFreeGlobalProxy" :disabled="testing || phoneLoading || hexLoading">{{ testing ? 'Checking proxies…' : 'Find free global proxy' }}</button>
+                    <div style="margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border);">
+                        <label>App credentials (optional)</label>
+                        <div style="display: flex; gap: 8px;">
+                            <input id="login-api-id" v-model="apiCredData.id" class="form-control" inputmode="numeric" autocomplete="off" placeholder="App (API) ID" :disabled="phoneLoading || hexLoading || testing">
+                            <input id="login-api-hash" v-model="apiCredData.hash" type="password" autocomplete="off" class="form-control" placeholder="API hash (32 hex chars)" :disabled="phoneLoading || hexLoading || testing">
+                        </div>
+                        <p class="subtitle">Use the API ID and hash of your own Telegram app so this sign-in keeps a stable, recognized authorization. Leave both blank to use the server default.</p>
+                        <p v-if="reloginAccount && reloginAccount.has_custom_api" class="subtitle" style="color: var(--info);">This account is saved with App ID {{ reloginAccount.api_id }}. Leave both blank to reuse it.</p>
+                        <p v-if="apiCredError" role="alert" style="color: var(--danger); margin: 6px 0 0;">{{ apiCredError }}</p>
+                    </div>
                 </div>
                 <!-- Login mode -->
                 <div v-if="loginMode === 'select'" style="text-align: center;">
@@ -4487,13 +4598,21 @@
 
         <!-- Export Modal -->
         <div v-if="showExportModal" class="modal" @click.self="showExportModal = false">
-            <div class="modal-content" style="text-align: left; min-width: 500px;">
-                <h2 style="text-align: center; margin-bottom: 20px;">Export session</h2>
-                <p style="color: var(--text-dim); margin-bottom: 10px;">Account: {{ exportData.id }}</p>
-                <div class="export-content">{{ exportData.session }}</div>
+            <div class="modal-content" style="text-align: left; min-width: 520px;">
+                <h2 style="text-align: center; margin-bottom: 6px;">Export session</h2>
+                <p style="text-align: center; color: var(--text-dim); margin-bottom: 14px;">{{ exportData.id }} · keep this backup private</p>
+                <label>Hex authorization key <span v-if="exportData.hexDc" style="color: var(--text-dim);">· DC {{ exportData.hexDc }}<template v-if="exportData.apiId"> · App ID {{ exportData.apiId }}</template></span></label>
+                <div v-if="exportData.hexKey" class="export-content" data-testid="export-hex">{{ exportData.hexKey }}</div>
+                <p v-else style="color: var(--danger); margin: 8px 0;">{{ exportData.hexError || 'No hex backup is available for this account.' }}</p>
+                <p class="subtitle">Paste this key with the same data center in <strong>Import Hex session</strong> to restore the account. Keep it as private as a password.</p>
+                <details style="margin-bottom: 10px;">
+                    <summary style="cursor: pointer; color: var(--text-dim); font-size: 12.5px;">String session (advanced)</summary>
+                    <div class="export-content">{{ exportData.session }}</div>
+                </details>
                 <div style="display: flex; gap: 10px; justify-content: flex-end;">
                     <button class="btn btn-outline" @click="showExportModal = false">Close</button>
-                    <button class="btn btn-primary" @click="copyExport">Copy</button>
+                    <button class="btn btn-outline" @click="copyExport" :disabled="!exportData.session">Copy string</button>
+                    <button class="btn btn-primary" @click="copyExportHex" :disabled="!exportData.hexKey">Copy hex</button>
                 </div>
             </div>
         </div>
@@ -4944,6 +5063,7 @@
             reply: '<path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 6 6v4"/>',
             inbox: '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
             book: '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>',
+            table: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/>',
             image: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/>',
             close: '<path d="M18 6L6 18M6 6l12 12"/>',
             paperclip: '<path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>'
@@ -5112,7 +5232,8 @@
                                 { tab: 'tasks', label: 'Tasks', icon: 'tasks', badge: 'jobs' },
                                 { tab: 'schedule', label: 'Schedule', icon: 'calendar' },
                                 { tab: 'templates', label: 'Templates', icon: 'message' },
-                                { tab: 'knowledge', label: 'Knowledge', icon: 'book' }
+                                { tab: 'knowledge', label: 'Knowledge', icon: 'book' },
+                                { tab: 'tables', label: 'Data Tables', icon: 'table' }
                             ]
                         },
                         {
@@ -5173,6 +5294,7 @@
                     loginMode: 'select', // 'select', 'qr', 'phone'
                     loginProxyMode: 'default', // default, direct, selected
                     loginProxyId: '',
+                    apiCredData: { id: '', hash: '' }, apiCredError: '',
                     hexData: { key: '', dc: null }, hexError: '', hexLoading: false, hexAccountId: '', qrLoading: false,
                     qrRefreshing: false,
                     // QR login states
@@ -5383,7 +5505,7 @@
                     showExportModal: false,
                     showExportAllModal: false,
                     importData: { id: '', session: '' },
-                    exportData: { id: '', session: '' },
+                    exportData: { id: '', session: '', hexKey: '', hexDc: null, apiId: null, hexError: '' },
                     exportAllData: '',
 
                     // Copilot (draft-only: never sends)
@@ -5417,6 +5539,12 @@
 
                     // Repeated-pattern suggestions detected from that knowledge
                     patterns: { loading: false, busy: '', error: '', suggestions: [], corpus: 0, detected_at: '', empty_detail: '' },
+
+                    // Operator-owned data tables (spreadsheet-style lists)
+                    tables: {
+                        loading: false, busy: '', error: '', list: [], capacity: { used: 0, limit: 30 },
+                        active: null, nameDraft: '', newName: '', columnForm: { name: '', type: 'text' },
+                    },
 
                     // Template Modal
                     showTemplateModal: false,
@@ -5775,6 +5903,7 @@
                     if (tab === 'copilot') { this.loadCopilot(); this.loadCopilotHistory(); this.loadCopilotSuggestions(); this.loadCopilotAttachments() }
                     if (tab === 'autoreply') this.loadAutoReply()
                     if (tab === 'knowledge') { this.loadKnowledge(); this.loadPatterns() }
+                    if (tab === 'tables') this.loadTables()
                     if (tab === 'tasks') this.loadOutreachJobs()
                     if (tab === 'integrations') { this.loadWebhooks(); this.loadIntegrations(); this.loadAiSettings(); this.loadFeatures() }
                     if (tab === 'contacts') { if (!this.contacts.accountId && this.accounts.length) this.contacts.accountId = this.accounts[0].account_id; this.loadContacts() }
@@ -5809,6 +5938,7 @@
                     if (this.tab === 'autoreply') this.loadAutoReply()
                     if (this.tab === 'inbox') this.loadMailbox()
                     if (this.tab === 'knowledge') { this.loadKnowledge(); this.loadPatterns() }
+                    if (this.tab === 'tables') this.loadTables()
                     if (this.tab === 'copilot') this.loadCopilotHistory()
                     if (this.tab === 'cloudphone') this.loadRecovery()
                     if (this.tab === 'scraper' || this.tab === 'adder') this.loadGroups(this.tab)
@@ -6986,6 +7116,7 @@
                     this.loginMode = 'select'
                     this.reloginAccountId = ''; this.reloginAccount = null
                     this.loginProxyMode = 'default'; this.loginProxyId = ''
+                    this.apiCredData = { id: '', hash: '' }; this.apiCredError = ''
                     this.hexData = { key: '', dc: null }; this.hexError = ''
                     this.loadProxies()
                     this.showQrModal = true
@@ -6996,6 +7127,9 @@
                 },
 
                 startQrLogin() {
+                    // The QR panel hides the credential fields, so an incomplete pair has to
+                    // stop here where the operator can still see and fix it.
+                    try { this.loginConnectionPayload() } catch (e) { this.loginMode = 'select'; return }
                     this.loginMode = 'qr'
                     this.qrAccountId = 'account_' + Date.now()
                     this.generateQr()
@@ -7054,6 +7188,7 @@
                 closeQrModal() {
                     if (this.phoneLoading || this.hexLoading || this.twoFaLoading || this.qrLoading || this.qrRefreshing) return
                     this.hexData = { key: '', dc: null }; this.hexError = ''
+                    this.apiCredData = { id: '', hash: '' }; this.apiCredError = ''
                     if (this.phoneAccountId && this.phoneStep !== 'success') _api.delete(`/api/accounts/${this.phoneAccountId}/phone-login`).catch(() => {});
                     if (this.qrAccountId && this.qrStatus !== 'success') _api.delete(`/api/accounts/${this.qrAccountId}/qr-login`).catch(() => {});
                     this.phoneAccountId = ''; this.qrAccountId = '';
@@ -7070,7 +7205,26 @@
 
                 loginConnectionPayload() {
                     if (this.loginProxyMode === 'selected' && !this.loginProxyId) throw new Error('Choose a saved proxy first.');
-                    return { proxy_mode: this.loginProxyMode, ...(this.loginProxyMode === 'selected' ? {proxy_id: this.loginProxyId} : {}) };
+                    const apiId = String(this.apiCredData?.id || '').trim()
+                    const apiHash = String(this.apiCredData?.hash || '').trim()
+                    this.apiCredError = ''
+                    if (!apiId !== !apiHash) {
+                        this.apiCredError = 'Enter both the App (API) ID and API hash, or leave both blank.'
+                        throw new Error(this.apiCredError)
+                    }
+                    if (apiId && !/^\d{1,10}$/.test(apiId)) {
+                        this.apiCredError = 'App ID must be a whole number.'
+                        throw new Error(this.apiCredError)
+                    }
+                    if (apiHash && !/^[0-9a-fA-F]{32}$/.test(apiHash)) {
+                        this.apiCredError = 'API hash must be exactly 32 hexadecimal characters.'
+                        throw new Error(this.apiCredError)
+                    }
+                    return {
+                        proxy_mode: this.loginProxyMode,
+                        ...(this.loginProxyMode === 'selected' ? {proxy_id: this.loginProxyId} : {}),
+                        ...(apiId ? {api_id: apiId, api_hash: apiHash} : {})
+                    };
                 },
                 backToLoginMethods() {
                     if (this.phoneLoading || this.phoneStep !== 'input') return;
@@ -7374,9 +7528,20 @@
                 async exportSession(id) {
                     try {
                         const res = await _api.get(`/api/accounts/${id}/export-session`)
-                        this.exportData = { id, session: res.data.session_string }
+                        this.exportData = { id, session: res.data.session_string, hexKey: '', hexDc: null, apiId: null, hexError: '' }
                         this.showExportModal = true
                         this.addLog('ExportSession', id)
+                        try {
+                            const hex = await _api.get(`/api/accounts/${id}/export-hex-session`)
+                            if (this.exportData.id !== id) return
+                            this.exportData.hexKey = hex.data.hex_key || ''
+                            this.exportData.hexDc = hex.data.dc_id ?? null
+                            this.exportData.apiId = hex.data.api_id ?? null
+                        } catch (e) {
+                            if (this.exportData.id === id) {
+                                this.exportData.hexError = e.response?.data?.detail || 'Hex backup could not be generated.'
+                            }
+                        }
                     } catch (e) {
                         this.showToast(e.response?.data?.detail || 'Could not export this session. Try again.', true)
                     }
@@ -9021,6 +9186,12 @@
                         .catch(() => this.showToast('Copy failed — select and copy manually.', true))
                 },
 
+                copyExportHex() {
+                    navigator.clipboard.writeText(this.exportData.hexKey || '')
+                        .then(() => this.showToast('Hex session copied'))
+                        .catch(() => this.showToast('Copy failed — select and copy manually.', true))
+                },
+
                 copyExportAll() {
                     navigator.clipboard.writeText(this.exportAllData)
                         .then(() => this.showToast('Copied all accounts.'))
@@ -10091,6 +10262,159 @@
                         this.showToast(e.response?.data?.detail || 'Could not dismiss that suggestion.', true)
                     } finally {
                         this.patterns.busy = ''
+                    }
+                },
+
+                // Data tables
+                tableError(e, fallback) {
+                    const detail = e.response?.data?.detail
+                    this.tables.error = typeof detail === 'string' ? detail : fallback
+                    this.showToast(this.tables.error, true)
+                },
+                applyTable(table) {
+                    this.tables.active = table
+                    this.tables.nameDraft = table?.name || ''
+                },
+                async loadTables() {
+                    this.tables.loading = true
+                    try {
+                        const { data } = await _api.get('/api/tables')
+                        this.tables.list = data.tables || []
+                        this.tables.capacity = data.capacity || { used: 0, limit: 30 }
+                        if (this.tables.active && !this.tables.list.some(t => t.id === this.tables.active.id)) this.tables.active = null
+                    } catch (e) {
+                        this.tableError(e, 'Could not load data tables.')
+                    } finally {
+                        this.tables.loading = false
+                    }
+                },
+                async createTable() {
+                    const name = this.tables.newName.trim()
+                    if (!name) return
+                    this.tables.busy = 'create'
+                    this.tables.error = ''
+                    try {
+                        const { data } = await _api.post('/api/tables', { name })
+                        this.tables.newName = ''
+                        this.applyTable(data.table)
+                        await this.loadTables()
+                        this.showToast(`Created “${data.table.name}”.`)
+                    } catch (e) {
+                        this.tableError(e, 'Could not create that table.')
+                    } finally {
+                        this.tables.busy = ''
+                    }
+                },
+                async openTable(id) {
+                    this.tables.busy = 'open'
+                    this.tables.error = ''
+                    try {
+                        const { data } = await _api.get(`/api/tables/${id}`)
+                        this.applyTable(data.table)
+                    } catch (e) {
+                        this.tableError(e, 'Could not open that table.')
+                    } finally {
+                        this.tables.busy = ''
+                    }
+                },
+                async renameTable() {
+                    const name = this.tables.nameDraft.trim()
+                    if (!name || !this.tables.active) return
+                    this.tables.busy = 'rename'
+                    try {
+                        const { data } = await _api.patch(`/api/tables/${this.tables.active.id}`, { name })
+                        this.applyTable(data.table)
+                        await this.loadTables()
+                        this.showToast('Table renamed.')
+                    } catch (e) {
+                        this.tableError(e, 'Could not rename that table.')
+                    } finally {
+                        this.tables.busy = ''
+                    }
+                },
+                async deleteTable() {
+                    if (!this.tables.active) return
+                    if (!window.confirm(`Delete the table “${this.tables.active.name}” and all its rows?`)) return
+                    this.tables.busy = 'delete'
+                    try {
+                        await _api.delete(`/api/tables/${this.tables.active.id}`)
+                        this.tables.active = null
+                        this.tables.nameDraft = ''
+                        await this.loadTables()
+                        this.showToast('Table deleted.')
+                    } catch (e) {
+                        this.tableError(e, 'Could not delete that table.')
+                    } finally {
+                        this.tables.busy = ''
+                    }
+                },
+                async addTableColumn() {
+                    if (!this.tables.active) return
+                    const name = this.tables.columnForm.name.trim()
+                    if (!name) return
+                    this.tables.busy = 'column'
+                    try {
+                        const { data } = await _api.post(`/api/tables/${this.tables.active.id}/columns`, { name, type: this.tables.columnForm.type })
+                        this.applyTable(data.table)
+                        this.tables.columnForm = { name: '', type: 'text' }
+                        await this.loadTables()
+                    } catch (e) {
+                        this.tableError(e, 'Could not add that column.')
+                    } finally {
+                        this.tables.busy = ''
+                    }
+                },
+                async deleteTableColumn(column) {
+                    if (!this.tables.active) return
+                    if (!window.confirm(`Delete the column “${column.name}” and its values?`)) return
+                    this.tables.busy = 'column'
+                    try {
+                        const { data } = await _api.delete(`/api/tables/${this.tables.active.id}/columns/${column.id}`)
+                        this.applyTable(data.table)
+                        await this.loadTables()
+                    } catch (e) {
+                        this.tableError(e, 'Could not delete that column.')
+                    } finally {
+                        this.tables.busy = ''
+                    }
+                },
+                async addTableRow() {
+                    if (!this.tables.active) return
+                    this.tables.busy = 'row'
+                    try {
+                        const { data } = await _api.post(`/api/tables/${this.tables.active.id}/rows`, { cells: {} })
+                        this.applyTable(data.table)
+                        await this.loadTables()
+                    } catch (e) {
+                        this.tableError(e, 'Could not add a row.')
+                    } finally {
+                        this.tables.busy = ''
+                    }
+                },
+                async setTableCell(row, column, value) {
+                    if (!this.tables.active) return
+                    this.tables.busy = row.id
+                    try {
+                        const { data } = await _api.patch(`/api/tables/${this.tables.active.id}/rows/${row.id}`, { cells: { [column.id]: value } })
+                        this.applyTable(data.table)
+                    } catch (e) {
+                        await this.openTable(this.tables.active.id)
+                        this.tableError(e, 'That value could not be saved.')
+                    } finally {
+                        this.tables.busy = ''
+                    }
+                },
+                async deleteTableRow(row) {
+                    if (!this.tables.active) return
+                    this.tables.busy = 'row'
+                    try {
+                        const { data } = await _api.delete(`/api/tables/${this.tables.active.id}/rows/${row.id}`)
+                        this.applyTable(data.table)
+                        await this.loadTables()
+                    } catch (e) {
+                        this.tableError(e, 'Could not delete that row.')
+                    } finally {
+                        this.tables.busy = ''
                     }
                 },
 

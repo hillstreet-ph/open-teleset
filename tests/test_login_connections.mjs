@@ -40,3 +40,49 @@ test('overlapping QR refresh clicks share one cancellation and retain generated 
   assert.equal(cancels,1);release();await pending;
   assert.equal(generated.length,1);assert.equal(generated[0],state.qrAccountId);assert.equal(state.qrRefreshing,false);
 });
+test('app credentials are optional and sent only as a complete valid pair',()=>{
+  const hash='0123456789abcdef0123456789abcdef';
+  const base={loginProxyMode:'default'};
+  assert.deepEqual({...helpers.loginConnectionPayload.call({...base})},{proxy_mode:'default'});
+  assert.deepEqual({...helpers.loginConnectionPayload.call({...base,apiCredData:{id:'',hash:''}})},{proxy_mode:'default'});
+  const sent=helpers.loginConnectionPayload.call({...base,apiCredData:{id:' 4242 ',hash:hash.toUpperCase()}});
+  assert.equal(sent.api_id,'4242');assert.equal(sent.api_hash,hash.toUpperCase());
+  assert.throws(()=>helpers.loginConnectionPayload.call({...base,apiCredData:{id:'4242',hash:''}}),/both/);
+  assert.throws(()=>helpers.loginConnectionPayload.call({...base,apiCredData:{id:'abc',hash}}),/whole number/);
+  assert.throws(()=>helpers.loginConnectionPayload.call({...base,apiCredData:{id:'4242',hash:'not-hex'}}),/32 hexadecimal/);
+});
+test('hex import forwards the app credentials with the key',async()=>{
+  let payload;
+  const methods=method('loginConnectionPayload() {','// QR Login Methods',{post:async(path,body)=>{payload=body;return {data:{success:true}};}});
+  const state={...methods,hexData:{key:'synthetic',dc:3},hexAccountId:'synthetic',loginProxyMode:'direct',
+    apiCredData:{id:'4242',hash:'0'.repeat(32)},authRevision:1,showQrModal:true,showToast(){},loadAccounts(){}};
+  await state.importHexSession();
+  assert.equal(payload.api_id,'4242');assert.equal(payload.api_hash,'0'.repeat(32));
+});
+test('export dialog adds the hex backup with its data center and app ID',async()=>{
+  const calls=[];
+  const methods=method('async exportSession(id) {','copyAccountId(accountId)', {get:async(url)=>{
+    calls.push(url);
+    if(url.endsWith('/export-hex-session')) return {data:{hex_key:'0011ff',dc_id:4,api_id:4242}};
+    return {data:{session_string:'string-session'}};
+  }});
+  const state={...methods,exportData:{id:'',session:''},showExportModal:false,addLog(){},showToast(){}};
+  await state.exportSession('acc');
+  assert.deepEqual(calls,['/api/accounts/acc/export-session','/api/accounts/acc/export-hex-session']);
+  assert.equal(state.exportData.session,'string-session');
+  assert.equal(state.exportData.hexKey,'0011ff');
+  assert.equal(state.exportData.hexDc,4);
+  assert.equal(state.exportData.apiId,4242);
+  assert.equal(state.showExportModal,true);
+});
+test('missing hex backup leaves the string export usable',async()=>{
+  const methods=method('async exportSession(id) {','copyAccountId(accountId)', {get:async(url)=>{
+    if(url.endsWith('/export-hex-session')) {const e=new Error('nope');e.response={data:{detail:'No key'}};throw e;}
+    return {data:{session_string:'string-session'}};
+  }});
+  const state={...methods,exportData:{id:'',session:''},showExportModal:false,addLog(){},showToast(){}};
+  await state.exportSession('acc');
+  assert.equal(state.exportData.session,'string-session');
+  assert.equal(state.exportData.hexKey,'');
+  assert.equal(state.exportData.hexError,'No key');
+});

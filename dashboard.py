@@ -41,6 +41,7 @@ from auto_reply import router as auto_reply_router, worker as auto_reply_worker
 from inbox import detach_all as inbox_detach_all, router as inbox_router
 from knowledge import router as knowledge_router
 from patterns import router as patterns_router
+from tables import router as tables_router
 from open_teleset.security import SupabaseAuthMiddleware
 from open_teleset.observability import initialize_error_monitoring
 from open_teleset.read_only_mcp import create_read_only_mcp
@@ -130,6 +131,7 @@ app.include_router(auto_reply_router)
 app.include_router(inbox_router)
 app.include_router(knowledge_router)
 app.include_router(patterns_router)
+app.include_router(tables_router)
 
 
 @app.get("/api/auth/me")
@@ -330,7 +332,8 @@ async def generate_qr_code(request: dict):
 
     proxy, settings = login_connection(request, account_id)
     result = await account_manager.generate_qr_code(
-        account_id, proxy, proxy_settings=settings, replace_account_id=replace_account_id)
+        account_id, proxy, proxy_settings=settings, replace_account_id=replace_account_id,
+        api_id=request.get("api_id"), api_hash=request.get("api_hash"))
     return result
 
 
@@ -391,7 +394,9 @@ async def add_account_with_session(request: dict):
     if not account_id or not session_string:
         raise HTTPException(400, "Account ID and session string are required")
     proxy, settings = login_connection(request, account_id)
-    result = await account_manager.import_session(account_id, session_string, proxy=proxy, proxy_settings=settings)
+    result = await account_manager.import_session(
+        account_id, session_string, proxy=proxy, proxy_settings=settings,
+        api_id=request.get("api_id"), api_hash=request.get("api_hash"))
     if not result["success"]:
         raise HTTPException(400, result["error"])
     return result
@@ -404,10 +409,20 @@ async def add_hex_session(request: dict):
         raise HTTPException(400, "Account ID is required")
     proxy, settings = login_connection(request, account_id)
     result = await account_manager.import_hex_session(
-        account_id, request.get("hex_key"), request.get("dc_id"), proxy=proxy, proxy_settings=settings)
+        account_id, request.get("hex_key"), request.get("dc_id"), proxy=proxy, proxy_settings=settings,
+        api_id=request.get("api_id"), api_hash=request.get("api_hash"))
     if not result["success"]:
         raise HTTPException(400, result["error"])
     return result
+
+
+@app.get("/api/accounts/{account_id}/export-hex-session")
+async def export_hex_session(account_id: str):
+    """Export the account's authorization key in hex form for backup or relogin."""
+    exported = account_manager.export_hex_session(account_id)
+    if not exported:
+        raise HTTPException(status_code=404, detail="Account or session not found")
+    return {"success": True, "account_id": account_id, **exported}
 
 
 @app.get("/api/accounts/{account_id}/export-session")
@@ -481,7 +496,8 @@ async def send_phone_code(request: dict):
 
     proxy, settings = login_connection(request, account_id)
     result = await account_manager.send_phone_code(
-        account_id, phone, proxy, proxy_settings=settings, replace_account_id=replace_account_id)
+        account_id, phone, proxy, proxy_settings=settings, replace_account_id=replace_account_id,
+        api_id=request.get("api_id"), api_hash=request.get("api_hash"))
 
     if result.get("success"):
         log_manager.add_log("账号管理", account_id, f"发送验证码到 {phone}", "info")
