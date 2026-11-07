@@ -1,0 +1,59 @@
+// Per-recipient send receipts: the durable job cards must show which account
+// sent to which username, with a kind-aware status, and explain a Telegram
+// cooldown without promising that Pause/Resume can shorten it.
+import { readFileSync } from 'node:fs';
+import vm from 'node:vm';
+import test from 'node:test';
+import assert from 'node:assert/strict';
+
+const html = readFileSync('static/dashboard.html', 'utf8');
+
+const receiptHelpers = vm.runInNewContext(
+  `({${html.slice(html.indexOf('jobAccountLabel(id) {'), html.indexOf('outreachReason(reason) {'))}})`);
+const accountHelpers = vm.runInNewContext(
+  `({${html.slice(html.indexOf('accountDisplayName(acc) {'), html.indexOf('async loadAccountPhoto(id) {'))}})`);
+
+function context(accounts) {
+  return { accounts, ...receiptHelpers, ...accountHelpers };
+}
+
+test('jobAccountLabel resolves a loaded account to its display name', () => {
+  const ctx = context([{ account_id: 'abc123', first_name: 'Ada', last_name: 'Lovelace' }]);
+  assert.equal(ctx.jobAccountLabel('abc123'), 'Ada Lovelace');
+});
+
+test('jobAccountLabel falls back to a short id for an unknown account', () => {
+  const ctx = context([]);
+  assert.equal(ctx.jobAccountLabel('abcdefghijklmnopqrst'), 'abcdefgh…qrst');
+  assert.equal(ctx.jobAccountLabel('short'), 'short');
+});
+
+test('jobResultState uses a kind-aware verb for completed work', () => {
+  const ctx = context([]);
+  assert.equal(ctx.jobResultState({ kind: 'personal_send' }, 'completed'), 'Sent');
+  assert.equal(ctx.jobResultState({ kind: 'member_add' }, 'completed'), 'Added');
+  assert.equal(ctx.jobResultState({ kind: 'auto_join' }, 'completed'), 'Joined');
+});
+
+test('jobResultState labels every non-terminal and failure state', () => {
+  const ctx = context([]);
+  for (const [state, label] of [['pending', 'Pending'], ['sending', 'Sending'],
+    ['skipped', 'Skipped'], ['failed', 'Failed'], ['uncertain', 'Uncertain']]) {
+    assert.equal(ctx.jobResultState({ kind: 'personal_send' }, state), label);
+  }
+});
+
+test('both durable job cards render account → recipient receipts', () => {
+  const receipts = html.match(/jobAccountLabel\(result\.account_id\) \}\} → \{\{ result\.target \}\}/g) || [];
+  assert.ok(receipts.length >= 2, 'Overview and Progress tracker must both show receipts');
+  assert.match(html, /jobResultState\(job, result\.state\)/);
+});
+
+test('the Tasks outreach panel explains a whole-job Telegram cooldown', () => {
+  const overview = html.slice(html.indexOf('<h3>Outreach jobs</h3>'), html.indexOf('<!-- ============ Automation ============ -->'));
+  assert.match(overview, /Recipient history/);
+  assert.match(overview, /jobAccountLabel\(result\.account_id\)/);
+  assert.match(overview, /Every selected account is in a Telegram cooldown/);
+  assert.match(overview, /cannot shorten Telegram's wait/);
+  assert.match(overview, /Assigned account: \{\{ jobAccountLabel\(job\.next_account_id\) \}\}/);
+});
