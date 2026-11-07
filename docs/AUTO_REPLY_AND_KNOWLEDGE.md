@@ -68,10 +68,13 @@ notes you write by hand are unaffected. **Search** ranks your own notes, and **R
 clears the store for you alone after a confirmation.
 
 **Import** sits beside **Export ZIP** in the Knowledge header. It takes markdown, text, CSV,
-TSV, JSON, YAML, XML, HTML and log files, and zips of them: up to 25 files, 2 MB each and
-6 MB together. A zip is walked in memory — entry names are reduced to their basename, only
-text suffixes are read, and each entry is capped, so an archive cannot reach outside the
-temporary read or smuggle a binary. Entries are split into chunks that fit the per-note limit,
+TSV, JSON, YAML, XML, HTML and log files, plus PDF, Word, PowerPoint, Excel, OpenDocument and
+RTF documents, and zips of any of them: up to 25 files, 2 MB each and 6 MB together. Legacy
+`.doc`, `.xls` and `.ppt` files are reported as unsupported. A zip is walked in memory — entry
+names are reduced to their basename, only text and document suffixes are read, text entries are
+capped at 512 KB, document entries at 2 MB and the walk at 80 members, so an archive cannot
+reach outside the temporary read or smuggle a binary. Each document is extracted up to 200 000
+characters. Entries are split into chunks that fit the per-note limit,
 identical content is skipped as a duplicate, and every chunk passes the same credential
 masking as a hand-written note. The result reports files, entries, duplicates, chunks, masked
 values and skips per file. The Copilot's attachment tray can import the same way; see

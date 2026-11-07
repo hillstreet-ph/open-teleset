@@ -10,34 +10,58 @@ on, so you can draft without losing your place.
 
 ## Ask and Work
 
-Both modes draft from the same rules. The difference is how far the panel goes on its own.
+Both modes read and draft from the same rules. The difference is how far a write goes on its
+own. The on/off switch sits on the left of the composer, inside the message row, and its label
+is the mode that is active.
 
-- **Ask** shows the draft and leaves the apply button with you.
-- **Work** also applies the safe steps: it opens the page a draft names, saves the template it
-  drafted, or prefills the schedule, BulkSend or ops form and takes you there. It never presses
-  a gate — sending, buying, joining and adding stay yours.
+- **Ask** (switch off) answers from your workspace and drafts any state change. The Run button
+  stays yours.
+- **Work** (switch on) runs the safe internal writes — creating or pausing an automation — with
+  no extra confirmation, and also applies the safe handoff steps: it opens the page a draft
+  names, saves the template it drafted, or prefills the schedule, BulkSend or ops form and takes
+  you there. It never presses an operator gate: sending, buying, joining and adding stay yours.
+
+Only the two scheduler writes are autonomous. Internal reads and encrypted knowledge writes run
+in both modes, which is why Ask can still "Review my accounts" or "Remember that our support
+hours are 9 to 6". In Ask, a pending schedule write shows **Run now**, which performs that one
+run in Work without flipping the switch (the browser setting is restored afterwards). A
+finished run leaves no Run button behind, and the × on any draft dismisses it and brings the
+**Superpowers** catalogue back.
 
 Your choice is remembered in the browser (`ot_copilot_mode`), and the panel header says which
-mode is on. When Work applies something, the panel closes so you land on the surface with the
+mode is on. When Work applies a handoff, the panel closes so you land on the surface with the
 result in front of you.
 
 ## Attachments
 
 The paperclip in the panel attaches files to the next prompt. They are read in memory for that
-turn only: up to 8 files, 4 MB each and 16 MB together, 12 000 characters extracted per file.
-Text and zip entries are extracted; images, video, PDF and other binaries are listed with the
-reason they cannot be read, never described as if they had been. Attachments are not written
-to disk and are not stored with the history; the tray can be cleared with the × on each file.
+turn only: up to 8 files, 4 MB each and 16 MB together. Any file type can be attached.
 
-"Import these files into my knowledge base" stores the readable text in your own knowledge
+- **Read as text:** plain text and notes, PDF (up to 300 pages), Word, PowerPoint, Excel,
+  OpenDocument (ODT/ODS/ODP), RTF, and ZIP archives of any of those.
+- **Listed, not read:** images, video, audio and other binaries show the reason they cannot be
+  read; they are never described as if they had been.
+
+A document entry is read up to 2 MB, a ZIP text entry up to 512 KB, and a turn extracts up to
+200 000 characters. Legacy binary formats (`.doc`, `.xls`, `.ppt`) are reported as unsupported
+with that reason. Attachments are not written to disk and are not stored with the history; the
+tray can be cleared with the × on each file.
+
+"Import these files into my knowledge base" stores the full readable text in your own knowledge
 base and reports entries, duplicates, masked values and skips. See
 [AUTO_REPLY_AND_KNOWLEDGE.md](AUTO_REPLY_AND_KNOWLEDGE.md).
 
 ## Suggestions, follow-ups and enhance
 
 Opening the panel offers **Suggested for you**, drawn first from your own notes, then from the
-prompts you actually applied, then from the shipped starters. Each chip fills the composer so
-you can edit before sending.
+prompts you actually applied, then from real workspace state and the shipped starters. Each chip
+fills the composer so you can edit before sending.
+
+Below the suggestions, **Superpowers** lists every internal command the server exposes for this
+operator, grouped as Workspace, Automation, Knowledge and Replies. The catalogue comes from
+`GET /api/copilot/tools`; a command that changes state is marked `write`. Pressing a chip fills
+the composer with that command's example and drafts it immediately, so a read answers in place
+and a write becomes either a pending draft (Ask) or a completed action (Work).
 
 Every draft also carries up to three **Next** chips — the concrete things worth doing once this
 one is done. They fill the composer too; nothing is drafted or applied until you send.
@@ -49,19 +73,31 @@ message body or an approval id, and it shows what it added. Enhance needs no mod
 
 ## Tier 1 — internal commands the server runs
 
-These touch only your own encrypted workspace, so the Copilot runs them immediately and
-shows the result in the panel. Nothing leaves the workspace and nothing is sent.
+These touch only your own encrypted workspace and never leave it. Reads and knowledge writes run
+in both modes; the two scheduler writes need Work or the **Run now** button.
 
-| Command | What it does |
-| --- | --- |
-| Save a knowledge note | Stores the note in your own knowledge base, with duplicate detection. |
-| Search the knowledge base | Ranks your own notes against the question and returns the top five. |
-| Look for repeated wording | Re-reads your notes and proposes reusable phrases from the repeated ones. |
-| Which Auto Reply rule would answer | Matches a test message against your rules. Nothing is sent. |
+| Group | Command | What it does | Mode |
+| --- | --- | --- | --- |
+| Workspace | Review your accounts | Counts connected, online and erroring accounts. | Both |
+| Workspace | Review your proxies | Proxy mode, failover and maintenance state, never a secret. | Both |
+| Workspace | Show platform features | Which platform surfaces are switched on here. | Both |
+| Workspace | Check your connectors | MCP connectors and whether a token is stored, never the token. | Both |
+| Workspace | List your templates | Templates by category and the most used ones. | Both |
+| Workspace | Give me a health summary | Accounts, cycles, features, connectors and recent errors in one read. | Both |
+| Workspace | Show recent activity | The newest log lines from this workspace. | Both |
+| Automation | List your automations | Every scheduled cycle with its action, state and next run. | Both |
+| Automation | Schedule a member scrape | Creates a repeating scrape for a group your account can already read. | Work / Run now |
+| Automation | Pause or resume an automation | Switches one scheduled cycle off or back on. Nothing else changes. | Work / Run now |
+| Knowledge | Import the attached files | Stores the readable text of the attachments in your encrypted knowledge base. | Both |
+| Knowledge | Save a note in your knowledge base | Stores the note, with duplicate detection. | Both |
+| Knowledge | Search your knowledge base | Ranks your own notes against the question. | Both |
+| Knowledge | Look for repeated wording | Proposes reusable phrases from the repeated ones. | Both |
+| Replies | See which Auto Reply rule would answer | Matches a test message against your rules. Nothing is sent. | Both |
 
-You reach them by writing prose — "remember that our support hours are 9 to 6" or "which
-rule would answer 'are you open on Saturday?'" — or by pressing the matching preset. A
-command that cannot run reports why in the panel instead of failing the request.
+You reach them by writing prose — "remember that our support hours are 9 to 6", "pause the
+member scrape automation", "which rule would answer 'are you open on Saturday?'" — by pressing a
+**Superpowers** chip, or by pressing the matching preset. A command that cannot run reports why
+in the panel instead of failing the request.
 
 Page switches are the smallest safe step: "open the logs", "take me to the knowledge base"
 and the other page names turn into a navigation draft that Work applies immediately and Ask
@@ -100,7 +136,7 @@ someone, and cold or scraped outreach are outside what the Copilot will do at ei
 is anything whose purpose is to evade Telegram's limits or bans: greeting rotation, switching
 accounts when a limit is hit, automatic warming, and proxy or fingerprint evasion. A
 curated preset does not change that: it opens the gated form, it does not press it. These are
-product boundaries, not a mode you can switch.
+product boundaries shared by Ask and Work, not a mode you can switch off.
 
 ## The preset runbook, and how it edits itself
 

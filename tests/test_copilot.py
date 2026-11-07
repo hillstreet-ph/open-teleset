@@ -142,6 +142,7 @@ def test_router_exposes_drafting_history_and_the_preset_runbook():
         ("/api/copilot/presets/{preset_id}", ("DELETE",)),
         ("/api/copilot/presets/{preset_id}", ("PUT",)),
         ("/api/copilot/suggest", ("GET",)),
+        ("/api/copilot/tools", ("GET",)),
     ]
 
 
@@ -660,7 +661,7 @@ def test_a_binary_attachment_does_not_block_a_text_draft(client):
 
     assert draft["action"] == "template"
     assert draft["payload"]["attachments"][0]["name"] == "photo.png"
-    assert any("Only text documents are read" in warning for warning in draft["warnings"])
+    assert any("could not be read as text" in warning for warning in draft["warnings"])
 
 
 def test_the_draft_echoes_ask_or_work(client):

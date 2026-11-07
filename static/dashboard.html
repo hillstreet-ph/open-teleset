@@ -784,18 +784,33 @@
         .copilot-ident strong { display: block; font-size: 14px; }
         .copilot-ident small { display: block; font-size: 11px; color: var(--text-dim); }
         .copilot-mark { width: 32px; height: 32px; flex: none; border-radius: 10px; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); }
-        .copilot-mode { display: flex; gap: 4px; padding: 10px 14px 0; }
-        .copilot-mode-btn { flex: 1; padding: 7px 10px; border-radius: 9px; border: 1px solid var(--border); background: transparent; color: var(--text-secondary); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease; }
-        .copilot-mode-btn:hover { color: var(--text); }
-        .copilot-mode-btn.active { background: var(--accent-soft); border-color: rgba(16, 163, 127, 0.35); color: var(--accent); }
+        .copilot-auto { flex: none; display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 8px 0 6px; border-radius: 9px; border: 1px solid var(--border); background: transparent; color: var(--text-dim); font: inherit; font-size: 11px; font-weight: 700; letter-spacing: 0.02em; cursor: pointer; transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease; }
+        .copilot-auto:hover { color: var(--text); border-color: rgba(16, 163, 127, 0.4); }
+        .copilot-auto:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+        .copilot-auto-track { position: relative; width: 26px; height: 14px; border-radius: 999px; background: var(--border-strong); transition: background 0.18s ease; }
+        .copilot-auto-knob { position: absolute; top: 2px; left: 2px; width: 10px; height: 10px; border-radius: 50%; background: var(--text-secondary); transition: transform 0.18s ease, background 0.18s ease; }
+        .copilot-auto.on { color: var(--accent); border-color: rgba(16, 163, 127, 0.35); background: var(--accent-soft); }
+        .copilot-auto.on .copilot-auto-track { background: rgba(16, 163, 127, 0.45); }
+        .copilot-auto.on .copilot-auto-knob { transform: translateX(12px); background: var(--accent); }
         .copilot-body { flex: 1; overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 12px; min-height: 120px; }
         .copilot-label { margin: 0 0 6px; font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-dim); }
         .copilot-chip { display: block; width: 100%; text-align: left; margin-bottom: 6px; padding: 8px 10px; border-radius: 9px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); font: inherit; font-size: 12.5px; line-height: 1.4; cursor: pointer; }
         .copilot-chip:hover { border-color: rgba(16, 163, 127, 0.4); background: var(--accent-soft); }
         .copilot-intro p { margin: 0; font-size: 12.5px; line-height: 1.55; color: var(--text-secondary); }
+        .copilot-tools { display: flex; flex-direction: column; gap: 8px; }
+        .copilot-tool-group-label { margin: 0 0 4px; font-size: 10.5px; font-weight: 600; color: var(--text-dim); }
+        .copilot-tool-row { display: flex; flex-wrap: wrap; gap: 4px; }
+        .copilot-tool { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; padding: 5px 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text-secondary); font: inherit; font-size: 11.5px; line-height: 1.3; text-align: left; cursor: pointer; transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease; }
+        .copilot-tool:hover { color: var(--text); border-color: rgba(16, 163, 127, 0.4); background: var(--accent-soft); }
+        .copilot-tool.write { border-style: dashed; }
+        .copilot-tool-flag { flex: none; font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--warning); }
+        .copilot-result-list { margin: 6px 0 0 16px; padding: 0; font-size: 12px; line-height: 1.5; }
+        .copilot-result-list li { margin-bottom: 3px; }
         .copilot-draft { border: 1px solid var(--border); border-radius: 12px; background: var(--surface-2); padding: 12px; }
         .copilot-draft-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
-        .copilot-draft-head strong { font-size: 13px; }
+        .copilot-draft-head strong { flex: 1; min-width: 0; font-size: 13px; }
+        .copilot-draft-x { flex: none; border: 0; background: transparent; color: var(--text-dim); font-size: 16px; line-height: 1; padding: 0 2px; cursor: pointer; }
+        .copilot-draft-x:hover { color: var(--text); }
         .copilot-muted { margin: 0; color: var(--text-dim); font-size: 12px; line-height: 1.5; }
         .copilot-warnings { margin: 8px 0 0 16px; padding: 0; color: var(--warning); font-size: 12px; }
         .copilot-error { margin: 0; color: var(--danger); font-size: 12.5px; }
@@ -2583,7 +2598,7 @@
                                 <p v-else>{{ copilot.draft.result.detail }}</p>
                             </template>
                             <template v-else-if="copilot.draft.payload.command === 'knowledge-import'">
-                                <p><strong>{{ copilot.draft.result.imported }}</strong> entries imported<span v-if="copilot.draft.result.duplicates"> · {{ copilot.draft.result.duplicates }} duplicate(s)</span><span v-if="copilot.draft.result.masked"> · {{ copilot.draft.result.masked }} masked</span>.</p>
+                                <p><strong>{{ copilot.draft.result.imported }}</strong> {{ copilot.draft.result.imported === 1 ? 'entry' : 'entries' }} imported<span v-if="copilot.draft.result.duplicates"> · {{ copilot.draft.result.duplicates }} duplicate(s)</span><span v-if="copilot.draft.result.masked"> · {{ copilot.draft.result.masked }} masked</span>.</p>
                                 <ul v-if="copilot.draft.result.skipped_files?.length" style="margin:8px 0 0 18px; color:var(--warning);">
                                     <li v-for="skipped in copilot.draft.result.skipped_files.slice(0, 5)" :key="skipped.name">{{ skipped.name }} — {{ skipped.reason }}</li>
                                 </ul>
@@ -3950,16 +3965,11 @@
                     <span class="copilot-mark"><app-icon name="copilot" :size="16"></app-icon></span>
                     <div>
                         <strong>Copilot</strong>
-                        <small>{{ copilot.mode === 'work' ? 'Work · applies safe steps, stops at every gate' : 'Ask · drafts, never sends' }}</small>
+                        <small>{{ copilot.mode === 'work' ? 'Work · auto-runs safe steps, stops at every gate' : 'Ask · drafts and reads, never sends' }}</small>
                     </div>
                 </div>
                 <button class="icon-btn" @click="toggleCopilot" aria-label="Close Copilot"><app-icon name="close" :size="16"></app-icon></button>
             </header>
-
-            <div class="copilot-mode" role="group" aria-label="Copilot mode">
-                <button type="button" class="copilot-mode-btn" :class="{ active: copilot.mode === 'ask' }" :aria-pressed="copilot.mode === 'ask' ? 'true' : 'false'" @click="setCopilotMode('ask')">Ask</button>
-                <button type="button" class="copilot-mode-btn" :class="{ active: copilot.mode === 'work' }" :aria-pressed="copilot.mode === 'work' ? 'true' : 'false'" @click="setCopilotMode('work')">Work</button>
-            </div>
 
             <div class="copilot-body" id="copilot-body">
                 <p v-if="copilot.error" class="copilot-error" role="alert">{{ copilot.error }}</p>
@@ -3971,8 +3981,19 @@
                                 class="copilot-chip" :title="suggestion.detail || suggestion.instruction"
                                 @click="useCopilotSuggestion(suggestion.instruction)">{{ suggestion.label }}</button>
                     </div>
+                    <div v-if="copilot.tools.length" class="copilot-tools">
+                        <p class="copilot-label">Superpowers · {{ copilot.toolCount }} internal actions</p>
+                        <div v-for="group in copilot.tools" :key="group.group" class="copilot-tool-group">
+                            <p class="copilot-tool-group-label">{{ group.group }}</p>
+                            <div class="copilot-tool-row">
+                                <button v-for="tool in group.tools" :key="tool.id" type="button"
+                                        class="copilot-tool" :class="{ write: tool.write }" :title="tool.summary"
+                                        @click="useCopilotTool(tool)">{{ tool.title }}<span v-if="tool.write" class="copilot-tool-flag">write</span></button>
+                            </div>
+                        </div>
+                    </div>
                     <div class="copilot-intro">
-                        <p><strong>Ask</strong> drafts a template, a schedule or an opt-in send. <strong>Work</strong> also applies the safe steps for you — saving a template, opening a page, prefilling a form — and still stops at every operator gate. Nothing is sent, bought or joined from here.</p>
+                        <p><strong>Ask</strong> answers from your accounts, automations, connectors and encrypted knowledge, and drafts anything that changes state. <strong>Work</strong> also runs the safe writes — creating or pausing an automation — and still stops at every operator gate. Nothing is sent, bought or joined from here.</p>
                     </div>
                 </template>
 
@@ -3981,6 +4002,8 @@
                         <div class="copilot-draft-head">
                             <strong>{{ copilot.draft.title }}</strong>
                             <span class="badge" :class="copilot.draft.action === 'unsupported' ? 'badge-danger' : 'badge-info'">{{ copilot.draft.action }}</span>
+                            <button type="button" class="copilot-draft-x" @click="clearCopilot" :disabled="copilot.loading"
+                                    title="Dismiss this draft" aria-label="Dismiss this draft">×</button>
                         </div>
                         <p class="copilot-muted">{{ copilot.draft.summary }}</p>
                         <ul v-if="copilot.draft.warnings?.length" class="copilot-warnings">
@@ -4009,6 +4032,10 @@
                         <div v-else-if="copilot.draft.action === 'run'" style="margin-top:10px;">
                             <p v-if="copilot.draft.result?.error" class="copilot-error">{{ copilot.draft.result.error }}</p>
                             <template v-else-if="copilot.draft.result">
+                                <p v-if="copilot.draft.result.summary" class="copilot-muted">{{ copilot.draft.result.summary }}</p>
+                                <ul v-if="copilot.draft.result.items?.length" class="copilot-result-list">
+                                    <li v-for="(item, i) in copilot.draft.result.items" :key="i"><strong style="color:var(--text);">{{ item.label }}</strong><template v-if="item.detail"> — {{ item.detail }}</template></li>
+                                </ul>
                                 <p v-if="copilot.draft.payload.command === 'knowledge-note'" class="copilot-muted">{{ copilot.draft.result.stored ? 'Saved to your knowledge base.' : 'That note is already in your knowledge base.' }}</p>
                                 <template v-else-if="copilot.draft.payload.command === 'knowledge-search'">
                                     <p class="copilot-muted"><strong style="color:var(--text);">{{ copilot.draft.result.count }}</strong> note(s) match “{{ copilot.draft.result.query }}”.</p>
@@ -4024,23 +4051,23 @@
                                     <p v-else class="copilot-muted">{{ copilot.draft.result.detail }}</p>
                                 </template>
                                 <template v-else-if="copilot.draft.payload.command === 'knowledge-import'">
-                                    <p class="copilot-muted"><strong style="color:var(--text);">{{ copilot.draft.result.imported }}</strong> entries imported<span v-if="copilot.draft.result.duplicates"> · {{ copilot.draft.result.duplicates }} duplicate(s)</span><span v-if="copilot.draft.result.masked"> · {{ copilot.draft.result.masked }} masked</span>.</p>
+                                    <p class="copilot-muted"><strong style="color:var(--text);">{{ copilot.draft.result.imported }}</strong> {{ copilot.draft.result.imported === 1 ? 'entry' : 'entries' }} imported<span v-if="copilot.draft.result.duplicates"> · {{ copilot.draft.result.duplicates }} duplicate(s)</span><span v-if="copilot.draft.result.masked"> · {{ copilot.draft.result.masked }} masked</span>.</p>
                                     <ul v-if="copilot.draft.result.skipped_files?.length" style="margin:6px 0 0 16px; font-size:12px; color:var(--warning);">
                                         <li v-for="skipped in copilot.draft.result.skipped_files.slice(0, 4)" :key="skipped.name">{{ skipped.name }} — {{ skipped.reason }}</li>
                                     </ul>
                                     <p v-if="copilot.draft.result.errors?.length" class="copilot-error" style="margin-top:6px;">{{ copilot.draft.result.errors[0] }}</p>
                                 </template>
                             </template>
-                            <p v-else class="copilot-muted">Nothing ran yet.</p>
+                            <p v-else class="copilot-muted">Ask mode kept this write as a draft. Press <strong style="color:var(--text);">Run now</strong> to do it.</p>
                         </div>
                         <div v-else-if="copilot.draft.examples?.length" style="margin-top:10px;">
                             <p class="copilot-label">Try one of these</p>
                             <button v-for="(example, i) in copilot.draft.examples" :key="i" type="button" class="copilot-chip" @click="useCopilotSuggestion(example)">{{ example }}</button>
                         </div>
 
-                        <div v-if="copilot.draft.requires_confirmation" class="copilot-actions">
+                        <div v-if="copilot.draft.requires_confirmation && !(copilot.draft.action === 'run' && copilot.draft.result)" class="copilot-actions">
                             <button class="btn btn-primary btn-sm" @click="applyCopilotDraft">{{ copilotApplyLabel() }}</button>
-                            <span class="copilot-muted">The final button stays yours.</span>
+                            <span class="copilot-muted">{{ copilot.draft.action === 'run' ? 'Ask keeps this write behind your click.' : 'The final button stays yours.' }}</span>
                         </div>
 
                         <div v-if="copilot.draft.next?.length" class="copilot-next">
@@ -4067,6 +4094,13 @@
                     <ul><li v-for="(item, i) in copilot.enhanced" :key="i">{{ item }}</li></ul>
                 </div>
                 <div class="copilot-compose-row">
+                    <button type="button" class="copilot-auto" :class="{ on: copilot.mode === 'work' }"
+                            role="switch" :aria-checked="copilot.mode === 'work' ? 'true' : 'false'"
+                            aria-label="Auto-run safe steps" @click="setCopilotMode(copilot.mode === 'work' ? 'ask' : 'work')"
+                            :title="copilot.mode === 'work' ? 'Work: auto-runs safe writes. Click for Ask.' : 'Ask: drafts only. Click to auto-run safe writes (Work).'">
+                        <span class="copilot-auto-track" aria-hidden="true"><span class="copilot-auto-knob"></span></span>
+                        <span>{{ copilot.mode === 'work' ? 'Work' : 'Ask' }}</span>
+                    </button>
                     <button type="button" class="copilot-icon-btn" @click="pickCopilotFiles" :disabled="copilot.uploading"
                             title="Attach files" aria-label="Attach files"><app-icon name="paperclip" :size="17"></app-icon></button>
                     <button type="button" class="copilot-icon-btn" @click="enhanceCopilot" :disabled="copilot.enhancing || !copilot.instruction.trim()"
@@ -4078,7 +4112,7 @@
                             :disabled="copilot.loading || !copilot.instruction.trim()">{{ copilot.loading ? '…' : (copilot.mode === 'work' ? 'Work' : 'Ask') }}</button>
                 </div>
                 <input id="copilot-files" type="file" multiple hidden @change="uploadCopilotFiles">
-                <p class="copilot-footnote">Attachments stay in memory for this session. Work never sends, buys or joins.</p>
+                <p class="copilot-footnote">Any file can be attached — PDF, Word, PowerPoint, spreadsheets and zips are read as text. Attachments stay in memory for this session. Nothing is sent, bought or joined.</p>
             </footer>
         </section>
 
@@ -5348,7 +5382,7 @@
                     copilot: { instruction: '', loading: false, draft: null, presets: [], error: '', turnId: '', history: [],
                                editing: '', saving: false, formError: '',
                                open: false, mode: 'ask', suggestions: [], attachments: [], uploading: false,
-                               enhancing: false, enhanced: [],
+                               enhancing: false, enhanced: [], tools: [], toolCount: 0,
                                form: { group: '', title: '', description: '', instruction: '', command: '' } },
 
                     // Auto Reply (inbound; answers only private chats that spoke first)
@@ -9113,6 +9147,7 @@
                     if (action === 'task') return 'Prefill BulkSend'
                     if (action === 'ops') return 'Open ' + (this.copilot.draft.payload?.tab || 'form')
                     if (action === 'navigate') return 'Open ' + (this.copilot.draft.payload?.label || 'page')
+                    if (action === 'run') return 'Run now'
                     return 'Apply draft'
                 },
 
@@ -9122,6 +9157,19 @@
                     this.loadCopilotSuggestions()
                     this.loadCopilotAttachments()
                     this.loadCopilotPresets()
+                    this.loadCopilotTools()
+                },
+
+                async loadCopilotTools() {
+                    try {
+                        const { data } = await _api.get('/api/copilot/tools')
+                        this.copilot.tools = data.tools || []
+                        this.copilot.toolCount = this.copilot.tools
+                            .reduce((total, group) => total + (group.tools?.length || 0), 0)
+                    } catch (e) {
+                        this.copilot.tools = []
+                        this.copilot.toolCount = 0
+                    }
                 },
 
                 setCopilotMode(mode) {
@@ -9212,6 +9260,13 @@
                     this.$nextTick(() => document.getElementById('copilot-panel-input')?.focus())
                 },
 
+                useCopilotTool(tool) {
+                    const example = String(tool?.example || '').trim()
+                    if (!example || this.copilot.loading) return
+                    this.useCopilotSuggestion(example)
+                    return this.draftCopilot()
+                },
+
                 useCopilotNext(step) {
                     this.useCopilotSuggestion(step?.instruction)
                 },
@@ -9226,12 +9281,28 @@
                         return
                     }
                     if (draft.action === 'run') {
+                        if (!draft.result) {
+                            await this.runCopilotPending()
+                            return
+                        }
                         if (draft.result?.error) this.showToast(draft.result.error, true)
                         else this.showToast('Done — the result is in the panel.')
                         return
                     }
                     if (['template', 'schedule', 'task', 'ops'].includes(draft.action) && draft.requires_confirmation) {
                         await this.applyCopilotDraft()
+                    }
+                },
+
+                async runCopilotPending() {
+                    if (this.copilot.loading || !this.copilot.instruction.trim()) return
+                    const restore = this.copilot.mode
+                    this.copilot.mode = 'work'
+                    try {
+                        await this.draftCopilot()
+                    } finally {
+                        this.copilot.mode = restore
+                        try { localStorage.setItem('ot_copilot_mode', restore) } catch (e) {}
                     }
                 },
 
@@ -9248,7 +9319,8 @@
                     try {
                         const { data } = await _api.post('/api/copilot/preset-draft', {
                             preset_id: preset.id,
-                            instruction: preset.instruction || ''
+                            instruction: preset.instruction || '',
+                            mode: this.copilot.mode
                         })
                         this.copilot.draft = data.draft || null
                         this.copilot.turnId = data.turn_id || ''
@@ -9389,6 +9461,10 @@
                         this.go(payload.tab)
                         this.copilot.open = false
                         this.showToast('Opened ' + (payload.label || payload.tab) + '.')
+                        return
+                    }
+                    if (draft.action === 'run') {
+                        if (!draft.result) await this.runCopilotPending()
                         return
                     }
                     if (!draft.requires_confirmation) return
@@ -9890,7 +9966,7 @@
                         const { data } = await _api.post('/api/knowledge/import', body, { timeout: 60000 })
                         this.cancelKnowledgeEdit()
                         await this.loadKnowledge()
-                        const parts = [`${data.imported} entries imported`]
+                        const parts = [`${data.imported} ${data.imported === 1 ? 'entry' : 'entries'} imported`]
                         if (data.duplicates) parts.push(`${data.duplicates} duplicate(s)`)
                         if (data.masked) parts.push(`${data.masked} masked`)
                         if (data.skipped_files?.length) parts.push(`${data.skipped_files.length} skipped`)

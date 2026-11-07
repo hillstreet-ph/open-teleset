@@ -63,7 +63,7 @@ ATTACHMENT_KINDS = (
     ((".mp4", ".mov", ".webm", ".mkv", ".avi"), "video"),
     ((".pdf",), "pdf"),
     ((".csv", ".tsv", ".xls", ".xlsx", ".ods"), "spreadsheet"),
-    ((".doc", ".docx", ".odt", ".rtf", ".pages"), "document"),
+    ((".doc", ".docx", ".odt", ".rtf", ".pages", ".pptx", ".ppt", ".odp"), "document"),
     ((".mp3", ".wav", ".ogg", ".m4a", ".opus"), "audio"),
 )
 
@@ -236,30 +236,117 @@ _FIELD_PATTERNS: dict[str, re.Pattern] = {
 #
 # These run on the server and only read or write the operator's own workspace.
 
-INTERNAL_COMMANDS: dict[str, dict[str, str]] = {
+INTERNAL_COMMANDS: dict[str, dict[str, Any]] = {
+    "accounts-overview": {
+        "group": "Workspace",
+        "title": "Review your accounts",
+        "summary": "Counts the connected accounts, the ones online and the ones reporting a connection error.",
+    },
+    "schedules-list": {
+        "group": "Automation",
+        "title": "List your automations",
+        "summary": "Lists every scheduled cycle with its action, state and next run.",
+    },
+    "schedule-create": {
+        "group": "Automation",
+        "title": "Schedule a member scrape",
+        "summary": "Creates a repeating member scrape for a group your account already has access to.",
+    },
+    "schedule-toggle": {
+        "group": "Automation",
+        "title": "Pause or resume an automation",
+        "summary": "Switches one scheduled cycle off or back on. Nothing else changes.",
+    },
+    "proxies-overview": {
+        "group": "Workspace",
+        "title": "Review your proxies",
+        "summary": "Reports the proxy mode, failover and maintenance state without showing any secret.",
+    },
+    "features-overview": {
+        "group": "Workspace",
+        "title": "Show platform features",
+        "summary": "Lists which platform surfaces are switched on for this deployment.",
+    },
+    "connectors-list": {
+        "group": "Workspace",
+        "title": "Check your connectors",
+        "summary": "Lists the MCP connectors and whether a token is stored. Secrets are never shown.",
+    },
+    "templates-overview": {
+        "group": "Workspace",
+        "title": "List your templates",
+        "summary": "Counts the saved templates by category and names the most used ones.",
+    },
+    "health-overview": {
+        "group": "Workspace",
+        "title": "Give me a health summary",
+        "summary": "Summarises accounts, cycles, features, connectors and recent errors in one read.",
+    },
+    "logs-recent": {
+        "group": "Workspace",
+        "title": "Show recent activity",
+        "summary": "Reads the newest log lines from this workspace.",
+    },
     "knowledge-import": {
+        "group": "Knowledge",
         "title": "Import the attached files",
         "summary": "Stores the readable text of the attached files in your own encrypted knowledge base.",
     },
     "knowledge-note": {
+        "group": "Knowledge",
         "title": "Save a note in your knowledge base",
         "summary": "Stores the note in your own encrypted knowledge base.",
     },
     "knowledge-search": {
+        "group": "Knowledge",
         "title": "Search your knowledge base",
         "summary": "Ranks your own notes against the question. Nothing leaves this workspace.",
     },
     "patterns-refresh": {
+        "group": "Knowledge",
         "title": "Look for repeated wording",
         "summary": "Re-reads your notes and proposes reusable phrases from the repeated ones.",
     },
     "autoreply-test": {
+        "group": "Replies",
         "title": "See which Auto Reply rule would answer",
         "summary": "Matches a test message against your rules. Nothing is sent.",
     },
 }
 
+# Creating or pausing a cycle is a write, so Ask mode drafts it and waits for
+# the operator to press Run. Every other internal command only reads this
+# workspace or writes an encrypted note, and runs in either mode.
+INTERNAL_WRITES = frozenset({"schedule-create", "schedule-toggle"})
+
+INTERNAL_EXAMPLES = {
+    "accounts-overview": "Review my accounts.",
+    "schedules-list": "List my automations.",
+    "schedule-create": "Collect members from @example_group every day at 09:00, limit 200.",
+    "schedule-toggle": "Pause the member scrape automation.",
+    "proxies-overview": "Review my proxies.",
+    "features-overview": "Show platform features.",
+    "connectors-list": "Check my connectors.",
+    "templates-overview": "List my templates.",
+    "health-overview": "Give me a health summary.",
+    "logs-recent": "Show recent logs.",
+    "knowledge-import": "Import these files into my knowledge base.",
+    "knowledge-note": "Remember: orders leave the warehouse within two working days.",
+    "knowledge-search": "Search my knowledge base for the refund policy.",
+    "patterns-refresh": "Look for repeated wording in my notes.",
+    "autoreply-test": "Which rule would answer the message: how much does it cost?",
+}
+
 _INTERNAL_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("schedule-create", (
+        r"\b(?:schedule|automate)\b.{0,60}\b(?:scrap|collect)(?:e|er|ing)?\b.{0,40}\bmembers?\b",
+        r"\b(?:scrap|collect)(?:e|er|ing)?\b.{0,40}\bmembers?\b.{0,60}\b(?:daily|weekly|every\s+day|"
+        r"every\s+week|on\s+a\s+schedule)\b",
+    )),
+    ("schedule-toggle", (
+        r"\b(?:pause|disable|stop|turn\s+off)\b.{0,40}\b(?:schedule|cycle|automation|scrape)\b",
+        r"\b(?:enable|resume|restart|turn\s+on|start)\b.{0,40}\b(?:schedule|cycle|automation|scrape)\b",
+    )),
     ("knowledge-import", (
         r"\bimport\b.*\b(?:knowledge|notes?|files?|documents?|attachments?|zip)\b",
         r"\b(?:knowledge|notes?)\b.*\bimport\b",
@@ -288,6 +375,42 @@ _INTERNAL_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
         r"\bwhich\s+rule\b",
         r"\btest\b.*\b(?:auto[\s-]?reply|rule)\b",
         r"\bauto[\s-]?reply\b.*\btest\b",
+    )),
+    ("templates-overview", (
+        r"\b(?:list|show|review|what)\b.{0,20}\btemplates?\b",
+    )),
+    ("accounts-overview", (
+        r"\b(?:review|show|list|check)\b\s+(?:my|the|all|our)?\s*accounts?\b",
+        r"\baccount\s+(?:overview|status|summary)\b",
+    )),
+    ("schedules-list", (
+        r"\blist\b.*\b(?:automations?|schedules?|cycles?)\b",
+        r"\b(?:show|review)\b\s+(?:my|the|all|our)\s+(?:schedules?|cycles?)\b",
+        r"\b(?:automations?|schedules?)\s+(?:list|overview)\b",
+    )),
+    ("proxies-overview", (
+        r"\b(?:review|show|check|list)\b.*\bprox(?:y|ies)\b",
+        r"\bprox(?:y|ies)\s+(?:status|overview|health)\b",
+    )),
+    ("features-overview", (
+        r"\b(?:show|list|review|check)\b.*\b(?:platform\s+)?features?\b",
+        r"\bfeatures?\s+(?:status|overview)\b",
+    )),
+    ("connectors-list", (
+        r"\b(?:show|list|check|review)\b.*\b(?:connectors?|integrations?|mcp)\b",
+        r"\b(?:connectors?|integrations?)\s+(?:status|overview)\b",
+    )),
+    ("health-overview", (
+        r"\bhealth\s+(?:summary|overview|check)\b",
+        r"\bsystem\s+(?:health|status|overview)\b",
+        r"\bis\s+everything\s+(?:working|healthy)\b",
+    )),
+    ("logs-recent", (
+        r"\b(?:recent|latest|newest)\s+logs?\b",
+        r"\b(?:show|read|list)\b\s+(?:my|the)?\s*(?:recent\s+)?logs?\b",
+        r"\b(?:last|newest)\s+\d{1,3}\s+(?:log|lines?|entries?)\b",
+        r"\bwhat\s+happened\s+recently\b",
+        r"\berror\s+logs?\b",
     )),
 )
 
@@ -539,6 +662,7 @@ class PresetBody(BaseModel):
 class PresetDraftBody(BaseModel):
     preset_id: str = Field(min_length=1, max_length=64)
     instruction: str = Field(default="", max_length=2000)
+    mode: str = Field(default="ask", max_length=8)
 
 
 def _blocked_reason(text: str) -> str | None:
@@ -782,7 +906,12 @@ def _attachment_kind(name: str) -> str:
     for suffixes, kind in ATTACHMENT_KINDS:
         if lowered.endswith(tuple(suffixes) if isinstance(suffixes, tuple) else (suffixes,)):
             return kind
-    return "text" if lowered.rsplit(".", 1)[-1] in {s.lstrip(".") for s in knowledge.IMPORT_SUFFIXES} else "file"
+    suffix = lowered.rsplit(".", 1)[-1]
+    if suffix in {value.lstrip(".") for value in knowledge.IMPORT_SUFFIXES}:
+        return "text"
+    if suffix in {value.lstrip(".") for value in knowledge.DOCUMENT_SUFFIXES}:
+        return "document"
+    return "file"
 
 
 def _human_size(size: int) -> str:
@@ -835,6 +964,7 @@ def _store_attachments(operator: str, uploads: list) -> list:
                 "readable": bool(text),
                 "reason": reason or ("" if text else "no readable text"),
                 "text": text[:ATTACHMENT_CHARS],
+                "full_text": text[:knowledge.MAX_EXTRACTED_CHARS],
             }
             store[record["id"]] = record
             added.append(_public_attachment(record))
@@ -904,7 +1034,35 @@ def _next_steps(draft: dict) -> list[dict[str, str]]:
     elif action == "run":
         command = str(payload.get("command") or "")
         result = draft.get("result") or {}
-        if command == "knowledge-import":
+        if command in {"accounts-overview", "proxies-overview"}:
+            steps = [("List your automations", "List my automations."),
+                     ("Give me a health summary", "Give me a health summary.")]
+        elif command == "schedules-list":
+            steps = [("Schedule a member scrape",
+                      "Collect members from @example_group every day at 09:00, limit 200."),
+                     ("Give me a health summary", "Give me a health summary.")]
+        elif command == "schedule-create":
+            steps = [("List your automations", "List my automations."),
+                     ("Give me a health summary", "Give me a health summary.")]
+        elif command == "schedule-toggle":
+            steps = [("List your automations", "List my automations."),
+                     ("Give me a health summary", "Give me a health summary.")]
+        elif command == "features-overview":
+            steps = [("Check your connectors", "Check my connectors."),
+                     ("Give me a health summary", "Give me a health summary.")]
+        elif command == "connectors-list":
+            steps = [("Show platform features", "Show platform features."),
+                     ("Give me a health summary", "Give me a health summary.")]
+        elif command == "templates-overview":
+            steps = [("Create a welcome template", _HELP_EXAMPLES[0]),
+                     ("Look for repeated wording", "Look for repeated wording in my notes.")]
+        elif command == "health-overview":
+            steps = [("List your automations", "List my automations."),
+                     ("Show recent logs", "Show recent logs.")]
+        elif command == "logs-recent":
+            steps = [("Give me a health summary", "Give me a health summary."),
+                     ("Review your accounts", "Review my accounts.")]
+        elif command == "knowledge-import":
             imported = int(result.get("imported") or 0)
             steps = [("Search what you imported", "Search my knowledge base for the refund policy."),
                      ("Look for repeated wording", "Look for repeated wording in my notes.")]
@@ -1012,8 +1170,47 @@ def enhance_instruction(instruction: str) -> dict[str, Any]:
         added.append("named the surface and its bounded fields")
         added.append("kept the consent gate for you to press")
     elif action == "run":
-        enhanced = text.rstrip(".") + "."
-        added.append("kept the command and made it a complete sentence")
+        command = str(payload.get("command") or "")
+        params = payload.get("params") or {}
+        tool = INTERNAL_COMMANDS.get(command) or {}
+        if command == "schedule-create":
+            target = str(params.get("target") or "").strip()
+            repeat = str(params.get("repeat") or "daily")
+            cadence = {"daily": "every day", "weekly": "every week",
+                       "workday": "every workday"}.get(repeat, "every day")
+            when = f"{int(params.get('hour') or 9):02d}:{int(params.get('minute') or 0):02d}"
+            limit = int(params.get("limit") or 200)
+            if target:
+                enhanced = f"Collect members from {target} {cadence} at {when}, limit {limit}."
+                added.append("named the group")
+            else:
+                enhanced = (f"Collect members {cadence} at {when}, limit {limit}. "
+                            "Name the group the account already belongs to.")
+                added.append("asked for the group")
+            added.append(f"set the limit to {limit}")
+            added.append(f"set the run to {cadence} at {when}")
+        elif command == "schedule-toggle":
+            name = str(params.get("name") or params.get("schedule_id") or "").strip()
+            enable = bool(params.get("enable", True))
+            verb = "Resume" if enable else "Pause"
+            if name:
+                enhanced = f"{verb} the {name} automation."
+                added.append("named the automation")
+            else:
+                enhanced = f"{verb} the automation. Name which automation to switch."
+                added.append("asked which automation to switch")
+            added.append(f"set the state to {'on' if enable else 'paused'}")
+        elif command == "logs-recent":
+            limit = int(params.get("limit") or 10)
+            enhanced = f"Show the last {limit} log lines."
+            added.append(f"kept the last {limit} lines")
+        else:
+            enhanced = text.rstrip(".") + "."
+            if tool:
+                added.append(f"named the {tool['title'].lower()} tool")
+            added.append("kept the command and made it a complete sentence")
+        if command in INTERNAL_WRITES:
+            added.append("kept the write behind your Run button in Ask mode")
     elif action == "navigate":
         enhanced = text.rstrip(".") + "."
         added.append("made the page switch explicit")
@@ -1054,6 +1251,34 @@ def suggestions(operator: str, limit: int = 6) -> list[dict[str, str]]:
                     if turn.get("outcome") == "applied" and turn.get("instruction")), None)
     if applied:
         add("Run that again", str(applied["instruction"]), "history", "Your last applied prompt.")
+    try:
+        from account_manager import account_manager
+        accounts = account_manager.list_accounts()
+    except Exception:
+        accounts = []
+    if accounts:
+        online = sum(1 for item in accounts if item.get("status") == "online")
+        add(f"Review {len(accounts)} account(s)", "Review my accounts.", "workspace",
+            f"{online} online right now.")
+    try:
+        from scheduler import task_scheduler
+        schedules = task_scheduler.list_schedules()
+    except Exception:
+        schedules = []
+    if schedules:
+        active = sum(1 for item in schedules if item.get("enabled"))
+        add("List your automations", "List my automations.", "workspace",
+            f"{active} of {len(schedules)} on.")
+    try:
+        from open_teleset.operator_store import read_json
+        integrations = read_json("integrations", [])
+    except Exception:
+        integrations = []
+    if isinstance(integrations, list) and integrations:
+        add("Check your connectors", "Check my connectors.", "workspace",
+            f"{len(integrations)} connector(s) saved.")
+    add("Give me a health summary", "Give me a health summary.", "workspace",
+        "Accounts, automations, features and recent errors in one read.")
     defaults = [
         ("Import a knowledge file", "Import these files into my knowledge base."),
         ("Save a note", _HELP_EXAMPLES[3]),
@@ -1123,13 +1348,20 @@ def _internal_draft(command: str, params: dict) -> dict[str, Any]:
         warnings.append("Name what to look for.")
     if command == "autoreply-test" and not str(params.get("text") or "").strip():
         warnings.append("Type the message you want to test.")
+    if command == "schedule-create":
+        if not str(params.get("target") or "").strip():
+            warnings.append("Name the group, for example @example_group, to collect members from.")
+        warnings.append("The cycle only reads a group the selected accounts already belong to.")
+    if command == "schedule-toggle" and not str(params.get("schedule_id") or "").strip() \
+            and not str(params.get("name") or "").strip():
+        warnings.append("Name the automation to pause or resume.")
     return {
         "action": "run",
         "title": spec["title"],
         "summary": spec["summary"],
         "payload": {"command": command, "params": params},
         "warnings": warnings,
-        "requires_confirmation": False,
+        "requires_confirmation": command in INTERNAL_WRITES,
     }
 
 
@@ -1172,6 +1404,43 @@ def _internal_params(command: str, text: str) -> dict[str, Any]:
             message = re.sub(r"^.*?\b(?:with|using|say|says|message|answer)\b\s*", "", body,
                              flags=re.I).strip() or body
         return {"text": message, "name": ""}
+    if command == "schedule-create":
+        handle = re.search(r"(?:t\.me/|@)([A-Za-z][A-Za-z0-9_]{2,31})", body, re.I)
+        target = f"@{handle.group(1)}" if handle else ""
+        limit_match = (re.search(r"\blimit\b\s*(?:of|to|=|:)?\s*(\d{1,4})", body, re.I)
+                       or re.search(r"(\d{1,4})\s*(?:members?|users?)\b", body, re.I))
+        limit = int(limit_match.group(1)) if limit_match else 200
+        limit = max(1, min(1000, limit))
+        repeat = _repeat(body)
+        if repeat == "once":
+            repeat = "daily"
+        hour, minute = _time(body) or (9, 0)
+        day = {"weekly": "1", "workday": "1-5"}.get(repeat, "*")
+        return {
+            "target": target,
+            "limit": limit,
+            "repeat": repeat,
+            "hour": hour,
+            "minute": minute,
+            "cron": f"{minute} {hour} * * {day}",
+            "name": f"Member scrape {target}".strip(),
+        }
+    if command == "schedule-toggle":
+        enable = not bool(re.search(r"\b(?:pause|disable|stop|turn\s+off)\b", body, re.I))
+        hint = re.sub(r"^\s*(?:please\s+)?(?:pause|disable|stop|turn\s+off|enable|resume|restart|"
+                      r"turn\s+on|start)\b\s*(?:the|my|our|a|an)?\s*", "", body, flags=re.I)
+        hint = re.sub(r"[.!?]+\s*$", "", hint).strip()
+        hint = re.sub(r"\s+(?:automation|schedule|cycle|scrape|job)\s*$", "", hint, flags=re.I).strip()
+        if hint.lower() in {"", "automation", "schedule", "cycle", "scrape", "job"}:
+            hint = ""
+        identifier = re.search(r"\b((?:sched|copilot)_[A-Za-z0-9_-]{2,40})\b", body)
+        return {"schedule_id": identifier.group(1) if identifier else "", "name": hint,
+                "enable": enable}
+    if command == "logs-recent":
+        match = (re.search(r"\b(\d{1,3})\s*(?:lines?|entries?|logs?)\b", body, re.I)
+                 or re.search(r"\blast\s+(\d{1,3})\b", body, re.I))
+        limit = int(match.group(1)) if match else 10
+        return {"limit": max(1, min(50, limit))}
     return {}
 
 
@@ -1183,6 +1452,15 @@ def _ops_surface(text: str) -> str:
     return ""
 
 
+def _account_label(account: dict) -> str:
+    username = str(account.get("username") or "").strip()
+    if username and username != "N/A":
+        return username if username.startswith("@") else f"@{username}"
+    name = " ".join(part for part in (account.get("first_name"), account.get("last_name"))
+                    if part).strip()
+    return name or "Unnamed account"
+
+
 def _run_internal(operator: str, draft: dict) -> dict:
     """Run one internal command against the operator's own workspace."""
     payload = draft.get("payload") or {}
@@ -1192,10 +1470,12 @@ def _run_internal(operator: str, draft: dict) -> dict:
         files = _attachments_by_ids(operator, params.get("attachment_ids") or [])
         readable = [record for record in files if record.get("readable") and record.get("text")]
         if not files:
-            raise HTTPException(400, "Attach a text file before importing.")
+            raise HTTPException(400, "Attach a document before importing.")
         if not readable:
-            raise HTTPException(400, "None of the attached files could be read as text.")
-        summary = knowledge.import_files(operator, [{"name": record["name"], "text": record["text"]}
+            raise HTTPException(400, "None of the attached files could be read.")
+        summary = knowledge.import_files(operator, [{"name": record["name"],
+                                                     "text": record.get("full_text")
+                                                     or record["text"]}
                                                     for record in readable])
         summary["attachments"] = [_public_attachment(record) for record in files]
         return summary
@@ -1219,6 +1499,192 @@ def _run_internal(operator: str, draft: dict) -> dict:
         import auto_reply
         return auto_reply.preview_reply(operator, str(params.get("text") or ""),
                                         name=str(params.get("name") or ""))
+    if command == "accounts-overview":
+        from account_manager import account_manager
+        accounts = account_manager.list_accounts()
+        online = [item for item in accounts if item.get("status") == "online"]
+        errors = [item for item in accounts if item.get("connection_error")]
+        items = []
+        for item in accounts[:8]:
+            detail = ("connection error" if item.get("connection_error")
+                      else ("online" if item.get("status") == "online" else "offline"))
+            items.append({"label": _account_label(item), "detail": detail})
+        if not accounts:
+            summary = "No accounts are connected yet."
+        else:
+            summary = f"{len(accounts)} account(s) connected, {len(online)} online"
+            summary += f", {len(errors)} reporting a connection error." if errors else "."
+        return {"summary": summary, "counts": {"total": len(accounts), "online": len(online),
+                                               "errors": len(errors)}, "items": items}
+    if command == "schedules-list":
+        from scheduler import task_scheduler
+        schedules = task_scheduler.list_schedules()
+        active = [item for item in schedules if item.get("enabled")]
+        items = []
+        for item in schedules[:8]:
+            state = "on" if item.get("enabled") else "paused"
+            detail = f"{item.get('action') or 'cycle'}, {state}"
+            next_run = str(item.get("next_run") or "")[:16].replace("T", " ")
+            if next_run and item.get("enabled"):
+                detail += f", next {next_run}"
+            items.append({"label": str(item.get("name") or item.get("schedule_id") or "Automation"),
+                          "detail": detail})
+        summary = (f"{len(schedules)} automation(s), {len(active)} on and "
+                   f"{len(schedules) - len(active)} paused.")
+        return {"summary": summary, "counts": {"total": len(schedules), "enabled": len(active)},
+                "items": items}
+    if command == "schedule-create":
+        from scheduler import task_scheduler
+        target = str(params.get("target") or "").strip()
+        if not target:
+            raise HTTPException(400, "Name the group to collect members from, for example @example_group.")
+        limit = max(1, min(1000, int(params.get("limit") or 200)))
+        repeat = str(params.get("repeat") or "daily")
+        if repeat not in {"daily", "weekly", "workday"}:
+            repeat = "daily"
+        hour = max(0, min(23, int(params.get("hour") or 9)))
+        minute = max(0, min(59, int(params.get("minute") or 0)))
+        day = {"weekly": "1", "workday": "1-5"}.get(repeat, "*")
+        schedule_id = f"copilot_{uuid4().hex[:10]}"
+        name = str(params.get("name") or f"Member scrape {target}")[:PRESET_TITLE]
+        created = task_scheduler.add_schedule(
+            schedule_id=schedule_id, name=name, cron=f"{minute} {hour} * * {day}",
+            action="scrape_members", target=target,
+            execute_time={"hour": hour, "minute": minute}, repeat=repeat,
+            scrape_target=target, scrape_limit=limit, filter_bots=True)
+        if not created:
+            raise HTTPException(400, "The cycle was not created. Check the group and the limit.")
+        record = task_scheduler.get_schedule(schedule_id) or {}
+        next_run = str(record.get("next_run") or "")[:16].replace("T", " ")
+        summary = (f"Created the {repeat} member scrape of {target} at {hour:02d}:{minute:02d}, "
+                   f"limit {limit}" + (f". Next run {next_run}." if next_run else "."))
+        return {"summary": summary, "schedule_id": schedule_id,
+                "items": [{"label": name, "detail": f"scrape_members, on, limit {limit}"}]}
+    if command == "schedule-toggle":
+        from scheduler import task_scheduler
+        schedules = task_scheduler.list_schedules()
+        identifier = str(params.get("schedule_id") or "").strip()
+        hint = str(params.get("name") or "").strip().lower()
+        record = task_scheduler.get_schedule(identifier) if identifier else None
+        if record is None:
+            candidates = schedules
+            if hint:
+                words = [word for word in re.split(r"\W+", hint) if len(word) > 2]
+                candidates = [item for item in schedules
+                              if any(word in f"{item.get('name', '')} {item.get('action', '')} "
+                                             f"{item.get('target', '')}".lower() for word in words)]
+            if not candidates:
+                raise HTTPException(404, "No automation matches that name.")
+            if len(candidates) > 1:
+                names = ", ".join(str(item.get("name") or item.get("schedule_id"))
+                                  for item in candidates[:4])
+                raise HTTPException(400, f"More than one automation matches: {names}. "
+                                         "Name the one to switch.")
+            record = candidates[0]
+        schedule_id = str(record.get("schedule_id") or record.get("id") or "")
+        if not schedule_id:
+            raise HTTPException(400, "That automation has no id.")
+        enable = bool(params.get("enable", True))
+        if bool(record.get("enabled")) != enable:
+            if not task_scheduler.toggle_schedule(schedule_id):
+                raise HTTPException(400, "The automation state was not changed.")
+        name = str(record.get("name") or schedule_id)
+        state = "on" if enable else "paused"
+        return {"summary": f"{name} is now {state}.", "schedule_id": schedule_id,
+                "items": [{"label": name, "detail": f"{record.get('action') or 'cycle'}, {state}"}]}
+    if command == "proxies-overview":
+        from proxy_manager import proxy_manager
+        info = proxy_manager.list_proxies()
+        proxies = info.get("proxies") or []
+        global_proxy = info.get("global") or {}
+        global_set = bool(global_proxy.get("host"))
+        failover = bool(info.get("auto_failover_enabled"))
+        items = [
+            {"label": "Global proxy", "detail": "configured" if global_set else "not configured"},
+            {"label": "Per-account proxies", "detail": f"{len(proxies)} saved"},
+            {"label": "Automatic failover", "detail": "on" if failover else "off"},
+            {"label": "Maintenance mode", "detail": "on" if info.get("maintenance") else "off"},
+        ]
+        summary = (f"{len(proxies)} proxy configuration(s) saved; global proxy "
+                   f"{'set' if global_set else 'not set'}; failover {'on' if failover else 'off'}.")
+        return {"summary": summary, "items": items}
+    if command == "features-overview":
+        from open_teleset.operator_store import get_features
+        features = get_features()
+        enabled = [key for key, value in features.items() if value]
+        items = [{"label": key.replace("_", " "), "detail": "on" if value else "off"}
+                 for key, value in list(features.items())[:20]]
+        return {"summary": f"{len(enabled)} of {len(features)} platform features are on.",
+                "counts": {"total": len(features), "enabled": len(enabled)}, "items": items}
+    if command == "connectors-list":
+        from open_teleset.operator_store import read_json
+        integrations = read_json("integrations", [])
+        if not isinstance(integrations, list):
+            integrations = []
+        items = []
+        for item in integrations[:8]:
+            if not isinstance(item, dict):
+                continue
+            auth = "OAuth" if item.get("auth_mode") == "oauth" else "bearer token"
+            stored = "token stored" if item.get("has_token") else "no token stored"
+            items.append({"label": str(item.get("name") or "Connector"),
+                          "detail": f"{item.get('transport') or 'http'}, {auth}, {stored}"})
+        summary = f"{len(integrations)} connector(s) saved."
+        missing = sum(1 for item in integrations
+                      if isinstance(item, dict) and not item.get("has_token"))
+        if missing:
+            summary += f" {missing} without a stored token."
+        return {"summary": summary, "counts": {"total": len(integrations), "missing": missing},
+                "items": items}
+    if command == "templates-overview":
+        from template_manager import template_manager
+        stats = template_manager.get_stats()
+        templates = template_manager.list_templates()
+        items = [{"label": str(item.get("name") or item.get("template_id") or "Template"),
+                  "detail": f"{item.get('category') or 'other'}, "
+                            f"used {int(item.get('use_count') or 0)} time(s)"}
+                 for item in templates[:8]]
+        summary = f"{int(stats.get('total') or 0)} template(s) saved."
+        categories = [name for name in (stats.get("by_category") or {}) if name]
+        if categories:
+            summary += " Categories: " + ", ".join(sorted(categories)[:6]) + "."
+        return {"summary": summary, "items": items}
+    if command == "health-overview":
+        from account_manager import account_manager
+        from scheduler import task_scheduler
+        from log_manager import log_manager
+        from open_teleset.operator_store import get_features, read_json
+        accounts = account_manager.list_accounts()
+        online = [item for item in accounts if item.get("status") == "online"]
+        schedules = task_scheduler.list_schedules()
+        active = [item for item in schedules if item.get("enabled")]
+        features = get_features()
+        integrations = read_json("integrations", [])
+        if not isinstance(integrations, list):
+            integrations = []
+        errors = [entry for entry in log_manager.get_logs(limit=200)
+                  if entry.get("level") == "error"]
+        features_on = sum(1 for value in features.values() if value)
+        items = [
+            {"label": "Accounts", "detail": f"{len(online)} online of {len(accounts)}"},
+            {"label": "Automations", "detail": f"{len(active)} on of {len(schedules)}"},
+            {"label": "Platform features", "detail": f"{features_on} on of {len(features)}"},
+            {"label": "Connectors", "detail": f"{len(integrations)} saved"},
+            {"label": "Recent errors", "detail": f"{len(errors)} in the last 200 log lines"},
+        ]
+        summary = (f"{len(online)} of {len(accounts)} accounts online, {len(active)} of "
+                   f"{len(schedules)} automations on, {len(errors)} recent error line(s).")
+        return {"summary": summary, "items": items}
+    if command == "logs-recent":
+        from log_manager import log_manager
+        limit = max(1, min(50, int(params.get("limit") or 10)))
+        entries = log_manager.get_logs(limit=limit)
+        items = [{"label": f"{str(entry.get('timestamp') or '')[:16].replace('T', ' ')} "
+                           f"{entry.get('action') or 'event'}",
+                  "detail": f"{entry.get('level') or 'info'}: {str(entry.get('detail') or '')[:160]}"}
+                 for entry in entries]
+        return {"summary": f"{len(entries)} log line(s)." if entries else "No log lines yet.",
+                "items": items}
     raise HTTPException(400, "That is not an internal command the Copilot can run.")
 
 
@@ -1231,7 +1697,7 @@ def _with_files_only(draft: dict, files: list) -> dict:
     unreadable = [record["name"] for record in files if not record.get("readable")]
     if unreadable:
         draft.setdefault("warnings", []).append(
-            "Only text documents are read: " + ", ".join(unreadable[:4]) + ".")
+            "These files could not be read as text: " + ", ".join(unreadable[:4]) + ".")
     return draft
 
 
@@ -1251,9 +1717,9 @@ def _import_draft(files: list) -> dict[str, Any]:
     readable = [record for record in files if record.get("readable")]
     if not readable:
         draft = _help()
-        draft["title"] = "Attach a text document to import"
-        draft["summary"] = ("Images, video, PDFs, Word files and spreadsheets cannot be read here. "
-                            "Attach markdown, text, csv, json, yaml, html or a zip of them.")
+        draft["title"] = "Attach a readable document to import"
+        draft["summary"] = ("Images, video and audio cannot be read here. Attach a PDF, Word or "
+                            "PowerPoint file, a spreadsheet, a text note, or a zip of them.")
         draft["warnings"] = [f"{record['name']}: {record.get('reason') or 'not readable'}"
                              for record in files[:4]]
         return draft
@@ -1268,6 +1734,18 @@ def build_draft(instruction: str, attachments: list | None = None) -> dict[str, 
         return _import_draft(files)
     if not text:
         return _help()
+
+    # The internal tools read the command region first, so "list my templates" or
+    # "collect members every day" are not mistaken for a template or send draft.
+    region = _command_region(text)
+    command = _internal_intent(region)
+    if command:
+        reason = _blocked_reason(region)
+        if reason:
+            return _unsupported(reason)
+        draft = _internal_draft(command, _internal_params(command, text))
+        return (_with_attachments(draft, files) if command == "knowledge-import"
+                else _with_files_only(draft, files))
 
     lowered = text.lower()
     is_schedule = bool(re.search(r"\b(schedule|daily|weekly|every\s+day|every\s+week|workday)\b", lowered))
@@ -1339,15 +1817,27 @@ def _safe_run(operator: str, draft: dict) -> dict:
         return {"error": str(exc.detail)}
 
 
+def _dispatch_internal(operator: str, draft: dict, mode: str) -> None:
+    """Reads run in either mode; a write waits for the Run button outside Work."""
+    if draft.get("action") != "run":
+        return
+    command = str((draft.get("payload") or {}).get("command") or "")
+    if command in INTERNAL_WRITES and mode != "work":
+        draft["requires_confirmation"] = True
+        draft["pending"] = True
+        return
+    draft["result"] = _safe_run(operator, draft)
+
+
 @router.post("/api/copilot/draft")
 async def draft_command(body: CopilotRequest, http_request: Request):
     operator = _operator(http_request)
+    mode = "work" if str(body.mode or "").lower() == "work" else "ask"
     files = _attachments_by_ids(operator, body.attachment_ids)
     draft = build_draft(body.instruction, files)
     turn = _remember(operator, body.instruction, draft, body.preset_id)
-    if draft.get("action") == "run":
-        draft["result"] = _safe_run(operator, draft)
-    draft["mode"] = "work" if str(body.mode or "").lower() == "work" else "ask"
+    _dispatch_internal(operator, draft, mode)
+    draft["mode"] = mode
     draft["next"] = _next_steps(draft)
     return {"success": True, "draft": draft, "presets": list_presets(operator),
             "attachments": [_public_attachment(record) for record in _operator_attachments(operator).values()],
@@ -1365,6 +1855,23 @@ async def enhance_command(body: EnhanceBody, http_request: Request):
 async def suggest_command(http_request: Request, limit: int = 6):
     operator = _operator(http_request)
     return {"success": True, "suggestions": suggestions(operator, max(1, min(int(limit), 8)))}
+
+
+@router.get("/api/copilot/tools")
+async def tool_catalogue(http_request: Request):
+    """The internal superpowers, grouped for the panel. Writes are marked as such."""
+    _operator(http_request)
+    groups: dict[str, list] = {}
+    for command, spec in INTERNAL_COMMANDS.items():
+        groups.setdefault(str(spec.get("group") or "Workspace"), []).append({
+            "id": command,
+            "title": spec["title"],
+            "summary": spec["summary"],
+            "write": command in INTERNAL_WRITES,
+            "example": INTERNAL_EXAMPLES.get(command, ""),
+        })
+    return {"success": True, "tools": [{"group": group, "tools": tools}
+                                       for group, tools in groups.items()]}
 
 
 @router.get("/api/copilot/attachments")
@@ -1415,11 +1922,12 @@ async def preset_draft_command(body: PresetDraftBody, http_request: Request):
     preset = _preset_by_id(operator, body.preset_id)
     if not preset:
         raise HTTPException(404, "No preset with that id.")
+    mode = "work" if str(body.mode or "").lower() == "work" else "ask"
     draft = _preset_draft(preset, body.instruction)
     turn = _remember(operator, body.instruction or str(preset.get("instruction") or ""),
                      draft, preset["id"])
-    if draft.get("action") == "run":
-        draft["result"] = _safe_run(operator, draft)
+    _dispatch_internal(operator, draft, mode)
+    draft["mode"] = mode
     draft["next"] = _next_steps(draft)
     return {"success": True, "draft": draft, "presets": list_presets(operator),
             "turn_id": turn["id"] if turn else ""}

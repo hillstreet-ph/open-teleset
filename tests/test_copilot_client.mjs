@@ -19,10 +19,16 @@ function harness(draftResponse) {
   const calls = [];
   const toasts = [];
   const focused = [];
+  const stored = [];
   const presets = [{ id: 'template-welcome', group: 'Templates', title: 'Welcome reply', description: 'd', instruction: 'Create a template' }];
+  const tools = [
+    { group: 'Workspace', tools: [{ id: 'accounts-overview', title: 'Accounts overview', summary: 'Counts and status.', write: false, example: 'Review my accounts.' }] },
+    { group: 'Automation', tools: [{ id: 'schedule-create', title: 'Create an automation', summary: 'Adds a bound schedule.', write: true, example: 'Collect members from @group every day at 09:00, limit 200.' }] },
+  ];
   const response = url => {
     if (url === '/api/copilot/history') return { turns: [] };
     if (url === '/api/copilot/presets') return { presets };
+    if (url === '/api/copilot/tools') return { success: true, tools };
     return { success: true, draft: draftResponse, presets, turn_id: 'turn-1' };
   };
   const context = {
@@ -46,12 +52,13 @@ function harness(draftResponse) {
     },
     document: { getElementById: id => ({ focus: () => focused.push(id) }) },
     window: { confirm: () => true },
+    localStorage: { setItem: (key, value) => stored.push([key, value]), getItem: () => null },
     console,
   };
   const state = {
     copilot: {
       instruction: '', loading: false, draft: null, presets: [], error: '', turnId: '', history: [],
-      mode: 'ask', enhanced: [], attachments: [], suggestions: [], files: [],
+      mode: 'ask', enhanced: [], attachments: [], suggestions: [], files: [], tools: [], toolCount: 0,
       editing: '', saving: false, formError: '',
       form: { group: '', title: '', description: '', instruction: '', command: '' },
     },
@@ -79,7 +86,7 @@ function harness(draftResponse) {
   const methods = vm.runInNewContext(`({${copilotMethods}})`, context);
   for (const [name, fn] of Object.entries(methods)) state[name] = fn.bind(state);
   state.loadCopilotHistory = async () => {};
-  return { state, calls, toasts, focused };
+  return { state, calls, toasts, focused, stored };
 }
 
 const FORBIDDEN = /send|bulk|outreach|autojoin|adder|\/api\/schedules/i;
@@ -89,6 +96,21 @@ test('copilot navigation and page metadata are wired', () => {
   assert.ok(html.includes("copilot: ['Copilot', 'Draft templates, schedules and opt-in sends in plain language.']"));
   assert.match(html, /if \(tab === 'copilot'\) \{ this\.loadCopilot\(\); this\.loadCopilotHistory\(\); this\.loadCopilotSuggestions\(\); this\.loadCopilotAttachments\(\) \}/);
   assert.ok(html.includes('v-show="tab === \'copilot\'"'));
+});
+
+test('the Ask/Work switch sits on the left of the composer and marks writes', () => {
+  assert.match(html, /class="copilot-auto"[\s\S]{0,200}role="switch"[\s\S]{0,160}:aria-checked/);
+  assert.ok(!html.includes('class="copilot-mode-btn"'), 'the segmented header control is replaced by the composer switch');
+  assert.ok(html.includes('@click="setCopilotMode(copilot.mode === \'work\' ? \'ask\' : \'work\')"'));
+  assert.match(html, /Superpowers · \{\{ copilot\.toolCount \}\} internal actions/);
+  assert.match(html, /<span v-if="tool\.write" class="copilot-tool-flag">write<\/span>/);
+  assert.match(html, /PDF, Word, PowerPoint, spreadsheets and zips are read as text/);
+});
+
+test('a draft can be dismissed and a finished run leaves no dead apply button', () => {
+  assert.match(html, /class="copilot-draft-x" @click="clearCopilot"/);
+  assert.match(html, /v-if="copilot\.draft\.requires_confirmation && !\(copilot\.draft\.action === 'run' && copilot\.draft\.result\)"/);
+  assert.match(html, /Ask keeps this write behind your click\./);
 });
 
 test('copilot apply paths never call a send, schedule or outreach endpoint', () => {
@@ -130,6 +152,7 @@ test('runCopilotPreset drafts by id instead of re-parsing blocked prose', async 
   assert.equal(calls[0].url, '/api/copilot/preset-draft');
   assert.equal(calls[0].body.preset_id, 'ops-adder');
   assert.equal(calls[0].body.instruction, 'Open the adder with a delay of 38.');
+  assert.equal(calls[0].body.mode, 'ask');
   assert.equal(state.copilot.draft, draft);
   assert.equal(state.copilot.turnId, 'turn-1');
   assert.equal(state.copilot.loading, false);
@@ -290,4 +313,48 @@ test('help and unsupported drafts apply nothing', async () => {
   assert.equal(calls.length, 0);
   assert.equal(state.tab, 'copilot');
   assert.equal(toasts.length, 0);
+});
+
+test('the superpower catalogue loads grouped tools and a write flag', async () => {
+  const { state, calls } = harness(null);
+  await state.loadCopilotTools();
+  assert.equal(calls[0].url, '/api/copilot/tools');
+  assert.equal(state.copilot.toolCount, 2);
+  assert.deepEqual(state.copilot.tools.map(group => group.group), ['Workspace', 'Automation']);
+  assert.equal(state.copilot.tools[1].tools[0].write, true);
+});
+
+test('clicking a superpower prefills its example and drafts it in the current mode', async () => {
+  const draft = { action: 'run', requires_confirmation: false, payload: { command: 'accounts-overview' }, result: { summary: '2 accounts', items: [] } };
+  const { state, calls } = harness(draft);
+  state.copilot.mode = 'ask';
+  await state.useCopilotTool({ example: 'Review my accounts.' });
+  assert.equal(calls[0].url, '/api/copilot/draft');
+  assert.equal(calls[0].body.instruction, 'Review my accounts.');
+  assert.equal(calls[0].body.mode, 'ask');
+  assert.equal(state.copilot.draft.result.summary, '2 accounts');
+});
+
+test('a pending run is executed by Run now in Work and the mode is restored', async () => {
+  const executed = {
+    action: 'run', requires_confirmation: false, mode: 'work', payload: { command: 'schedule-create' },
+    result: { summary: 'Automation created.', items: [] },
+  };
+  const { state, calls, stored } = harness(executed);
+  state.copilot.mode = 'ask';
+  state.copilot.instruction = 'Collect members from @group every day at 09:00, limit 200.';
+  state.copilot.draft = { action: 'run', requires_confirmation: true, pending: true, payload: { command: 'schedule-create' } };
+  await state.applyCopilotDraft();
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, '/api/copilot/draft');
+  assert.equal(calls[0].body.mode, 'work');
+  assert.equal(state.copilot.draft.result.summary, 'Automation created.');
+  assert.equal(state.copilot.mode, 'ask', 'the one-off run does not flip the panel into Work');
+  assert.deepEqual(stored.at(-1), ['ot_copilot_mode', 'ask']);
+});
+
+test('a pending run gets a Run now label instead of Apply draft', () => {
+  const { state } = harness(null);
+  state.copilot.draft = { action: 'run', requires_confirmation: true, payload: { command: 'schedule-create' } };
+  assert.equal(state.copilotApplyLabel(), 'Run now');
 });

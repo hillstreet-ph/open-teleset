@@ -16,6 +16,7 @@ import io
 import json
 import re
 import zipfile
+import xml.etree.ElementTree as ET
 from uuid import uuid4
 
 from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFile
@@ -37,14 +38,19 @@ MIN_SNIPPET_CHARS = 40
 
 SOURCES = ("manual", "copilot", "auto_reply", "template", "import")
 
-# Import bounds. A zip is unpacked defensively: only text members, never a path.
+# Import bounds. A zip is unpacked defensively: only text or readable documents,
+# never a path.
 IMPORT_SUFFIXES = frozenset({".md", ".markdown", ".txt", ".text", ".csv", ".tsv", ".json",
                              ".log", ".yml", ".yaml", ".xml", ".html", ".htm"})
+DOCUMENT_SUFFIXES = frozenset({".pdf", ".docx", ".pptx", ".xlsx", ".odt", ".ods", ".odp", ".rtf"})
+LEGACY_SUFFIXES = frozenset({".doc", ".xls", ".ppt"})
 MAX_IMPORT_FILES = 25
 MAX_IMPORT_FILE_BYTES = 2 * 1024 * 1024
 MAX_IMPORT_ENTRY_BYTES = 512 * 1024
+MAX_DOCUMENT_ENTRY_BYTES = 2 * 1024 * 1024
 MAX_IMPORT_ENTRIES = 80
 MAX_IMPORT_BYTES = 6 * 1024 * 1024
+MAX_EXTRACTED_CHARS = 200_000
 
 DEFAULT_SETTINGS = {
     "auto_collect_copilot": True,
@@ -368,23 +374,222 @@ def split_chunks(text: str, limit: int = MAX_DOC_CHARS) -> list:
     return [chunk for chunk in chunks if chunk.strip()]
 
 
+def _tag(node) -> str:
+    """An ElementTree tag without its namespace."""
+    return node.tag.rsplit("}", 1)[-1] if isinstance(node.tag, str) else ""
+
+
+def _capped(text: str) -> str:
+    return (text or "")[:MAX_EXTRACTED_CHARS]
+
+
+def _parse_xml(raw: bytes):
+    """Parse an Office XML part, refusing any DTD or entity declaration."""
+    if b"<!doctype" in raw[:65536].lower() or b"<!entity" in raw[:65536].lower():
+        raise ET.ParseError("DTD or entity declaration refused")
+    return ET.fromstring(raw)
+
+
+def _pdf_text(data: bytes) -> tuple:
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        return "", "PDF reading is not enabled on this server yet"
+    try:
+        reader = PdfReader(io.BytesIO(data))
+        pages: list = []
+        total = 0
+        for page in reader.pages[:300]:
+            page_text = page.extract_text() or ""
+            pages.append(page_text)
+            total += len(page_text)
+            if total >= MAX_EXTRACTED_CHARS:
+                break
+    except Exception:
+        return "", "that PDF could not be read"
+    return _capped("\n\n".join(pages)), None
+
+
+def _xml_paragraphs(root) -> str:
+    paragraphs = []
+    for node in root.iter():
+        if _tag(node) != "p":
+            continue
+        text = "".join(child.text or "" for child in node.iter()
+                       if _tag(child) == "t" and child.text)
+        if text.strip():
+            paragraphs.append(text)
+    return "\n".join(paragraphs)
+
+
+def _ooxml_text(data: bytes, member: str) -> tuple:
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            raw = archive.read(member)
+    except (zipfile.BadZipFile, KeyError, OSError, RuntimeError):
+        return "", "that file could not be opened"
+    try:
+        return _xml_paragraphs(_parse_xml(raw)), None
+    except ET.ParseError:
+        return "", "that file could not be read"
+
+
+def _pptx_text(data: bytes) -> tuple:
+    chunks: list = []
+    total = 0
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            slides = sorted((name for name in archive.namelist()
+                             if re.match(r"ppt/slides/slide\d+\.xml$", name)),
+                            key=lambda name: int(re.search(r"(\d+)", name).group(1)))
+            for name in slides[:200]:
+                chunk = _xml_paragraphs(_parse_xml(archive.read(name)))
+                if chunk.strip():
+                    chunks.append(chunk)
+                    total += len(chunk)
+                if total >= MAX_EXTRACTED_CHARS:
+                    break
+    except (zipfile.BadZipFile, KeyError, OSError, RuntimeError):
+        return "", "that PowerPoint file could not be opened"
+    except ET.ParseError:
+        return "", "that PowerPoint file could not be read"
+    return _capped("\n\n".join(chunks)), None
+
+
+def _xlsx_text(data: bytes) -> tuple:
+    lines: list = []
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            names = archive.namelist()
+            shared: list = []
+            if "xl/sharedStrings.xml" in names:
+                root = _parse_xml(archive.read("xl/sharedStrings.xml"))
+                for item in root.iter():
+                    if _tag(item) == "si":
+                        shared.append("".join(node.text or "" for node in item.iter()
+                                              if _tag(node) == "t"))
+            sheets = sorted((name for name in names
+                             if re.match(r"xl/worksheets/sheet\d+\.xml$", name)),
+                            key=lambda name: int(re.search(r"(\d+)", name).group(1)))
+            total = 0
+            for name in sheets:
+                root = _parse_xml(archive.read(name))
+                for row in root.iter():
+                    if _tag(row) != "row":
+                        continue
+                    cells = []
+                    for cell in row:
+                        if _tag(cell) != "c":
+                            continue
+                        value = ""
+                        for node in cell.iter():
+                            if _tag(node) == "v" and node.text is not None:
+                                value = node.text
+                                break
+                            if _tag(node) == "t" and node.text is not None:
+                                value = node.text
+                                break
+                        if value and cell.get("t") == "s":
+                            try:
+                                value = shared[int(value)]
+                            except (ValueError, IndexError):
+                                pass
+                        cells.append(value)
+                    if any(item.strip() for item in cells):
+                        line = "\t".join(cells)
+                        lines.append(line)
+                        total += len(line)
+                        if total >= MAX_EXTRACTED_CHARS:
+                            break
+                if total >= MAX_EXTRACTED_CHARS:
+                    break
+    except (zipfile.BadZipFile, KeyError, OSError, RuntimeError):
+        return "", "that spreadsheet could not be opened"
+    except ET.ParseError:
+        return "", "that spreadsheet could not be read"
+    return _capped("\n".join(lines)), None
+
+
+def _odf_text(data: bytes) -> tuple:
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            raw = archive.read("content.xml")
+    except (zipfile.BadZipFile, KeyError, OSError, RuntimeError):
+        return "", "that OpenDocument file could not be opened"
+    try:
+        root = _parse_xml(raw)
+    except ET.ParseError:
+        return "", "that OpenDocument file could not be read"
+    paragraphs = []
+    for node in root.iter():
+        if _tag(node) not in {"p", "h"}:
+            continue
+        text = "".join(child.text or "" for child in node.iter() if child.text)
+        if text.strip():
+            paragraphs.append(text)
+    return _capped("\n".join(paragraphs)), None
+
+
+def _rtf_text(data: bytes) -> tuple:
+    raw = _decode(data)
+    if raw is None:
+        return "", "that RTF file is not readable text"
+    text = re.sub(r"\{\\\*?\\(?:fonttbl|colortbl|stylesheet|info|pict|object|header|footer|"
+                  r"themedata|colorschememapping|datastore|latentstyles|rsidtbl|generator)\b"
+                  r"[^{}]*\}", " ", raw)
+    text = re.sub(r"\\'[0-9a-fA-F]{2}", "", text)
+    text = re.sub(r"\\u-?\d+\??", "", text)
+    text = re.sub(r"\\(?:par|line)\b ?", "\n", text)
+    text = re.sub(r"\\[a-zA-Z]+-?\d* ?", "", text)
+    text = text.replace("{", "").replace("}", "")
+    return _capped(re.sub(r"[ \t]{2,}", " ", text).strip()), None
+
+
+def _read_document(label: str, suffix: str, data: bytes) -> tuple:
+    """A PDF or Office/OpenDocument file to plain text, plus a reason when it fails."""
+    if suffix == ".pdf":
+        text, reason = _pdf_text(data)
+    elif suffix == ".docx":
+        text, reason = _ooxml_text(data, "word/document.xml")
+    elif suffix == ".pptx":
+        text, reason = _pptx_text(data)
+    elif suffix == ".xlsx":
+        text, reason = _xlsx_text(data)
+    elif suffix in {".odt", ".ods", ".odp"}:
+        text, reason = _odf_text(data)
+    else:
+        text, reason = _rtf_text(data)
+    if reason:
+        return "", f"{label}: {reason}"
+    if not text or not text.strip():
+        return "", f"{label}: no readable text was found"
+    return _capped(text), None
+
+
 def extract_texts(name: str, data: bytes) -> tuple:
     """Read one upload into (entry_name, text) pairs, plus a reason when unreadable.
 
     A zip is walked in memory: no extraction to disk, no directory entries, no
-    member larger than the entry cap, and only suffixes a note can actually be.
+    member larger than the entry cap, and only suffixes that carry readable text.
+    PDF, Word, PowerPoint, spreadsheet and OpenDocument files are read too.
     """
     label = entry_name(name)
     suffix = ("." + label.rsplit(".", 1)[-1].lower()) if "." in label else ""
     if suffix != ".zip":
-        if suffix not in IMPORT_SUFFIXES:
-            return [], f"{label}: only text notes, markdown, csv, json, yaml or a zip of them can be read"
-        text = _decode(data)
-        if text is None:
-            return [], f"{label}: that file is not text"
-        if not text.strip():
-            return [], f"{label}: the file is empty"
-        return [(label, text)], None
+        if suffix in IMPORT_SUFFIXES:
+            text = _decode(data)
+            if text is None:
+                return [], f"{label}: that file is not text"
+            if not text.strip():
+                return [], f"{label}: the file is empty"
+            return [(label, _capped(text))], None
+        if suffix in DOCUMENT_SUFFIXES:
+            text, reason = _read_document(label, suffix, data)
+            return ([(label, text)], None) if text else ([], reason)
+        if suffix in LEGACY_SUFFIXES:
+            return [], f"{label}: save legacy Office files as PDF, DOCX, XLSX or PPTX first"
+        return [], (f"{label}: only text notes, PDF, Word, PowerPoint, spreadsheet, "
+                    "OpenDocument or a zip of them can be read")
     try:
         archive = zipfile.ZipFile(io.BytesIO(data))
     except (zipfile.BadZipFile, OSError):
@@ -400,19 +605,33 @@ def extract_texts(name: str, data: bytes) -> tuple:
                 continue
             member = entry_name(info.filename)
             member_suffix = ("." + member.rsplit(".", 1)[-1].lower()) if "." in member else ""
-            if member_suffix not in IMPORT_SUFFIXES:
+            is_document = member_suffix in DOCUMENT_SUFFIXES
+            if member_suffix not in IMPORT_SUFFIXES and not is_document:
                 continue
-            if info.file_size > MAX_IMPORT_ENTRY_BYTES:
-                skipped.append(f"{label}/{member}: larger than {MAX_IMPORT_ENTRY_BYTES // 1024} KB")
+            cap = MAX_DOCUMENT_ENTRY_BYTES if is_document else MAX_IMPORT_ENTRY_BYTES
+            if info.file_size > cap:
+                skipped.append(f"{label}/{member}: larger than {cap // 1024} KB")
                 continue
             try:
-                raw = archive.read(info)
+                with archive.open(info) as handle:
+                    raw = handle.read(cap + 1)
             except (zipfile.BadZipFile, OSError, RuntimeError):
                 skipped.append(f"{label}/{member}: could not be read")
                 continue
-            text = _decode(raw)
-            if text is None or not text.strip():
+            if len(raw) > cap:
+                skipped.append(f"{label}/{member}: larger than {cap // 1024} KB")
                 continue
+            if is_document:
+                text, reason = _read_document(f"{label}/{member}", member_suffix, raw)
+                if not text:
+                    if reason:
+                        skipped.append(reason)
+                    continue
+            else:
+                text = _decode(raw)
+                if text is None or not text.strip():
+                    continue
+                text = _capped(text)
             entries.append((f"{label}/{member}", text))
     if not entries:
         detail = skipped[0] if skipped else f"{label}: no readable text member"
