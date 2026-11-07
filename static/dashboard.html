@@ -877,6 +877,46 @@
         @media (max-width: 1024px) { .sidebar-resizer { display: none; } }
         @media (max-width: 760px) { .account-tools .form-control { max-width: none; width: 100%; } .notifications-panel { position: fixed; left: 12px; right: 12px; top: 64px; width: auto; } }
 
+        /* ---------- Node workflows ---------- */
+        .wf-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 8px; }
+        .wf-list-item { display: flex; flex-direction: column; gap: 3px; align-items: flex-start; text-align: left; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); color: var(--text); cursor: pointer; font: inherit; transition: border-color 0.18s ease, background 0.18s ease; }
+        .wf-list-item:hover { background: var(--hover); }
+        .wf-list-item.active { border-color: var(--accent); background: var(--accent-soft); }
+        .wf-list-item strong { font-size: 13.5px; font-weight: 600; }
+        .wf-list-item .small { font-size: 11.5px; }
+        .wf-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; }
+        .wf-canvas-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 12px; background: var(--canvas-soft); }
+        .wf-canvas { position: relative; width: 100%; min-width: 1200px; height: 620px; overflow: hidden; touch-action: none; background-image: radial-gradient(rgba(255, 255, 255, 0.07) 1px, transparent 1px); background-size: 22px 22px; }
+        .wf-links { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+        .wf-link { fill: none; stroke: var(--border-strong); stroke-width: 2; stroke-linecap: round; pointer-events: stroke; cursor: pointer; transition: stroke 0.18s ease; }
+        .wf-link:hover { stroke: var(--danger); }
+        .wf-node { position: absolute; width: 198px; height: 88px; box-sizing: border-box; display: flex; flex-direction: column; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--surface-3); color: var(--text); cursor: grab; user-select: none; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28); transition: border-color 0.18s ease, box-shadow 0.18s ease; }
+        .wf-node:hover { border-color: var(--text-dim); }
+        .wf-node.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft), 0 6px 18px rgba(0, 0, 0, 0.32); }
+        .wf-node:active { cursor: grabbing; }
+        .wf-node-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 6px 8px 6px 10px; border-bottom: 1px solid var(--border); font-size: 12.5px; font-weight: 600; }
+        .wf-node-head > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .wf-node-remove { width: 20px; height: 20px; flex: none; font-size: 14px; line-height: 1; }
+        .wf-node-body { flex: 1; padding: 7px 10px; font-size: 11.5px; line-height: 1.35; color: var(--text-dim); overflow: hidden; word-break: break-word; }
+        .wf-port { position: absolute; top: 44px; width: 12px; height: 12px; margin-top: -6px; padding: 0; border-radius: 50%; border: 2px solid var(--canvas-soft); background: var(--text-dim); cursor: crosshair; transition: background 0.18s ease, transform 0.18s ease; }
+        .wf-port:hover, .wf-port.armed { background: var(--accent); transform: scale(1.25); }
+        .wf-port-in { left: -7px; }
+        .wf-port-out { right: -7px; }
+        .wf-config { margin-bottom: 16px; padding: 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-2); }
+        .wf-config h4 { margin: 0 0 4px; font-size: 13.5px; font-weight: 600; }
+        .wf-check { display: flex; align-items: center; gap: 8px; text-transform: none; letter-spacing: 0; font-size: 12.5px; color: var(--text-secondary); }
+        .wf-runlog { padding: 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-2); }
+        .wf-runlog h4 { margin: 0; font-size: 13.5px; font-weight: 600; }
+        .wf-step { display: flex; align-items: center; gap: 10px; padding: 7px 0; border-top: 1px solid var(--border); font-size: 12.5px; }
+        .wf-step:first-of-type { border-top: 0; }
+        .wf-step-name { flex: none; min-width: 108px; font-weight: 600; }
+        .wf-step-dot { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--text-dim); }
+        .wf-step-dot.running { background: var(--info); animation: wf-pulse 1.1s ease-in-out infinite; }
+        .wf-step-dot.ok { background: var(--accent); }
+        .wf-step-dot.failed { background: var(--danger); }
+        .wf-step-dot.stopped { background: var(--warning); }
+        @keyframes wf-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
         /* ---------- Responsive ---------- */
         @media (max-width: 1024px) {
             .sidebar { transform: translateX(-100%); box-shadow: 0 0 60px rgba(0, 0, 0, 0.5); }
@@ -3349,6 +3389,117 @@
                 </div>
             </div>
 
+            <!-- Node workflows -->
+            <div v-show="tab === 'workflows'">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>Workflows</h3>
+                        <div style="display:flex;gap:8px;align-items:center;">
+                            <span class="muted small">{{ workflows.list.length }} / {{ workflows.capacity.limit }}</span>
+                            <button class="btn btn-primary" id="wf-new" @click="newWorkflow">New workflow</button>
+                        </div>
+                    </div>
+                    <p class="muted small" style="margin-bottom:14px;">Draw a chain of internal actions and run it with one of your accounts: read a group's members, wait, join groups, or send yourself a note. Only self-actions are available here — members, outreach and account creation stay on their own consent-gated pages.</p>
+                    <p v-if="workflows.loading" class="muted small">Loading workflows…</p>
+                    <p v-else-if="workflows.error && !workflows.active" role="alert" style="color:var(--danger);">{{ workflows.error }}</p>
+                    <div v-else-if="!workflows.list.length" class="empty-state"><p>No workflows yet. Start one above and add a node.</p></div>
+                    <div v-else class="wf-list">
+                        <button v-for="w in workflows.list" :key="w.id" data-testid="wf-item" class="wf-list-item"
+                                :class="{ active: workflows.active && workflows.active.id === w.id }" @click="openWorkflow(w.id)">
+                            <strong>{{ w.name }}</strong>
+                            <span class="muted small">{{ w.nodes.length }} node{{ w.nodes.length === 1 ? '' : 's' }} · {{ w.last_run ? w.last_run.status.replace(/_/g, ' ') : 'never run' }}</span>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="card" v-if="workflows.active" data-testid="wf-editor">
+                    <div class="card-header">
+                        <h3>{{ workflows.active.id ? 'Edit workflow' : 'New workflow' }}</h3>
+                        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                            <button class="btn btn-sm btn-primary" id="wf-save" @click="saveWorkflow" :disabled="!!workflows.busy">Save</button>
+                            <button class="btn btn-sm btn-outline" id="wf-run" @click="runWorkflow" :disabled="!!workflows.busy || !workflows.active.id || workflows.activeRunning">Run</button>
+                            <button v-if="workflows.activeRunning" class="btn btn-sm btn-outline" @click="stopWorkflow">Stop</button>
+                            <button class="btn btn-sm btn-danger" @click="deleteWorkflow" :disabled="!!workflows.busy || !workflows.active.id">Delete</button>
+                        </div>
+                    </div>
+                    <div class="form-row" style="margin-bottom:12px;">
+                        <div class="form-group" style="flex:1;">
+                            <label for="wf-name">Workflow name</label>
+                            <input id="wf-name" class="form-control" v-model="workflows.nameDraft" maxlength="80" placeholder="Weekly sweep">
+                        </div>
+                        <div class="form-group" style="flex:1;">
+                            <label for="wf-account">Run with account</label>
+                            <select id="wf-account" class="form-control" v-model="workflows.accountId">
+                                <option value="">Choose an account</option>
+                                <option v-for="a in accounts" :key="a.account_id" :value="a.account_id">{{ a.name || a.phone || a.account_id }}</option>
+                            </select>
+                        </div>
+                    </div>
+                    <p v-if="workflows.error" role="alert" style="color:var(--danger);margin-bottom:10px;">{{ workflows.error }}</p>
+                    <div class="wf-toolbar">
+                        <span class="muted small">Add node:</span>
+                        <button v-for="item in workflows.catalog" :key="item.type" class="btn btn-sm btn-outline"
+                                :data-testid="'wf-add-' + item.type" @click="addNode(item.type)">{{ item.label }}</button>
+                    </div>
+                    <div class="wf-canvas-wrap">
+                        <div class="wf-canvas" data-testid="wf-canvas" @click.self="selectNode('')">
+                            <svg class="wf-links" aria-hidden="true">
+                                <path v-for="(link, index) in workflowLinks" :key="'link-' + index" :d="link.path"
+                                      class="wf-link" @click.stop="removeEdge(link.edge)">
+                                    <title>Click to disconnect</title>
+                                </path>
+                            </svg>
+                            <div v-for="node in workflows.active.nodes" :key="node.id" class="wf-node"
+                                 :class="{ selected: workflows.selectedId === node.id }" :style="{ left: node.x + 'px', top: node.y + 'px' }"
+                                 data-testid="wf-node" @pointerdown="beginNodeDrag($event, node)" @click.stop="selectNode(node.id)">
+                                <div class="wf-node-head">
+                                    <span>{{ nodeLabel(node.type) }}</span>
+                                    <button class="icon-btn wf-node-remove" title="Remove node" aria-label="Remove node" @click.stop="removeNode(node)">×</button>
+                                </div>
+                                <div class="wf-node-body">{{ nodeSummary(node) }}</div>
+                                <button class="wf-port wf-port-in" :class="{ armed: !!workflows.linkFrom }" title="Connect a node into this one" @click.stop="connectInto(node)"></button>
+                                <button class="wf-port wf-port-out" :class="{ armed: workflows.linkFrom === node.id }" title="Start a connection from this node" @click.stop="startLink(node)"></button>
+                            </div>
+                            <p v-if="!workflows.active.nodes.length" class="muted small" style="position:absolute;left:16px;top:16px;">Add a node above, then drag it anywhere on the canvas.</p>
+                        </div>
+                    </div>
+                    <p class="muted small" style="margin:8px 0 14px;">Drag a node to move it. Click the right dot, then the left dot of another node to connect them. Click a line to disconnect. A workflow is one chain, so each node has one way in and one way out.</p>
+
+                    <div v-if="selectedNode" class="wf-config" data-testid="wf-config">
+                        <h4>{{ nodeLabel(selectedNode.type) }} settings</h4>
+                        <p class="muted small" style="margin-bottom:10px;">{{ catalogHint(selectedNode.type) }}</p>
+                        <template v-for="f in catalogFor(selectedNode.type)" :key="f.key">
+                            <div class="form-group" v-if="f.kind === 'checkbox'">
+                                <label class="wf-check"><input type="checkbox" v-model="selectedNode.config[f.key]"> {{ f.label }}</label>
+                            </div>
+                            <div class="form-group" v-else-if="f.kind === 'lines'">
+                                <label>{{ f.label }}</label>
+                                <textarea class="form-control" rows="3" :value="(selectedNode.config.urls || []).join('\n')"
+                                          @change="setNodeUrls(selectedNode, $event.target.value)"></textarea>
+                            </div>
+                            <div class="form-group" v-else>
+                                <label>{{ f.label }}</label>
+                                <input v-if="f.kind === 'number'" type="number" class="form-control" v-model.number="selectedNode.config[f.key]" :min="f.min" :max="f.max">
+                                <textarea v-else-if="f.kind === 'textarea'" class="form-control" rows="3" maxlength="1000" v-model="selectedNode.config[f.key]"></textarea>
+                                <input v-else type="text" class="form-control" maxlength="256" v-model="selectedNode.config[f.key]" :placeholder="f.placeholder || ''">
+                            </div>
+                        </template>
+                    </div>
+
+                    <div v-if="workflows.run" class="wf-runlog" data-testid="wf-runlog">
+                        <div class="card-header" style="padding:0 0 8px;">
+                            <h4>Last run · {{ workflows.run.status.replace(/_/g, ' ') }}</h4>
+                            <span class="muted small">{{ workflows.run.started_at }}<span v-if="workflows.run.stopped"> · {{ workflows.run.stopped.replace(/_/g, ' ') }}</span></span>
+                        </div>
+                        <div v-for="step in workflows.run.steps" :key="step.node_id" class="wf-step">
+                            <span class="wf-step-dot" :class="step.status"></span>
+                            <span class="wf-step-name">{{ nodeLabel(step.type) }}</span>
+                            <span class="muted small">{{ stepSummary(step) }}</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Templates -->
             <div v-show="tab === 'templates'">
                 <div class="card">
@@ -5240,6 +5391,7 @@
                             label: 'Automation',
                             items: [
                                 { tab: 'automation', label: 'Automation', icon: 'zap' },
+                                { tab: 'workflows', label: 'Workflows', icon: 'code' },
                                 { tab: 'factory', label: 'Account Factory', icon: 'factory' },
                                 { tab: 'integrations', label: 'Integrations', icon: 'plug' }
                             ]
@@ -5545,6 +5697,12 @@
                         loading: false, busy: '', error: '', list: [], capacity: { used: 0, limit: 30 },
                         active: null, nameDraft: '', newName: '', columnForm: { name: '', type: 'text' },
                     },
+                    workflows: {
+                        loading: false, busy: '', error: '', list: [],
+                        capacity: { used: 0, limit: 50, nodes: 20 }, catalog: [],
+                        active: null, nameDraft: '', selectedId: '', linkFrom: '',
+                        accountId: '', run: null, activeRunning: false, poll: null,
+                    },
 
                     // Template Modal
                     showTemplateModal: false,
@@ -5713,9 +5871,29 @@
                     const active = profiles.find(item => item.id === this.cloudBrowser.config.active)
                     return active ? active.label : ''
                 },
+                selectedNode() {
+                    const active = this.workflows.active
+                    if (!active) return null
+                    return active.nodes.find(node => node.id === this.workflows.selectedId) || null
+                },
+                workflowLinks() {
+                    const active = this.workflows.active
+                    if (!active) return []
+                    const byId = Object.fromEntries(active.nodes.map(node => [node.id, node]))
+                    return active.edges.map(edge => {
+                        const from = byId[edge.from]
+                        const to = byId[edge.to]
+                        if (!from || !to) return null
+                        const x1 = from.x + 198, y1 = from.y + 44
+                        const x2 = to.x - 2, y2 = to.y + 44
+                        const bend = Math.max(40, Math.abs(x2 - x1) / 2)
+                        return { edge, path: `M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}` }
+                    }).filter(Boolean)
+                },
                 pageMeta() {
                     const pages = {
                         overview: ['Dashboard', 'A live view of accounts, automation and recent activity.'],
+                        workflows: ['Workflows', 'Draw a chain of internal actions and run it with one account.'],
                         copilot: ['Copilot', 'Draft templates, schedules and opt-in sends in plain language.'],
                         tasks: ['Tasks', 'Factory runs, outreach jobs and scheduled work in one queue.'],
                         schedule: ['Schedule', 'Plan messages and account actions ahead of time.'],
@@ -5904,6 +6082,7 @@
                     if (tab === 'autoreply') this.loadAutoReply()
                     if (tab === 'knowledge') { this.loadKnowledge(); this.loadPatterns() }
                     if (tab === 'tables') this.loadTables()
+                    if (tab === 'workflows') this.loadWorkflows()
                     if (tab === 'tasks') this.loadOutreachJobs()
                     if (tab === 'integrations') { this.loadWebhooks(); this.loadIntegrations(); this.loadAiSettings(); this.loadFeatures() }
                     if (tab === 'contacts') { if (!this.contacts.accountId && this.accounts.length) this.contacts.accountId = this.accounts[0].account_id; this.loadContacts() }
@@ -5939,6 +6118,7 @@
                     if (this.tab === 'inbox') this.loadMailbox()
                     if (this.tab === 'knowledge') { this.loadKnowledge(); this.loadPatterns() }
                     if (this.tab === 'tables') this.loadTables()
+                    if (this.tab === 'workflows') this.loadWorkflows()
                     if (this.tab === 'copilot') this.loadCopilotHistory()
                     if (this.tab === 'cloudphone') this.loadRecovery()
                     if (this.tab === 'scraper' || this.tab === 'adder') this.loadGroups(this.tab)
@@ -10262,6 +10442,265 @@
                         this.showToast(e.response?.data?.detail || 'Could not dismiss that suggestion.', true)
                     } finally {
                         this.patterns.busy = ''
+                    }
+                },
+
+                // Node workflows
+                catalogFor(type) {
+                    const entry = this.workflows.catalog.find(item => item.type === type)
+                    return entry ? entry.fields : []
+                },
+                catalogHint(type) {
+                    const entry = this.workflows.catalog.find(item => item.type === type)
+                    return entry ? entry.hint : ''
+                },
+                nodeLabel(type) {
+                    const entry = this.workflows.catalog.find(item => item.type === type)
+                    if (entry) return entry.label
+                    return type === 'scrape' ? 'Scrape members'
+                        : type === 'wait' ? 'Wait'
+                        : type === 'join' ? 'Join groups'
+                        : type === 'notify' ? 'Note yourself' : 'Node'
+                },
+                defaultNodeConfig(type) {
+                    if (type === 'scrape') return { target: '', limit: 200, filter_bots: true }
+                    if (type === 'wait') return { seconds: 30 }
+                    if (type === 'join') return { urls: [], delay: 35 }
+                    return { text: '' }
+                },
+                nodeSummary(node) {
+                    const config = node.config || {}
+                    if (node.type === 'scrape') return `${config.target || 'Pick a group'} · up to ${config.limit || 200}`
+                    if (node.type === 'wait') return `Pause ${config.seconds || 0}s`
+                    if (node.type === 'join') return `${(config.urls || []).length} link${(config.urls || []).length === 1 ? '' : 's'} · ${config.delay || 35}s apart`
+                    if (node.type === 'notify') return String(config.text || 'Write a note').slice(0, 48)
+                    return ''
+                },
+                stepSummary(step) {
+                    const detail = step.detail || {}
+                    if (step.status === 'pending') return 'waiting'
+                    if (step.status === 'running') return 'running'
+                    if (step.status === 'stopped') return 'stopped'
+                    if (detail.error) return 'failed'
+                    if (detail.stopped === 'telegram_cooldown') return `Telegram cooldown · wait ${detail.wait_seconds || '?'}s`
+                    if ('scraped' in detail) return `${detail.scraped} members read`
+                    if ('joined' in detail) return `${detail.joined} joined · ${detail.skipped || 0} already in · ${detail.failed || 0} failed`
+                    if ('waited_seconds' in detail) return `waited ${detail.waited_seconds}s`
+                    if ('characters' in detail) return `note sent (${detail.characters} chars)`
+                    return ''
+                },
+                async loadWorkflows() {
+                    this.workflows.loading = true
+                    if (!this.workflows.active) this.workflows.error = ''
+                    try {
+                        const { data } = await _api.get('/api/workflows')
+                        this.workflows.list = data.workflows || []
+                        this.workflows.capacity = data.capacity || this.workflows.capacity
+                        this.workflows.catalog = data.catalog || this.workflows.catalog
+                        if (this.workflows.active && this.workflows.active.id) {
+                            const fresh = this.workflows.list.find(w => w.id === this.workflows.active.id)
+                            if (fresh) this.workflows.activeRunning = !!fresh.running
+                        }
+                    } catch (e) {
+                        this.workflows.error = e.response?.data?.detail || 'Could not load workflows.'
+                    } finally {
+                        this.workflows.loading = false
+                    }
+                },
+                newWorkflow() {
+                    this.workflows.active = { id: '', name: '', nodes: [], edges: [], created_at: '', updated_at: '' }
+                    this.workflows.nameDraft = 'Untitled workflow'
+                    this.workflows.selectedId = ''
+                    this.workflows.linkFrom = ''
+                    this.workflows.run = null
+                    this.workflows.activeRunning = false
+                    this.workflows.error = ''
+                },
+                openWorkflow(id) {
+                    const found = this.workflows.list.find(w => w.id === id)
+                    if (!found) return
+                    this.workflows.active = JSON.parse(JSON.stringify(found))
+                    this.workflows.nameDraft = found.name
+                    this.workflows.selectedId = ''
+                    this.workflows.linkFrom = ''
+                    this.workflows.run = found.last_run || null
+                    this.workflows.activeRunning = !!found.running
+                    this.workflows.error = ''
+                    if (found.running) this.pollWorkflowRun(found.id)
+                },
+                selectNode(id) {
+                    this.workflows.selectedId = id
+                    if (!id) this.workflows.linkFrom = ''
+                },
+                addNode(type) {
+                    const active = this.workflows.active
+                    if (!active) return
+                    if (active.nodes.length >= this.workflows.capacity.nodes) {
+                        this.workflows.error = `Keep a workflow to ${this.workflows.capacity.nodes} nodes.`
+                        return
+                    }
+                    const node = {
+                        id: 'n_' + Math.random().toString(36).slice(2, 10),
+                        type, config: this.defaultNodeConfig(type),
+                        x: 40 + (active.nodes.length % 4) * 250,
+                        y: 40 + Math.floor(active.nodes.length / 4) * 180,
+                    }
+                    const tails = active.nodes.filter(n => !active.edges.some(edge => edge.from === n.id))
+                    active.nodes.push(node)
+                    if (tails.length === 1) active.edges.push({ from: tails[0].id, to: node.id })
+                    this.workflows.selectedId = node.id
+                    this.workflows.linkFrom = ''
+                    this.workflows.error = ''
+                },
+                removeNode(node) {
+                    const active = this.workflows.active
+                    if (!active) return
+                    active.nodes = active.nodes.filter(n => n.id !== node.id)
+                    active.edges = active.edges.filter(edge => edge.from !== node.id && edge.to !== node.id)
+                    if (this.workflows.selectedId === node.id) this.workflows.selectedId = ''
+                    if (this.workflows.linkFrom === node.id) this.workflows.linkFrom = ''
+                },
+                beginNodeDrag(event, node) {
+                    if (event.target.closest('button')) return
+                    event.preventDefault()
+                    const startX = event.clientX
+                    const startY = event.clientY
+                    const originX = node.x
+                    const originY = node.y
+                    const move = (e) => {
+                        node.x = Math.min(1000, Math.max(0, originX + e.clientX - startX))
+                        node.y = Math.min(520, Math.max(0, originY + e.clientY - startY))
+                    }
+                    const up = () => {
+                        window.removeEventListener('pointermove', move)
+                        window.removeEventListener('pointerup', up)
+                    }
+                    window.addEventListener('pointermove', move)
+                    window.addEventListener('pointerup', up)
+                },
+                startLink(node) {
+                    this.workflows.linkFrom = node.id
+                    this.showToast('Now pick the left dot of the node that should follow.')
+                },
+                connectInto(node) {
+                    const from = this.workflows.linkFrom
+                    if (!from) {
+                        this.showToast('Start from the right dot of the node before this one.', true)
+                        return
+                    }
+                    if (from === node.id) {
+                        this.workflows.linkFrom = ''
+                        return
+                    }
+                    const active = this.workflows.active
+                    active.edges = active.edges.filter(edge => edge.from !== from && edge.to !== node.id)
+                    active.edges.push({ from, to: node.id })
+                    this.workflows.linkFrom = ''
+                    this.workflows.error = ''
+                },
+                removeEdge(edge) {
+                    const active = this.workflows.active
+                    if (!active) return
+                    active.edges = active.edges.filter(item => !(item.from === edge.from && item.to === edge.to))
+                },
+                setNodeUrls(node, text) {
+                    node.config.urls = String(text || '').split('\n').map(line => line.trim()).filter(Boolean).slice(0, 10)
+                },
+                workflowPayload() {
+                    const active = this.workflows.active
+                    return {
+                        name: this.workflows.nameDraft,
+                        nodes: active.nodes.map(node => ({
+                            id: node.id, type: node.type, config: node.config, x: node.x, y: node.y,
+                        })),
+                        edges: active.edges.map(edge => ({ from: edge.from, to: edge.to })),
+                    }
+                },
+                async saveWorkflow() {
+                    if (!this.workflows.active) return
+                    this.workflows.busy = 'save'
+                    this.workflows.error = ''
+                    try {
+                        const payload = this.workflowPayload()
+                        const response = this.workflows.active.id
+                            ? await _api.put(`/api/workflows/${this.workflows.active.id}`, payload)
+                            : await _api.post('/api/workflows', payload)
+                        const saved = response.data.workflow
+                        this.workflows.active = JSON.parse(JSON.stringify(saved))
+                        this.workflows.nameDraft = saved.name
+                        await this.loadWorkflows()
+                        this.showToast('Workflow saved.')
+                    } catch (e) {
+                        this.workflows.error = e.response?.data?.detail || 'Could not save this workflow.'
+                    } finally {
+                        this.workflows.busy = ''
+                    }
+                },
+                async runWorkflow() {
+                    if (!this.workflows.active || !this.workflows.active.id) {
+                        this.workflows.error = 'Save the workflow before running it.'
+                        return
+                    }
+                    if (!this.workflows.accountId) {
+                        this.workflows.error = 'Choose the account that should run this workflow.'
+                        return
+                    }
+                    this.workflows.busy = 'run'
+                    this.workflows.error = ''
+                    try {
+                        const { data } = await _api.post(`/api/workflows/${this.workflows.active.id}/run`, { account_id: this.workflows.accountId })
+                        this.workflows.run = data.run
+                        this.workflows.activeRunning = true
+                        this.pollWorkflowRun(this.workflows.active.id)
+                    } catch (e) {
+                        this.workflows.error = e.response?.data?.detail || 'Could not start this workflow.'
+                    } finally {
+                        this.workflows.busy = ''
+                    }
+                },
+                pollWorkflowRun(id) {
+                    clearTimeout(this.workflows.poll)
+                    const tick = async () => {
+                        try {
+                            const { data } = await _api.get(`/api/workflows/${id}/runs`)
+                            const latest = (data.runs || [])[0]
+                            if (latest) this.workflows.run = latest
+                            if (latest && latest.status !== 'running') {
+                                this.workflows.activeRunning = false
+                                this.loadWorkflows()
+                                this.showToast(`Workflow ${String(latest.status).replace(/_/g, ' ')}.`, latest.status === 'failed')
+                                return
+                            }
+                        } catch (e) { /* the next tick retries */ }
+                        this.workflows.poll = setTimeout(tick, 1200)
+                    }
+                    this.workflows.poll = setTimeout(tick, 400)
+                },
+                async stopWorkflow() {
+                    if (!this.workflows.active || !this.workflows.active.id) return
+                    try {
+                        await _api.post(`/api/workflows/${this.workflows.active.id}/stop`, {})
+                        this.showToast('Stopping the workflow.')
+                    } catch (e) {
+                        this.workflows.error = e.response?.data?.detail || 'Could not stop this workflow.'
+                    }
+                },
+                async deleteWorkflow() {
+                    if (!this.workflows.active || !this.workflows.active.id) return
+                    if (!window.confirm(`Delete ${this.workflows.active.name}?`)) return
+                    this.workflows.busy = 'delete'
+                    try {
+                        await _api.delete(`/api/workflows/${this.workflows.active.id}`)
+                        clearTimeout(this.workflows.poll)
+                        this.workflows.active = null
+                        this.workflows.run = null
+                        this.workflows.activeRunning = false
+                        await this.loadWorkflows()
+                        this.showToast('Workflow deleted.')
+                    } catch (e) {
+                        this.workflows.error = e.response?.data?.detail || 'Could not delete this workflow.'
+                    } finally {
+                        this.workflows.busy = ''
                     }
                 },
 

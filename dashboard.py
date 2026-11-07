@@ -42,6 +42,7 @@ from inbox import detach_all as inbox_detach_all, router as inbox_router
 from knowledge import router as knowledge_router
 from patterns import router as patterns_router
 from tables import router as tables_router
+from workflows import router as workflows_router
 from open_teleset.security import SupabaseAuthMiddleware
 from open_teleset.observability import initialize_error_monitoring
 from open_teleset.read_only_mcp import create_read_only_mcp
@@ -132,6 +133,7 @@ app.include_router(inbox_router)
 app.include_router(knowledge_router)
 app.include_router(patterns_router)
 app.include_router(tables_router)
+app.include_router(workflows_router)
 
 
 @app.get("/api/auth/me")
