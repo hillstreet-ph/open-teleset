@@ -43,16 +43,17 @@ test('jobResultState labels every non-terminal and failure state', () => {
   }
 });
 
-test('both durable job cards render account → recipient receipts', () => {
-  const receipts = html.match(/jobAccountLabel\(result\.account_id\) \}\} → \{\{ result\.target \}\}/g) || [];
-  assert.ok(receipts.length >= 2, 'Overview and Progress tracker must both show receipts');
-  assert.match(html, /jobResultState\(job, result\.state\)/);
+test('both durable job cards render account → target receipts', () => {
+  const cards = html.match(/<job-history\b/g) || [];
+  assert.ok(cards.length >= 3, 'Overview, Progress tracker and the schedule card must both show receipts');
+  assert.match(html, /<td>\{\{ account\(row\.account_id\) \}\}<\/td>/);
+  assert.match(html, /<td style="overflow-wrap:anywhere;">\{\{ row\.target \}\}<\/td>/);
+  assert.match(html, /resultState\(job, row\.state\)/);
 });
 
 test('the Tasks outreach panel explains a whole-job Telegram cooldown', () => {
   const overview = html.slice(html.indexOf('<h3>Outreach jobs</h3>'), html.indexOf('<!-- ============ Automation ============ -->'));
-  assert.match(overview, /Recipient history/);
-  assert.match(overview, /jobAccountLabel\(result\.account_id\)/);
+  assert.match(overview, /<job-history :job="job" :account="jobAccountLabel"/);
   assert.match(overview, /Every selected account is in a Telegram cooldown/);
   assert.match(overview, /cannot shorten Telegram's wait/);
   assert.match(overview, /Assigned account: \{\{ jobAccountLabel\(job\.next_account_id\) \}\}/);

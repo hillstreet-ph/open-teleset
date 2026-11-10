@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 from cryptography.fernet import Fernet
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 import tables
@@ -191,3 +191,226 @@ def test_rename_and_delete_table(client):
     assert renamed.json()["table"]["name"] == "Renamed"
     assert client.delete(f"/api/tables/{table['id']}").status_code == 200
     assert client.get(f"/api/tables/{table['id']}").status_code == 404
+
+
+# ---------------- presets ----------------
+
+
+def test_the_contacts_preset_builds_a_master_list(client):
+    response = client.post("/api/tables", json={"name": "", "preset": "contacts"})
+    assert response.status_code == 200, response.text
+    table = response.json()["table"]
+    assert table["name"] == "Contacts"
+    assert [(column["name"], column["type"]) for column in table["columns"]] == [
+        ("Username", "text"), ("Name", "text"), ("Status", "text"), ("Notes", "text")]
+
+    named = client.post("/api/tables", json={"name": "VIPs", "preset": "contacts"})
+    assert named.json()["table"]["name"] == "VIPs"
+
+    unknown = client.post("/api/tables", json={"preset": "invoices"})
+    assert unknown.status_code == 400
+    assert "preset" in unknown.json()["detail"]
+
+
+# ---------------- import ----------------
+
+
+def _import(client, table_id, **payload):
+    return client.post(f"/api/tables/{table_id}/import", json=payload)
+
+
+def test_csv_import_maps_by_name_and_creates_missing_columns(client):
+    table = _create(client)
+    name_col = table["columns"][0]["id"]
+    score = client.post(f"/api/tables/{table['id']}/columns",
+                        json={"name": "Score", "type": "number"}).json()["column"]
+
+    response = _import(client, table["id"], content="name,Score,City\nAlice,42,Paris\n")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["imported"] == 1
+    assert body["mode"] == "append"
+    assert body["created_columns"] == ["City"]
+    cells = body["table"]["rows"][0]["cells"]
+    assert cells[name_col] == "Alice"
+    assert cells[score["id"]] == 42
+    city = next(column for column in body["table"]["columns"] if column["name"] == "City")
+    assert cells[city["id"]] == "Paris"
+
+
+def test_import_column_map_targets_ids_and_refuses_unknown_targets(client):
+    table = _create(client)
+    name_col = table["columns"][0]["id"]
+    mapped = _import(client, table["id"], content="Handle\nalice\n", column_map={"Handle": name_col})
+    assert mapped.status_code == 200, mapped.text
+    assert mapped.json()["created_columns"] == []
+    assert mapped.json()["table"]["rows"][0]["cells"][name_col] == "alice"
+
+    broken = _import(client, table["id"], content="Handle\nbob\n", column_map={"Handle": "c_missing"})
+    assert broken.status_code == 400
+    assert "not in this table" in broken.json()["detail"]
+
+
+@pytest.mark.parametrize("content,expected_name,expected_done", [
+    ("Name\tDone\nbob\tyes\n", "bob", True),
+    ('[{"Name": "carol", "Done": true}]', "carol", True),
+    ('{"columns": ["Name", "Done"], "rows": [["dan", false]]}', "dan", False),
+    ('{"columns": [{"name": "Name"}, {"name": "Done"}], "rows": [{"Name": "eve", "Done": "on"}]}', "eve", True),
+])
+def test_import_detects_tsv_and_json_shapes(client, content, expected_name, expected_done):
+    table = _create(client)
+    name_col = table["columns"][0]["id"]
+    done = client.post(f"/api/tables/{table['id']}/columns",
+                       json={"name": "Done", "type": "checkbox"}).json()["column"]
+    response = _import(client, table["id"], content=content)
+    assert response.status_code == 200, response.text
+    cells = response.json()["table"]["rows"][0]["cells"]
+    assert cells[name_col] == expected_name
+    assert cells[done["id"]] is expected_done
+
+
+@pytest.mark.parametrize("payload,message", [
+    ({"format": "xlsx", "content": "Name\na\n"}, "CSV, TSV or JSON"),
+    ({"mode": "merge", "content": "Name\na\n"}, "appends"),
+    ({"content": "   "}, "Paste or choose"),
+    ({"content": "Name,Name\na,b\n"}, "same header"),
+    ({"content": "Name\n"}, "header but no rows"),
+    ({"content": ",Name\na,b\n"}, "needs a header"),
+    ({"format": "json", "content": "{not json"}, "not valid JSON"),
+    ({"format": "json", "content": "[1, 2]"}, "object of column values"),
+    ({"format": "json", "content": '{"columns": ["Name"], "rows": [["a", "b"]]}'}, "more values than columns"),
+    ({"format": "json", "content": '"just a string"'}, "list of rows"),
+])
+def test_import_refuses_broken_input(client, payload, message):
+    table = _create(client)
+    response = _import(client, table["id"], **payload)
+    assert response.status_code == 400, response.text
+    assert message in response.json()["detail"]
+    assert client.get(f"/api/tables/{table['id']}").json()["table"]["rows"] == []
+
+
+def test_import_is_size_capped(client):
+    table = _create(client)
+    response = _import(client, table["id"], content="Name\n" + "x\n" * 300_001)
+    assert response.status_code == 413
+
+
+def test_import_row_cap_and_replace_mode(client, monkeypatch):
+    monkeypatch.setattr(tables, "MAX_ROWS", 1)
+    table = _create(client)
+    name_col = table["columns"][0]["id"]
+    assert _import(client, table["id"], content="Name\nalice\n").status_code == 200
+
+    overflow = _import(client, table["id"], content="Name\nbob\n")
+    assert overflow.status_code == 409
+    assert "1 rows" in overflow.json()["detail"]
+
+    replaced = _import(client, table["id"], content="Name\ncarol\n", mode="replace")
+    assert replaced.status_code == 200, replaced.text
+    assert [row["cells"][name_col] for row in replaced.json()["table"]["rows"]] == ["carol"]
+
+
+def test_import_coerces_checkboxes_and_slash_dates(client):
+    table = _create(client)
+    done = client.post(f"/api/tables/{table['id']}/columns",
+                       json={"name": "Done", "type": "checkbox"}).json()["column"]
+    due = client.post(f"/api/tables/{table['id']}/columns",
+                      json={"name": "Due", "type": "date"}).json()["column"]
+    response = _import(client, table["id"], content="Name,Done,Due\nalice,yes,2026/11/7\n")
+    assert response.status_code == 200, response.text
+    cells = response.json()["table"]["rows"][0]["cells"]
+    assert cells[done["id"]] is True
+    assert cells[due["id"]] == "2026-11-07"
+
+    bad = _import(client, table["id"], content="Name,Done\nbob,maybe\n")
+    assert bad.status_code == 400
+    assert "Row 2, column 'Done'" in bad.json()["detail"]
+
+
+def test_import_refuses_secret_shaped_cells(client):
+    table = _create(client)
+    response = _import(client, table["id"], content="Name\n" + "A" * 512 + "\n")
+    assert response.status_code == 400
+    assert "credential" in response.json()["detail"].lower()
+    assert client.get(f"/api/tables/{table['id']}").json()["table"]["rows"] == []
+
+
+# ---------------- export ----------------
+
+
+def test_export_csv_and_json_round_trip(client):
+    table = _create(client, "Suppliers")
+    name_col = table["columns"][0]["id"]
+    done = client.post(f"/api/tables/{table['id']}/columns",
+                       json={"name": "Done", "type": "checkbox"}).json()["column"]
+    score = client.post(f"/api/tables/{table['id']}/columns",
+                        json={"name": "Score", "type": "number"}).json()["column"]
+    client.post(f"/api/tables/{table['id']}/rows",
+                json={"cells": {name_col: "Acme", done["id"]: True, score["id"]: 7}})
+    client.post(f"/api/tables/{table['id']}/rows",
+                json={"cells": {name_col: "Beta", done["id"]: False}})
+
+    csv_response = client.get(f"/api/tables/{table['id']}/export", params={"format": "csv"})
+    assert csv_response.status_code == 200
+    body = csv_response.json()
+    assert body["filename"] == "suppliers.csv"
+    assert body["rows"] == 2
+    assert body["content"].splitlines() == ["Name,Done,Score", "Acme,true,7", "Beta,false,"]
+
+    json_response = client.get(f"/api/tables/{table['id']}/export", params={"format": "json"})
+    assert json_response.status_code == 200
+    body = json_response.json()
+    assert body["filename"] == "suppliers.json"
+    payload = json.loads(body["content"])
+    assert payload["name"] == "Suppliers"
+    assert payload["columns"] == [{"name": "Name", "type": "text"},
+                                  {"name": "Done", "type": "checkbox"},
+                                  {"name": "Score", "type": "number"}]
+    assert payload["rows"] == [{"Name": "Acme", "Done": True, "Score": 7},
+                               {"Name": "Beta", "Done": False, "Score": None}]
+
+    assert client.get(f"/api/tables/{table['id']}/export",
+                      params={"format": "xlsx"}).status_code == 400
+
+    fresh = _create(client, "Copy")
+    reimported = _import(client, fresh["id"], content=body["content"], format="json")
+    assert reimported.status_code == 200, reimported.text
+    assert reimported.json()["imported"] == 2
+    assert reimported.json()["created_columns"] == ["Done", "Score"]
+
+
+# ---------------- workflow append helper ----------------
+
+
+def test_append_to_table_dedupes_case_insensitively_and_skips_blanks(client):
+    table = _create(client)
+    column_id = table["columns"][0]["id"]
+    first = tables.append_to_table("operator-1", table["id"], column_id,
+                                   ["@Alice", " @alice ", "", "  ", "@bob"])
+    assert first == {"appended": 2, "skipped": 1, "total": 2}
+    second = tables.append_to_table("operator-1", table["id"], column_id, ["@ALICE", "@carol"])
+    assert second == {"appended": 1, "skipped": 1, "total": 3}
+    stored = client.get(f"/api/tables/{table['id']}").json()["table"]
+    assert [row["cells"][column_id] for row in stored["rows"]] == ["@Alice", "@bob", "@carol"]
+
+
+def test_append_to_table_refuses_non_text_columns_and_unknown_tables(client):
+    table = _create(client)
+    number = client.post(f"/api/tables/{table['id']}/columns",
+                         json={"name": "Score", "type": "number"}).json()["column"]
+    with pytest.raises(HTTPException) as wrong_type:
+        tables.append_to_table("operator-1", table["id"], number["id"], ["1"])
+    assert wrong_type.value.status_code == 400
+    assert "text column" in wrong_type.value.detail
+
+    with pytest.raises(HTTPException) as missing:
+        tables.append_to_table("operator-1", "t_missing", table["columns"][0]["id"], ["a"])
+    assert missing.value.status_code == 404
+
+
+def test_append_to_table_stops_at_the_row_cap(client, monkeypatch):
+    monkeypatch.setattr(tables, "MAX_ROWS", 2)
+    table = _create(client)
+    result = tables.append_to_table("operator-1", table["id"], table["columns"][0]["id"],
+                                    ["a", "b", "c"])
+    assert result == {"appended": 2, "skipped": 0, "total": 2}

@@ -96,6 +96,18 @@ async def test_stop_and_pause_survive_restart(env):
 
 
 @pytest.mark.asyncio
+async def test_banned_account_stops_sending_and_is_named(env):
+    env.client.send_message.side_effect = errors.UserDeactivatedBanError(None)
+    job = env.submit()
+    await env.worker.tick()
+    result = env.store.snapshot(job, 'owner')
+    assert result['state'] == 'paused' and result['reason'] == 'account_banned'
+    assert result['restricted_accounts'] == {'a': 'account_banned'}
+    assert result['pending'] == 2 and result['completed'] == 0
+    assert env.client.send_message.await_count == 1
+
+
+@pytest.mark.asyncio
 async def test_flood_wait_pins_recipient_and_waits_when_no_other_account(env):
     job = env.submit()
     env.client.send_message.side_effect = [errors.FloodWaitError(None, capture=60), None, None]

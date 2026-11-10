@@ -19,6 +19,50 @@ A new table starts with one `Name` text column. The last column cannot be
 deleted; delete the table instead. Column type changes re-validate every saved
 cell first, so a text column cannot become a number column while it holds prose.
 
+## Contact master list
+
+The **Start from** chooser on the create form offers a *Contact master list*
+preset: a table named **Contacts** with `Username`, `Name`, `Status` and `Notes`
+text columns, ready to hold the people you intend to message. A blank table is
+still the default; the preset only saves the column setup.
+
+## Import
+
+**Import** on an open table accepts a file (`.csv`, `.tsv`, `.txt`, `.json`) or
+pasted text, in the Airtable/Sheets shape: a header row plus one row per record.
+
+- **Format** detects CSV, TSV or JSON automatically, or you can pin one. JSON is
+  either a list of `{"Column": value}` objects or
+  `{"columns": [...], "rows": [[...], ...]}`.
+- Headers map to existing columns by name (case-insensitive). A header the table
+  does not have becomes a new **text** column, up to the column cap.
+- **Append rows** keeps what is there; **Replace all rows** clears the rows
+  first. Columns are never replaced.
+- Values are coerced to the column type: numbers parse, `yes/no/true/false/on/off`
+  (and `1/0`) become checkboxes, and `YYYY/M/D` dates normalise to ISO. A value
+  that does not fit is refused with the row and column named; nothing is
+  partially imported.
+- The payload is capped at 600,000 characters (`413` beyond that) and the table
+  at 2000 rows (`409` when an append would exceed it). Credential-shaped cells
+  are refused exactly as in manual editing.
+
+## Export
+
+**Export CSV** downloads a sheet-shaped file (header row, `true`/`false`
+checkboxes, blank for empty cells) named after the table. **Export JSON**
+downloads `{"name", "columns": [{"name", "type"}], "rows": [{"Column": value}]}`,
+which re-imports into a fresh table with the same column names.
+
+## Sending selected rows to BulkSend
+
+Rows have checkboxes, a search filter and **Select all**. Pick which text column
+holds the contact (`Username` by default on the preset), then **Send selected to
+BulkSend** merges the deduplicated, `@`-stripped, lowercased values into the
+BulkSend target list and opens that page. It only prefills: per-contact messages
+are cleared, **consent stays unchecked**, and the normal consent-gated send
+applies. Nothing is sent from the table itself. **Delete selected** removes the
+chosen rows after the usual confirmation.
+
 ## Values
 
 - **Text** is stored as typed. NUL characters are rejected.
@@ -53,13 +97,15 @@ All routes require an authenticated operator and are scoped to that operator.
 | Method and path | Purpose |
 | --- | --- |
 | `GET /api/tables` | List summaries plus capacity |
-| `POST /api/tables` | Create a table |
+| `POST /api/tables` | Create a table (`{"name", "preset": "contacts"}` for the master list) |
 | `GET /api/tables/{id}` | Read the full sheet |
 | `PATCH /api/tables/{id}` | Rename |
 | `DELETE /api/tables/{id}` | Delete |
 | `POST /api/tables/{id}/columns` | Add a column |
 | `PATCH /api/tables/{id}/columns/{column_id}` | Rename or retype a column |
 | `DELETE /api/tables/{id}/columns/{column_id}` | Delete a column |
+| `POST /api/tables/{id}/import` | Import rows (`content`, `format`, `mode`, optional `column_map`) |
+| `GET /api/tables/{id}/export?format=csv\|json` | Download the sheet |
 | `POST /api/tables/{id}/rows` | Add a row |
 | `PATCH /api/tables/{id}/rows/{row_id}` | Update cells |
 | `DELETE /api/tables/{id}/rows/{row_id}` | Delete a row |
@@ -71,12 +117,11 @@ can refresh without a second request.
 ## Verification
 
 `tests/test_tables.py` covers storage, operator isolation, typed values, the
-credential refusal, bounds, encryption at rest and the missing-key failure.
+credential refusal, bounds, encryption at rest, the missing-key failure, the
+contacts preset, import mapping/coercion/refusals and caps, the export
+round-trip, and the workflow append helper's dedupe.
 `tests/test_tables_ui.mjs` drives the dashboard methods against a fake HTTP
-client. `ui_account_tables.mjs` in the workspace proves the real page in Chrome:
-create a table, add date and checkbox columns, type a row, reload and confirm
-persistence, watch a credential-shaped cell be refused, then delete a column and
-the table.
+client, including selection and the BulkSend prefill keeping consent unchecked.
 
 ## Rollback
 

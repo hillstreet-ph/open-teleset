@@ -12,9 +12,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from cryptography.fernet import Fernet
 from telethon import errors
 
 import scheduler as module
+import workflows
 
 
 @pytest.fixture
@@ -155,6 +157,35 @@ async def test_auto_join_joins_invite_and_public(store, client):
 
 
 @pytest.mark.asyncio
+async def test_auto_join_records_every_target_with_its_time(store, client):
+    schedule = join_schedule()
+
+    assert await store._execute_schedule(schedule) is True
+    record = schedule["last_join_result"]
+    assert record["account"] == "acct" and record["joined"] == 2 and record["failed"] == 0
+    assert [row["target"] for row in record["targets"]] == ["https://t.me/+InviteHash12", "@publicone"]
+    assert [row["state"] for row in record["targets"]] == ["joined", "joined"]
+    # Epoch seconds, so the dashboard can render each row in the operator's time zone.
+    assert all(isinstance(row["at"], (int, float)) and row["at"] > 0 for row in record["targets"])
+    assert isinstance(record["finished_at"], (int, float))
+
+
+@pytest.mark.asyncio
+async def test_auto_join_stops_on_a_banned_account_and_names_it(store, client):
+    client.side_effect = errors.UserDeactivatedBanError(None)
+    schedule = join_schedule()
+
+    assert await store._execute_schedule(schedule) is False
+    assert client.call_count == 1
+    record = schedule["last_join_result"]
+    assert record["stopped_reason"] == "account_banned" and record["failed"] == 1
+    assert record["targets"][0]["state"] == "failed"
+    assert record["targets"][0]["reason"] == "account_banned"
+    assert record["targets"][1]["state"] == "pending"
+    assert record["targets"][1]["reason"] == "not_attempted"
+
+
+@pytest.mark.asyncio
 async def test_auto_join_counts_existing_membership_as_skipped(store, client):
     client.side_effect = errors.UserAlreadyParticipantError(None)
 
@@ -248,3 +279,131 @@ async def test_schedule_route_forwards_scrape_and_join_fields(monkeypatch):
     assert captured["scrape_target"] == "@channel"
     assert captured["scrape_limit"] == 321
     assert captured["filter_bots"] is False
+
+
+# ---- run_workflow schedules -------------------------------------------------
+#
+# A workflow schedule only starts an internal run: it never passes the outreach
+# consent gate, but it must stay inside the same bounds as a manual run
+# (1-5 signed-in accounts, an existing workflow owned by the operator).
+
+@pytest.fixture
+def workflow_store(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPERATOR_STORE_DIR", str(tmp_path / "operator"))
+    monkeypatch.setenv("SESSION_ENCRYPTION_KEY", Fernet.generate_key().decode())
+    workflows._RUNS.clear()
+    workflows._RUNNING.clear()
+    workflows._TASKS.clear()
+    return workflows
+
+
+def _workflow_schedule(**overrides):
+    schedule = {
+        "id": "wfsch_run", "schedule_id": "wfsch_run", "name": "Sweep",
+        "cron": "0 9 * * 1", "action": "run_workflow", "accounts": ["acct"],
+        "workflow_id": "wf_test01", "operator_id": "operator-1", "enabled": True,
+        "run_count": 0, "fail_count": 0,
+    }
+    schedule.update(overrides)
+    return schedule
+
+
+def _seed_workflow(workflow_id="wf_test01"):
+    workflows._save("operator-1", [{
+        "id": workflow_id, "name": "Sweep",
+        "nodes": [{"id": "n1", "type": "wait", "config": {"seconds": 1}, "x": 40, "y": 40}],
+        "edges": [],
+    }])
+
+
+def test_workflow_requirements_accept_bounded_account_lists():
+    assert module.schedule_requirements(
+        {"action": "run_workflow", "workflow_id": "wf_abc123", "account_ids": ["a"]}
+    ) == (None, [], 0)
+    assert module.schedule_requirements(
+        {"action": "run_workflow", "workflow_id": "wf_abc123",
+         "accounts": ["a", "b", "c", "d", "e"]}
+    ) == (None, [], 0)
+
+
+@pytest.mark.parametrize("schedule", [
+    {"action": "run_workflow", "account_ids": ["a"]},
+    {"action": "run_workflow", "workflow_id": "nope", "account_ids": ["a"]},
+    {"action": "run_workflow", "workflow_id": "wf_abc123", "account_ids": []},
+    {"action": "run_workflow", "workflow_id": "wf_abc123", "account_ids": ["a"] * 6},
+    {"action": "run_workflow", "workflow_id": "wf_abc123", "account_ids": "a"},
+])
+def test_workflow_requirements_reject_broken_schedules(schedule):
+    with pytest.raises(ValueError):
+        module.schedule_requirements(schedule)
+
+
+def test_add_schedule_persists_workflow_fields(store):
+    assert store.add_schedule(
+        schedule_id="wfsch_one", name="Sweep (workflow)", cron="30 9 * * 2",
+        action="run_workflow", target="workflow", account_ids=["acct"],
+        repeat="weekly", workflow_id="wf_abc123", operator_id="operator-1",
+    )
+    saved = json.loads(Path(module.SCHEDULE_FILE).read_text(encoding="utf-8"))
+    record = saved["schedules"]["wfsch_one"]
+    assert record["action"] == "run_workflow"
+    assert record["workflow_id"] == "wf_abc123"
+    assert record["operator_id"] == "operator-1"
+    assert record["accounts"] == ["acct"]
+    assert record["policy_action"] is None
+
+    assert not store.add_schedule(
+        schedule_id="wfsch_bad", name="Bad", cron="30 9 * * 2",
+        action="run_workflow", target="workflow", account_ids=["acct"],
+        workflow_id="not-a-workflow", operator_id="operator-1",
+    )
+    assert "wfsch_bad" not in store.schedules
+
+
+@pytest.mark.asyncio
+async def test_a_workflow_schedule_starts_a_run_for_its_operator(store, client, workflow_store):
+    _seed_workflow()
+    schedule = _workflow_schedule()
+
+    assert await store._execute_schedule(schedule) is True
+    task = workflows._TASKS.get("wf_test01")
+    assert task is not None
+    await task
+
+    run = workflows._history("wf_test01")[0]
+    assert run["status"] == "succeeded"
+    assert run["account_ids"] == ["acct"]
+    assert run["steps"][0]["detail"] == {"waited_seconds": 1}
+    assert schedule["last_run"]
+    assert schedule["run_count"] == 1
+    assert schedule["fail_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_workflow_schedule_disables_itself_when_the_workflow_is_gone(store, client, workflow_store):
+    schedule = _workflow_schedule(workflow_id="wf_gone01")
+
+    assert await store._execute_schedule(schedule) is False
+    assert schedule["enabled"] is False
+    assert schedule["last_error"] == "workflow_missing"
+    assert "wf_gone01" not in workflows._TASKS
+
+
+@pytest.mark.asyncio
+async def test_a_workflow_schedule_only_runs_signed_in_accounts(store, client, workflow_store):
+    _seed_workflow()
+    schedule = _workflow_schedule(accounts=["acct", "signed-out"])
+
+    assert await store._execute_schedule(schedule) is True
+    await workflows._TASKS["wf_test01"]
+    assert workflows._history("wf_test01")[0]["account_ids"] == ["acct"]
+
+
+@pytest.mark.asyncio
+async def test_a_workflow_schedule_with_no_signed_in_accounts_fails(store, client, workflow_store):
+    _seed_workflow()
+    schedule = _workflow_schedule(accounts=["ghost"])
+
+    assert await store._execute_schedule(schedule) is False
+    assert schedule["fail_count"] == 1
+    assert "wf_test01" not in workflows._TASKS

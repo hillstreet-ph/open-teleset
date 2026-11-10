@@ -168,3 +168,42 @@ def test_listing_filters_by_kind(env):
     job = env.submit(['https://t.me/onechan'])
     assert [row['id'] for row in env.store.listing('owner', 'auto_join')] == [job]
     assert env.store.listing('owner', 'member_add') == []
+
+
+@pytest.mark.asyncio
+async def test_every_target_carries_its_outcome_time(env):
+    job = env.submit(['https://t.me/onechan', 'https://t.me/+InviteTwo23'])
+    await run_until(env, job)
+    result = env.store.snapshot(job, 'owner')
+    stamps = [row['updated'] for row in result['results']]
+    assert all(stamp > 0 for stamp in stamps)
+    assert stamps == sorted(stamps)
+
+
+@pytest.mark.asyncio
+async def test_banned_account_pauses_with_plain_reason(env):
+    env.client.error = errors.UserDeactivatedBanError(None)
+    job = env.submit(['https://t.me/bannedchan'])
+    await env.worker.tick()
+    result = env.store.snapshot(job, 'owner')
+    assert result['state'] == 'paused' and result['reason'] == 'account_banned'
+    assert result['restricted_accounts'] == {'a': 'account_banned'}
+    item = result['results'][0]
+    assert item['state'] == 'pending' and item['reason'] == 'account_banned'
+    assert item['updated'] > 0
+
+
+@pytest.mark.asyncio
+async def test_rotation_drops_a_banned_account_and_finishes_on_the_rest(env):
+    banned = JoinClient(errors.UserDeactivatedBanError(None))
+    healthy = JoinClient()
+    env.monkeypatch.setattr(jobs.account_manager, 'get_client',
+                            AsyncMock(side_effect=[banned, healthy, healthy]))
+    job = env.submit(['https://t.me/chanone', 'https://t.me/chantwo'],
+                     rotation_mode='round_robin', account_ids=['a', 'b'])
+    await run_until(env, job, step=45)
+    result = env.store.snapshot(job, 'owner')
+    assert result['state'] == 'completed' and result['completed'] == 2
+    assert result['restricted_accounts'] == {'a': 'account_banned'}
+    assert {row['account_id'] for row in result['results']} == {'b'}
+    assert all(row['updated'] > 0 for row in result['results'])

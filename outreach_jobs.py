@@ -55,6 +55,14 @@ TERMINAL = ("completed", "stopped", "needs_review")
 # means we never message someone who hasn't consented or has opted out, so the job
 # continues safely instead of pausing the whole list for one recipient.
 RECIPIENT_SKIP_REASONS = frozenset({"consent_missing_or_invalid", "suppressed", "approval_subject_mismatch"})
+# Account-level refusals that a retry cannot fix. They are recorded with a plain
+# reason the dashboard can explain instead of a raw Telethon class name.
+ACCOUNT_RESTRICTIONS = {
+    errors.UserDeactivatedBanError: "account_banned",
+    errors.AuthKeyUnregisteredError: "session_revoked",
+    errors.FrozenMethodInvalidError: "account_frozen",
+    errors.ChannelsTooMuchError: "channel_limit_reached",
+}
 TELEGRAM_READ_TIMEOUT = 30
 TELEGRAM_SEND_TIMEOUT = 60
 log = logging.getLogger(__name__)
@@ -125,7 +133,8 @@ class JobStore:
                 CREATE TABLE IF NOT EXISTS items (
                     job TEXT NOT NULL REFERENCES jobs(id), seq INTEGER NOT NULL,
                     payload TEXT NOT NULL, peer TEXT, state TEXT NOT NULL DEFAULT 'pending',
-                    reason TEXT NOT NULL DEFAULT '', PRIMARY KEY(job, seq));
+                    reason TEXT NOT NULL DEFAULT '', updated REAL NOT NULL DEFAULT 0,
+                    PRIMARY KEY(job, seq));
                 CREATE TABLE IF NOT EXISTS message_events (
                     job TEXT NOT NULL, seq INTEGER NOT NULL, account TEXT NOT NULL,
                     date TEXT NOT NULL, week TEXT NOT NULL, created TEXT NOT NULL,
@@ -148,6 +157,9 @@ class JobStore:
                 db.execute("ALTER TABLE jobs ADD COLUMN started REAL NOT NULL DEFAULT 0")
             if "finished" not in columns:
                 db.execute("ALTER TABLE jobs ADD COLUMN finished REAL NOT NULL DEFAULT 0")
+            item_columns = {row[1] for row in db.execute("PRAGMA table_info(items)")}
+            if "updated" not in item_columns:
+                db.execute("ALTER TABLE items ADD COLUMN updated REAL NOT NULL DEFAULT 0")
             self._backfill_message_aggregates(db)
             db.commit()
             with db:
@@ -316,7 +328,9 @@ class JobStore:
             for item in db.execute("SELECT * FROM items WHERE job=? ORDER BY seq DESC LIMIT 100", (job,)):
                 p = self.unpack(item["payload"])
                 results.append({"target": p["target"], "account_id": p["account"],
-                                "state": item["state"], "reason": item["reason"]})
+                                "state": item["state"], "reason": item["reason"],
+                                "updated": item["updated"]})
+            config = self.unpack(row["payload"])
             return {"id": job, "kind": row["kind"], "state": row["state"], "reason": row["reason"],
                     "retry_at": row["retry_at"],
                     "next_account_id": self.unpack(next_item[0])["account"] if next_item else None,
@@ -324,6 +338,7 @@ class JobStore:
                     "completed": counts.get("completed", 0), "skipped": counts.get("skipped", 0),
                     "failed": counts.get("failed", 0), "uncertain": counts.get("uncertain", 0),
                     "pending": counts.get("pending", 0), "in_flight": counts.get("sending", 0),
+                    "restricted_accounts": config.get("restricted_accounts") or {},
                     "results": list(reversed(results)), "created": row["created"],
                     "started": row["started"], "finished": row["finished"]}
 
@@ -377,7 +392,22 @@ class JobStore:
             db.execute("UPDATE jobs SET state='needs_review',reason='delivery_uncertain_after_restart',"
                        "finished=COALESCE(NULLIF(finished,0),?) "
                        "WHERE id IN (SELECT job FROM items WHERE state='sending')", (time.time(),))
-            db.execute("UPDATE items SET state='uncertain',reason='delivery_uncertain_after_restart' WHERE state='sending'")
+            db.execute("UPDATE items SET state='uncertain',reason='delivery_uncertain_after_restart',"
+                       "updated=? WHERE state='sending'", (time.time(),))
+
+    def restrict_account(self, job, account, reason, limited=None):
+        """Persist an account-level refusal so every job view can name the account."""
+        with self.db() as db:
+            row = db.execute("SELECT payload FROM jobs WHERE id=?", (job,)).fetchone()
+            if not row:
+                return
+            config = self.unpack(row[0])
+            restricted = dict(config.get("restricted_accounts") or {})
+            restricted[account] = reason
+            config["restricted_accounts"] = restricted
+            if limited is not None:
+                config["limited_accounts"] = sorted(limited)
+            db.execute("UPDATE jobs SET payload=? WHERE id=?", (self.pack(config), job))
 
     def guard(self, job, seq, mark=False):
         with self.db() as db:
@@ -389,7 +419,8 @@ class JobStore:
 
     def outcome(self, job, seq, state, reason="", delay=0, job_state=None):
         with self.db() as db:
-            db.execute("UPDATE items SET state=?,reason=? WHERE job=? AND seq=?", (state, reason, job, seq))
+            db.execute("UPDATE items SET state=?,reason=?,updated=? WHERE job=? AND seq=?",
+                       (state, reason, time.time(), job, seq))
             if state == "completed":
                 kind = db.execute("SELECT kind FROM jobs WHERE id=?", (job,)).fetchone()[0]
                 if kind == "personal_send":
@@ -795,10 +826,12 @@ class JobWorker:
             self.store.outcome(job_id, seq, "pending", "telegram_cooldown")
         except (errors.UserDeactivatedBanError, errors.AuthKeyUnregisteredError,
                 errors.FrozenMethodInvalidError) as exc:
-            # The account itself is banned/frozen — retrying cannot help and a human
-            # must swap it, so pause for review rather than loop.
+            # The account itself is banned, signed out or frozen — retrying cannot
+            # help and a human must choose another account, so pause and name it.
             record_provider_restriction(account, exc)
-            self.store.outcome(job_id, seq, "pending", type(exc).__name__, 86400, "paused")
+            reason = ACCOUNT_RESTRICTIONS.get(type(exc), "account_restricted")
+            self.store.restrict_account(job_id, account, reason)
+            self.store.outcome(job_id, seq, "pending", reason, 86400, "paused")
         except OutreachDenied as exc:
             reason = str(exc)
             if job["kind"] == "member_add" and reason == "invitation_not_completed":
@@ -919,6 +952,15 @@ class JobWorker:
                 (job_id, seq)).fetchone()[0]
         if remaining_items == 0:
             delay = 0
+        if rotation:
+            # Record the account that actually attempted this link, so the run
+            # history names the account that joined (or was refused).
+            with self.store.db() as db:
+                payload = self.store.unpack(item["payload"])
+                if payload.get("account") != chosen:
+                    payload["account"] = chosen
+                    db.execute("UPDATE items SET payload=? WHERE job=? AND seq=?",
+                               (self.store.pack(payload), job_id, seq))
         try:
             # The operator who queued the job must still have administrator access.
             await _load_profile(operator)
@@ -957,17 +999,18 @@ class JobWorker:
                 self.store.waiting(job_id, "telegram_cooldown", max(1, exc.seconds))
         except (errors.ChannelsTooMuchError, errors.UserDeactivatedBanError,
                 errors.AuthKeyUnregisteredError, errors.FrozenMethodInvalidError) as exc:
+            # The account itself is banned, signed out, frozen or over Telegram's
+            # channel limit — retrying cannot help until a human acts, so name the
+            # account and never loop on it.
             record_provider_restriction(chosen, exc)
+            reason = ACCOUNT_RESTRICTIONS.get(type(exc), "account_restricted")
             if rotation:
                 limited.add(chosen)
-                with self.store.db() as db:
-                    updated = dict(config)
-                    updated["limited_accounts"] = sorted(limited)
-                    db.execute("UPDATE jobs SET payload=? WHERE id=?",
-                               (self.store.pack(updated), job_id))
-                self.store.outcome(job_id, seq, "pending", type(exc).__name__)
+                self.store.restrict_account(job_id, chosen, reason, limited=limited)
+                self.store.outcome(job_id, seq, "pending", reason)
             else:
-                self.store.outcome(job_id, seq, "pending", type(exc).__name__, job_state="paused")
+                self.store.restrict_account(job_id, chosen, reason)
+                self.store.outcome(job_id, seq, "pending", reason, job_state="paused")
         except (errors.InviteHashExpiredError, errors.InviteHashInvalidError,
                 errors.InviteRequestSentError, errors.UsernameInvalidError,
                 errors.UsernameNotOccupiedError) as exc:

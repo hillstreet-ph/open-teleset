@@ -7,13 +7,17 @@ a general automation surface.
 """
 
 import asyncio
+from datetime import datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from cryptography.fernet import Fernet
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
+import scheduler as scheduler_module
+import tables
 import workflows
 from open_teleset import operator_store
 
@@ -72,7 +76,8 @@ def test_a_single_scrape_node_is_a_valid_chain(client):
     assert workflow["edges"] == []
     listing = client.get("/api/workflows").json()
     assert listing["capacity"]["used"] == 1
-    assert [item["type"] for item in listing["catalog"]] == ["scrape", "wait", "join", "notify"]
+    assert [item["type"] for item in listing["catalog"]] == [
+        "scrape", "wait", "join", "notify", "table_append"]
 
 
 def test_a_chain_keeps_operator_order(client):
@@ -268,3 +273,307 @@ def test_a_run_is_reported_with_its_last_result(client, monkeypatch):
     assert runs[0]["status"] == "succeeded"
     assert runs[0]["steps"][0]["detail"] == {"waited_seconds": 1}
     assert client.get("/api/workflows").json()["workflows"][0]["last_run"]["id"] == run_id
+
+
+# ---------------- table node ----------------
+
+
+def _tables_client(operator_id="operator-1"):
+    app = FastAPI()
+
+    @app.middleware("http")
+    async def sign_in(request, call_next):
+        request.state.user = SimpleNamespace(id=operator_id, role="admin")
+        return await call_next(request)
+
+    app.include_router(tables.router)
+    return TestClient(app)
+
+
+def _signed_in(monkeypatch, *account_ids):
+    import account_manager as accounts_module
+
+    monkeypatch.setattr(accounts_module.account_manager, "accounts",
+                        {item: {} for item in account_ids}, raising=False)
+
+
+def test_table_append_needs_real_ids_and_a_scrape_before_it(client):
+    broken = client.post("/api/workflows", json={
+        "name": "Save", "nodes": [
+            _node("n1", "scrape", {"target": "@news"}),
+            _node("n2", "table_append", {"table_id": "nope", "column_id": "c_abc123"})],
+        "edges": [{"from": "n1", "to": "n2"}]})
+    assert broken.status_code == 400
+    assert "Choose the data table" in broken.json()["detail"]
+
+    alone = client.post("/api/workflows", json={
+        "name": "Save", "nodes": [_node("n1", "table_append",
+                                       {"table_id": "t_abc123", "column_id": "c_abc123"})],
+        "edges": []})
+    assert alone.status_code == 400
+    assert "Put a Scrape members node before" in alone.json()["detail"]
+
+    workflow = _create(client, nodes=[
+        _node("n1", "scrape", {"target": "@news"}),
+        _node("n2", "table_append", {"table_id": "t_abc123", "column_id": "c_abc123"})])
+    assert workflow["nodes"][1]["config"] == {"table_id": "t_abc123", "column_id": "c_abc123"}
+
+
+def test_the_table_node_saves_scraped_members_once_for_the_operator(client):
+    tables_client = _tables_client()
+    table = tables_client.post("/api/tables", json={"name": "Members"}).json()["table"]
+    column_id = table["columns"][0]["id"]
+    workflow = {
+        "id": "wf_test", "name": "Sweep", "edges": [{"from": "n1", "to": "n2"}],
+        "nodes": [
+            _node("n1", "scrape", {"target": "@news", "limit": 10, "filter_bots": True}),
+            _node("n2", "table_append", {"table_id": table["id"], "column_id": column_id}),
+        ],
+    }
+
+    async def scrape(config, context, account_id):
+        context["members"] = ["@alice", "@bob", "@alice"]
+        context["scraped"] = 3
+        return {"scraped": 3}
+
+    handlers = {"scrape": scrape, "table_append": workflows.HANDLERS["table_append"]}
+    run = workflows._new_run(workflow)
+    asyncio.run(workflows.execute(workflow, "acc", run, handlers, operator="operator-1"))
+    assert run["status"] == "succeeded"
+    assert run["steps"][1]["detail"] == {"appended": 2, "skipped": 1, "total": 2}
+    stored = tables_client.get(f"/api/tables/{table['id']}").json()["table"]
+    assert [row["cells"][column_id] for row in stored["rows"]] == ["@alice", "@bob"]
+
+    again = workflows._new_run(workflow)
+    asyncio.run(workflows.execute(workflow, "acc", again, handlers, operator="operator-1"))
+    assert again["steps"][1]["detail"] == {"appended": 0, "skipped": 3, "total": 2}
+
+
+def test_the_table_node_without_an_operator_fails_closed():
+    workflow = {
+        "id": "wf_test", "name": "Sweep", "edges": [{"from": "n1", "to": "n2"}],
+        "nodes": [
+            _node("n1", "scrape", {"target": "@news", "limit": 10, "filter_bots": True}),
+            _node("n2", "table_append", {"table_id": "t_abc123", "column_id": "c_abc123"}),
+        ],
+    }
+
+    async def scrape(config, context, account_id):
+        context["members"] = ["@alice"]
+        return {"scraped": 1}
+
+    run = workflows._new_run(workflow)
+    asyncio.run(workflows.execute(workflow, "acc", run,
+                                  {"scrape": scrape, "table_append": workflows.HANDLERS["table_append"]},
+                                  operator=""))
+    assert run["status"] == "failed"
+    assert run["steps"][1]["detail"] == {"error": "step_failed"}
+
+
+# ---------------- multiple accounts ----------------
+
+
+def test_accounts_run_sequentially_with_a_gap_and_fresh_contexts(monkeypatch):
+    sleep = AsyncMock()
+    monkeypatch.setattr(workflows.asyncio, "sleep", sleep)
+    order = []
+
+    async def scrape(config, context, account_id):
+        order.append(account_id)
+        context.setdefault("members", []).append(f"@{account_id}")
+        return {"scraped": len(context["members"])}
+
+    async def append(config, context, account_id):
+        return {"appended": len(context.get("members") or []), "skipped": 0, "total": 1}
+
+    workflow = {
+        "id": "wf_test", "name": "Run", "edges": [{"from": "n1", "to": "n2"}],
+        "nodes": [
+            _node("n1", "scrape", {"target": "@news", "limit": 10, "filter_bots": True}),
+            _node("n2", "table_append", {"table_id": "t_abc123", "column_id": "c_abc123"}),
+        ],
+    }
+    run = workflows._new_run(workflow, ["acc-one", "acc-two"])
+    assert [step["account_id"] for step in run["steps"]] == ["acc-one", "acc-one", "acc-two", "acc-two"]
+    asyncio.run(workflows.execute(workflow, ["acc-one", "acc-two"], run,
+                                  {"scrape": scrape, "table_append": append}))
+    assert order == ["acc-one", "acc-two"]
+    assert run["status"] == "succeeded"
+    assert [step["detail"]["appended"] for step in run["steps"] if step["type"] == "table_append"] == [1, 1]
+    sleep.assert_awaited_once_with(workflows.ACCOUNT_GAP_SECONDS)
+
+
+def test_a_failed_account_stops_the_accounts_after_it(monkeypatch):
+    monkeypatch.setattr(workflows.asyncio, "sleep", AsyncMock())
+
+    async def explode(config, context, account_id):
+        raise RuntimeError("token=very-secret")
+
+    workflow = {"id": "wf_test", "name": "Run", "edges": [],
+                "nodes": [_node("n1", "scrape", {"target": "@news", "limit": 10, "filter_bots": True})]}
+    run = workflows._new_run(workflow, ["acc-one", "acc-two"])
+    asyncio.run(workflows.execute(workflow, ["acc-one", "acc-two"], run, {"scrape": explode}))
+    assert run["status"] == "failed"
+    assert [step["status"] for step in run["steps"]] == ["failed", "pending"]
+    assert "very-secret" not in str(run)
+
+
+@pytest.mark.asyncio
+async def test_start_run_dedupes_accounts_and_caps_the_run(monkeypatch):
+    monkeypatch.setattr(workflows, "ACCOUNT_GAP_SECONDS", 0)
+    workflow = {"id": "wf_cap01", "name": "Cap", "edges": [],
+                "nodes": [_node("n1", "wait", {"seconds": 1})]}
+
+    async def fake_wait(config, context, account_id):
+        return {"waited_seconds": config["seconds"]}
+
+    with pytest.raises(HTTPException) as empty:
+        workflows.start_run(workflow, [])
+    assert empty.value.status_code == 400
+    assert "at least one" in empty.value.detail
+
+    with pytest.raises(HTTPException) as too_many:
+        workflows.start_run(workflow, [f"a{i}" for i in range(6)])
+    assert too_many.value.status_code == 400
+    assert "at most 5" in too_many.value.detail
+
+    run = workflows.start_run(workflow, ["a", "a", " b ", "b"], handlers={"wait": fake_wait})
+    assert run["account_ids"] == ["a", "b"]
+    assert len(run["steps"]) == 2
+
+    with pytest.raises(HTTPException) as busy:
+        workflows.start_run(workflow, ["a"], handlers={"wait": fake_wait})
+    assert busy.value.status_code == 409
+
+    await workflows._TASKS["wf_cap01"]
+    assert "wf_cap01" not in workflows._RUNNING
+    assert workflows._history("wf_cap01")[0]["status"] == "succeeded"
+
+
+def test_the_run_route_accepts_an_account_rotation(client, monkeypatch):
+    _signed_in(monkeypatch, "a", "b")
+    monkeypatch.setattr(workflows, "ACCOUNT_GAP_SECONDS", 0)
+
+    async def fake_wait(config, context, account_id):
+        return {"waited_seconds": config["seconds"]}
+
+    monkeypatch.setitem(workflows.HANDLERS, "wait", fake_wait)
+    workflow = _create(client, nodes=[_node("n1", "wait", {"seconds": 1})])
+    url = f"/api/workflows/{workflow['id']}/run"
+
+    assert client.post(url, json={}).status_code == 400
+    ghost = client.post(url, json={"account_ids": ["a", "ghost"]})
+    assert ghost.status_code == 400
+    assert "signed-in account" in ghost.json()["detail"]
+
+    response = client.post(url, json={"account_ids": ["a", "b"]})
+    assert response.status_code == 200, response.text
+    run_id = response.json()["run"]["id"]
+    assert response.json()["run"]["account_ids"] == ["a", "b"]
+    for _ in range(50):
+        runs = client.get(f"/api/workflows/{workflow['id']}/runs").json()["runs"]
+        if runs and runs[0]["status"] != "running":
+            break
+        import time
+        time.sleep(0.02)
+    assert runs[0]["id"] == run_id
+    assert runs[0]["status"] == "succeeded"
+    assert [step["account_id"] for step in runs[0]["steps"]] == ["a", "b"]
+
+    legacy = client.post(url, json={"account_id": "a"})
+    assert legacy.status_code == 200
+    assert legacy.json()["run"]["account_ids"] == ["a"]
+
+
+# ---------------- templates ----------------
+
+
+def test_templates_are_drafts_served_as_copies(client):
+    response = client.get("/api/workflows/templates")
+    assert response.status_code == 200
+    templates = response.json()["templates"]
+    assert [item["id"] for item in templates] == [
+        "member_table", "member_digest", "sweep_save_digest", "join_rollout"]
+
+    listing = client.get("/api/workflows").json()
+    assert listing["capacity"]["accounts"] == 5
+    assert [item["id"] for item in listing["templates"]] == [item["id"] for item in templates]
+    assert "table_append" in [item["type"] for item in listing["catalog"]]
+
+    templates[0]["nodes"][0]["config"]["target"] = "@mutated"
+    again = client.get("/api/workflows/templates").json()["templates"]
+    assert again[0]["nodes"][0]["config"]["target"] == ""
+
+
+# ---------------- schedules ----------------
+
+
+@pytest.fixture
+def isolated_scheduler(tmp_path, monkeypatch):
+    monkeypatch.setattr(scheduler_module, "ACCOUNTS_DIR", str(tmp_path / "accounts"))
+    monkeypatch.setattr(scheduler_module, "SCHEDULE_FILE", str(tmp_path / "accounts" / "schedules.json"))
+    fresh = scheduler_module.TaskScheduler()
+    monkeypatch.setattr(scheduler_module, "task_scheduler", fresh)
+    return fresh
+
+
+def test_schedule_validation_refuses_bad_repeat_time_and_accounts(client, isolated_scheduler, monkeypatch):
+    _signed_in(monkeypatch, "acc", *[f"a{i}" for i in range(6)])
+    workflow = _create(client, nodes=[_node("n1", "wait", {"seconds": 1})])
+    url = f"/api/workflows/{workflow['id']}/schedule"
+    base = {"account_ids": ["acc"], "repeat": "weekly", "hour": 9, "minute": 30, "weekday": 1}
+    for overrides, message in [
+        ({"repeat": "hourly"}, "once, daily, weekly or on workdays"),
+        ({"hour": 24}, "not on the clock"),
+        ({"minute": 60}, "not on the clock"),
+        ({"weekday": 7}, "not on the clock"),
+        ({"account_ids": []}, "signed-in accounts this schedule runs"),
+        ({"account_ids": ["ghost"]}, "signed-in accounts this schedule runs"),
+        ({"account_ids": [f"a{i}" for i in range(6)]}, "at most 5"),
+        ({"repeat": "once", "date": "2020-01-01"}, "still ahead of today"),
+        ({"repeat": "once", "date": "tomorrow"}, "YYYY-MM-DD"),
+    ]:
+        response = client.post(url, json={**base, **overrides})
+        assert response.status_code == 400, overrides
+        assert message in response.json()["detail"]
+    assert isolated_scheduler.schedules == {}
+
+
+@pytest.mark.parametrize("repeat,extra,cron", [
+    ("daily", {}, "30 9 * * *"),
+    ("weekly", {"weekday": 1}, "30 9 * * 2"),
+    ("workday", {}, "30 9 * * 1-5"),
+])
+def test_scheduling_persists_a_workflow_run(client, isolated_scheduler, monkeypatch, repeat, extra, cron):
+    _signed_in(monkeypatch, "acc")
+    workflow = _create(client, name="Weekly sweep", nodes=[_node("n1", "wait", {"seconds": 1})])
+    response = client.post(f"/api/workflows/{workflow['id']}/schedule",
+                           json={"account_ids": ["acc"], "repeat": repeat,
+                                 "hour": 9, "minute": 30, **extra})
+    assert response.status_code == 200, response.text
+    schedule = response.json()["schedule"]
+    assert schedule["schedule_id"].startswith("wfsch_")
+    assert schedule["action"] == "run_workflow"
+    assert schedule["workflow_id"] == workflow["id"]
+    assert schedule["operator_id"] == "operator-1"
+    assert schedule["accounts"] == ["acc"]
+    assert schedule["cron"] == cron
+    assert schedule["repeat"] == repeat
+
+    listing = client.get("/api/workflows").json()
+    assert [item["schedule_id"] for item in listing["schedules"]] == [schedule["schedule_id"]]
+
+
+def test_a_one_off_schedule_keeps_its_date(client, isolated_scheduler, monkeypatch):
+    _signed_in(monkeypatch, "acc")
+    workflow = _create(client, nodes=[_node("n1", "wait", {"seconds": 1})])
+    future = (datetime.now() + timedelta(days=2)).strftime("%Y-%m-%d")
+    response = client.post(f"/api/workflows/{workflow['id']}/schedule",
+                           json={"account_ids": ["acc"], "repeat": "once",
+                                 "hour": 8, "minute": 15, "date": future})
+    assert response.status_code == 200, response.text
+    schedule = response.json()["schedule"]
+    day = datetime.strptime(future, "%Y-%m-%d")
+    assert schedule["cron"] == f"15 8 {day.day} {day.month} *"
+    assert schedule["execute_time"]["day"] == day.day
+    assert schedule["execute_time"]["hour"] == 8

@@ -6,6 +6,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 const html = readFileSync('static/dashboard.html', 'utf8');
 const waitHelpers = vm.runInNewContext(`({${html.slice(html.indexOf('outreachDuration(seconds) {'), html.indexOf('parseAdderRecipients() {'))}})`);
+const apiErrorText = vm.runInNewContext(`({${html.slice(html.indexOf('apiErrorText(error, fallback) {'), html.indexOf('hookStamp(timestamp) {'))}})`).apiErrorText;
 test('wait status explains a multi-hour cooldown and does not promise paused jobs will resume', () => {
   assert.equal(waitHelpers.outreachDuration(17754), '4h 55m 54s');
   assert.equal(waitHelpers.outreachDuration(0.2), '1s');
@@ -28,7 +29,7 @@ test('unreachable, opted-out and non-consenting recipients are labelled as skips
   assert.match(waitHelpers.outreachReason('ChatWriteForbiddenError'), /paused/);
 });
 function harness(post) {
-  return { accessReady: true, authRevision: 1, outreachJobs: [], loadOutreachJobs() {}, bulksend: { accountId: 'account', accountIds: [], rotationMode: 'single', perAccountLimit: 0,
+  return { accessReady: true, authRevision: 1, outreachJobs: [], loadOutreachJobs() {}, apiErrorText, bulksend: { accountId: 'account', accountIds: [], rotationMode: 'single', perAccountLimit: 0,
     consentConfirmed: true, delay: 0, message: 'test', messages: {}, targets: Array.from({length: 30}, (_,i)=>String(i+1)).join('\n') },
     runBulkSend: vm.runInNewContext(`({${method}}).runBulkSend`, { _api: { post }, crypto: { randomUUID } }) };
 }
@@ -92,7 +93,7 @@ function adderHarness(post) {
   const source = html.slice(html.indexOf('parseAdderRecipients() {'), html.indexOf('// ---- BulkSend ----'));
   const context = {_api:{post},crypto:{randomUUID}};
   vm.runInNewContext(readFileSync('static/csv.js', 'utf8'), context);
-  return {accessReady:true, authRevision:1, outreachJobs:[], loadOutreachJobs(){},
+  return {accessReady:true, authRevision:1, outreachJobs:[], loadOutreachJobs(){}, apiErrorText,
     adder:{consentConfirmed:true, accountId:'account', destTarget:'group', usernames:'111', limit:10, delay:35, filterBots:true, activityFilter:'all'},
     ...vm.runInNewContext(`({${source}})`, context)};
 }

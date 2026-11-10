@@ -578,6 +578,11 @@
         .sheet td { padding: 6px; }
         .sheet td .form-control { min-width: 130px; padding: 7px 9px; font-size: 13px; }
         .sheet input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
+        .sheet tr.row-selected td { background: var(--accent-soft); }
+        .table-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; }
+        .table-import { margin-bottom: 14px; padding: 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-2); }
+        .table-column-edit { display: grid; gap: 4px; min-width: 140px; }
+        .table-column-edit .form-control { min-width: 0; }
 
         /* ---------- Stats / empty ---------- */
         .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(158px, 1fr)); gap: 12px; margin-bottom: 16px; }
@@ -916,6 +921,19 @@
         .wf-step-dot.failed { background: var(--danger); }
         .wf-step-dot.stopped { background: var(--warning); }
         @keyframes wf-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+        .wf-templates { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 6px; }
+        .wf-accounts { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 6px; max-height: 180px; overflow: auto; padding: 8px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); }
+        .wf-account { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px; text-transform: none; letter-spacing: 0; font-size: 12.5px; color: var(--text-secondary); cursor: pointer; }
+        .wf-account:hover { background: var(--hover); }
+        .wf-account input { width: 15px; height: 15px; accent-color: var(--accent); }
+        .wf-run-accounts { display: grid; gap: 6px; }
+        .wf-account-run { padding-top: 6px; }
+        .wf-account-run h5 { margin: 0 0 2px; font-size: 12px; font-weight: 600; color: var(--text-secondary); }
+        .wf-schedule-list, .wf-schedule { margin-top: 12px; padding: 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-2); }
+        .wf-schedule-list h4, .wf-schedule h4 { margin: 0 0 8px; font-size: 13.5px; font-weight: 600; }
+        .wf-schedule-row { display: flex; align-items: center; gap: 10px; padding: 7px 0; border-top: 1px solid var(--border); font-size: 12.5px; }
+        .wf-schedule-row:first-of-type { border-top: 0; }
+        .wf-schedule-row span:first-child { flex: 1; font-weight: 600; }
 
         /* ---------- Responsive ---------- */
         @media (max-width: 1024px) {
@@ -1393,11 +1411,8 @@
                                         <button v-if="job.state === 'paused'" class="btn btn-primary btn-sm" @click="controlOutreachJob(job, 'resume')" :disabled="!!outreachJobBusy">Resume</button>
                                         <button v-if="['queued','running','waiting','paused'].includes(job.state)" class="btn btn-danger btn-sm" @click="controlOutreachJob(job, 'stop')" :disabled="!!outreachJobBusy">Stop</button>
                                     </div>
-                                    <details style="margin-top:8px;"><summary class="muted small">{{ job.kind === 'auto_join' ? 'Link history' : 'Recipient history' }} (latest 100)</summary>
-                                        <ul class="muted small" style="margin:6px 0 0;padding-left:18px;"><li v-for="(result,index) in job.results.slice(0, 100)" :key="index">{{ jobAccountLabel(result.account_id) }} → {{ result.target }} · {{ jobResultState(job, result.state) }}<template v-if="result.reason"> · {{ outreachReason(result.reason) }}</template></li></ul>
-                                        <p v-if="!job.results.length" class="muted small" style="margin-top:6px;">No recipients processed yet.</p>
-                                        <p v-if="job.results.length > 100" class="muted small" style="margin-top:6px;">Showing the first 100 of {{ job.results.length }}.</p>
-                                    </details>
+                                    <job-history :job="job" :account="jobAccountLabel" :result-state="jobResultState"
+                                                 :reason="outreachReason" :stamp="jobStamp"></job-history>
                                 </template>
                             </record-list>
                         </section>
@@ -3304,11 +3319,18 @@
                         <h3>Data tables</h3>
                         <span class="muted small">{{ tables.list.length }} / {{ tables.capacity.limit }} tables</span>
                     </div>
-                    <p class="muted small" style="margin-bottom:14px;">Spreadsheet-style lists for working data: suppliers, leads, delivery windows, follow-ups. Stored encrypted and scoped to you. Credentials and session strings are refused here, so keep those in the account setup.</p>
+                    <p class="muted small" style="margin-bottom:14px;">Spreadsheet-style lists for working data: a contact master list, suppliers, leads, delivery windows, follow-ups. Import and export CSV, TSV or JSON, search the sheet, and send selected contacts to the consent-gated BulkSend form. Stored encrypted and scoped to you. Credentials and session strings are refused here, so keep those in the account setup.</p>
                     <div class="form-row">
                         <div class="form-group" style="flex:1;">
                             <label for="table-new-name">New table</label>
-                            <input id="table-new-name" class="form-control" v-model="tables.newName" maxlength="80" placeholder="Suppliers" @keyup.enter="createTable">
+                            <input id="table-new-name" class="form-control" v-model="tables.newName" maxlength="80" placeholder="Contact master list" @keyup.enter="createTable">
+                        </div>
+                        <div class="form-group" style="flex:0 0 190px;">
+                            <label for="table-new-preset">Start from</label>
+                            <select id="table-new-preset" class="form-control" v-model="tables.newPreset">
+                                <option value="">Blank table</option>
+                                <option value="contacts">Contact master list</option>
+                            </select>
                         </div>
                         <div class="form-group" style="flex:0;align-self:flex-end;">
                             <button id="gate-tables" class="btn btn-primary" @click="createTable" :disabled="!!tables.busy || !tables.newName.trim()">Create table</button>
@@ -3330,6 +3352,9 @@
                         <h3>{{ tables.active.name }}</h3>
                         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
                             <button class="btn btn-sm btn-outline" @click="addTableRow" :disabled="!!tables.busy">Add row</button>
+                            <button id="table-import-open" class="btn btn-sm btn-outline" @click="toggleTableImport" :disabled="!!tables.busy">{{ tables.importForm.open ? 'Hide import' : 'Import' }}</button>
+                            <button id="table-export-csv" class="btn btn-sm btn-outline" @click="exportTable('csv')" :disabled="!!tables.busy">Export CSV</button>
+                            <button id="table-export-json" class="btn btn-sm btn-outline" @click="exportTable('json')" :disabled="!!tables.busy">Export JSON</button>
                             <button class="btn btn-sm btn-danger" @click="deleteTable" :disabled="!!tables.busy">Delete table</button>
                         </div>
                     </div>
@@ -3360,20 +3385,94 @@
                             <button class="btn btn-outline" @click="addTableColumn" :disabled="!!tables.busy || !tables.columnForm.name.trim()">Add column</button>
                         </div>
                     </div>
+
+                    <div v-if="tables.importForm.open" class="table-import" data-testid="table-import">
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="table-import-format">Format</label>
+                                <select id="table-import-format" class="form-control" v-model="tables.importForm.format">
+                                    <option value="auto">Detect automatically</option>
+                                    <option value="csv">CSV</option>
+                                    <option value="tsv">TSV</option>
+                                    <option value="json">JSON</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="table-import-mode">When the table already has rows</label>
+                                <select id="table-import-mode" class="form-control" v-model="tables.importForm.mode">
+                                    <option value="append">Append rows</option>
+                                    <option value="replace">Replace all rows</option>
+                                </select>
+                            </div>
+                            <div class="form-group" style="flex:1;">
+                                <label for="table-import-file">Import a file</label>
+                                <input id="table-import-file" type="file" accept=".csv,.tsv,.txt,.json,text/csv,text/tab-separated-values,application/json" @change="readTableImportFile" :disabled="!!tables.busy">
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label for="table-import-content">Or paste the rows</label>
+                            <textarea id="table-import-content" class="form-control" rows="6" v-model="tables.importForm.content" placeholder="Username,Name,Status&#10;@ada,Ada Lovelace,new&#10;@grace,Grace Hopper,follow-up"></textarea>
+                        </div>
+                        <p class="muted small" style="margin-bottom:10px;">Headers map to columns by name; a header the table does not have becomes a new text column. {{ tables.importForm.filename ? 'Loaded from ' + tables.importForm.filename + '.' : 'Pasted text is used when no file is chosen.' }}</p>
+                        <div style="display:flex;gap:8px;">
+                            <button id="table-import-run" class="btn btn-primary" @click="importTableRows" :disabled="!!tables.busy || !tables.importForm.content.trim()">Import rows</button>
+                            <button class="btn btn-outline" @click="toggleTableImport" :disabled="!!tables.busy">Cancel</button>
+                        </div>
+                    </div>
+
                     <p v-if="tables.error" role="alert" style="color:var(--danger);">{{ tables.error }}</p>
+                    <div class="table-toolbar">
+                        <div class="form-group" style="flex:1;margin:0;">
+                            <input id="table-filter" class="form-control" v-model="tables.filter" placeholder="Search rows…" aria-label="Search rows">
+                        </div>
+                        <div class="form-group" style="flex:0 0 190px;margin:0;">
+                            <select id="table-send-column" class="form-control" v-model="tables.sendColumn" aria-label="Contact column">
+                                <option v-for="c in tableTextColumns" :key="c.id" :value="c.id">{{ c.name }} is the contact</option>
+                            </select>
+                        </div>
+                        <button id="table-select-all" class="btn btn-sm btn-outline" @click="toggleAllTableRows" :disabled="!visibleTableRows.length">
+                            {{ allVisibleRowsSelected ? 'Clear selection' : 'Select all' }}
+                        </button>
+                        <button id="table-send-bulk" class="btn btn-sm btn-primary" @click="sendTableRowsToBulk" :disabled="!tables.selected.length">
+                            {{ tables.selected.length ? 'Send ' + tables.selected.length + ' to BulkSend' : 'Send selected to BulkSend' }}
+                        </button>
+                        <button id="table-delete-selected" class="btn btn-sm btn-danger" @click="deleteSelectedRows" :disabled="!tables.selected.length">
+                            Delete selected
+                        </button>
+                    </div>
+                    <p class="muted small" style="margin-bottom:10px;">Sending opens BulkSend with the selected contacts filled in. Consent stays unchecked there, and the consent-gated send still applies.</p>
+
                     <div style="overflow-x:auto;">
                         <table class="sheet">
                             <thead>
                                 <tr>
-                                    <th v-for="c in tables.active.columns" :key="c.id">
-                                        {{ c.name }} <span class="muted small">{{ c.type }}</span>
-                                        <button class="icon-btn" title="Delete column" aria-label="Delete column" @click="deleteTableColumn(c)" :disabled="!!tables.busy">×</button>
+                                    <th style="width:34px;"><input type="checkbox" :checked="allVisibleRowsSelected" @change="toggleAllTableRows" aria-label="Select all rows"></th>
+                                    <th v-for="c in tables.active.columns" :key="c.id" style="min-width:150px;">
+                                        <div v-if="tables.columnEdits[c.id]" class="table-column-edit">
+                                            <input class="form-control" v-model="tables.columnEdits[c.id].name" maxlength="80" aria-label="Column name">
+                                            <select class="form-control" v-model="tables.columnEdits[c.id].type" aria-label="Column type">
+                                                <option value="text">Text</option>
+                                                <option value="number">Number</option>
+                                                <option value="date">Date</option>
+                                                <option value="checkbox">Checkbox</option>
+                                            </select>
+                                            <div style="display:flex;gap:6px;">
+                                                <button class="btn btn-sm btn-primary" @click="saveTableColumn(c)" :disabled="!!tables.busy">Save</button>
+                                                <button class="btn btn-sm btn-outline" @click="cancelTableColumn(c)">Cancel</button>
+                                            </div>
+                                        </div>
+                                        <div v-else style="display:flex;align-items:center;gap:4px;">
+                                            <span style="min-width:0;">{{ c.name }} <span class="muted small">{{ c.type }}</span></span>
+                                            <button class="icon-btn" title="Edit column" aria-label="Edit column" @click="editTableColumn(c)" :disabled="!!tables.busy">✎</button>
+                                            <button class="icon-btn" title="Delete column" aria-label="Delete column" @click="deleteTableColumn(c)" :disabled="!!tables.busy">×</button>
+                                        </div>
                                     </th>
                                     <th style="width:44px;"></th>
                                 </tr>
                             </thead>
                             <tbody>
-                                <tr v-for="row in tables.active.rows" :key="row.id">
+                                <tr v-for="row in visibleTableRows" :key="row.id" :class="{ 'row-selected': tables.selected.includes(row.id) }">
+                                    <td><input type="checkbox" :checked="tables.selected.includes(row.id)" @change="toggleTableRow(row)" aria-label="Select row"></td>
                                     <td v-for="c in tables.active.columns" :key="c.id">
                                         <input v-if="c.type === 'checkbox'" type="checkbox" :checked="!!row.cells[c.id]" @change="setTableCell(row, c, $event.target.checked)">
                                         <input v-else-if="c.type === 'number'" type="number" class="form-control" :value="row.cells[c.id] ?? ''" @change="setTableCell(row, c, $event.target.value)">
@@ -3385,7 +3484,9 @@
                             </tbody>
                         </table>
                     </div>
-                    <div v-if="!tables.active.rows.length" class="empty-state" style="padding:18px;"><p>No rows yet. Add one, then type into the cells.</p></div>
+                    <div v-if="!tables.active.rows.length" class="empty-state" style="padding:18px;"><p>No rows yet. Add one, or import a CSV, TSV or JSON file.</p></div>
+                    <div v-else-if="!visibleTableRows.length" class="empty-state" style="padding:18px;"><p>No rows match “{{ tables.filter }}”.</p></div>
+                    <p class="muted small" style="margin-top:8px;">{{ tables.active.rows.length }} rows · {{ tables.selected.length }} selected</p>
                 </div>
             </div>
 
@@ -3399,7 +3500,13 @@
                             <button class="btn btn-primary" id="wf-new" @click="newWorkflow">New workflow</button>
                         </div>
                     </div>
-                    <p class="muted small" style="margin-bottom:14px;">Draw a chain of internal actions and run it with one of your accounts: read a group's members, wait, join groups, or send yourself a note. Only self-actions are available here — members, outreach and account creation stay on their own consent-gated pages.</p>
+                    <p class="muted small" style="margin-bottom:14px;">Draw a chain of internal actions and run it with up to {{ workflows.capacity.accounts }} of your accounts: read a group's members, save them to a Data Table, wait, join groups, or send yourself a note. Run it now or on a schedule. Only self-actions are available here — members, outreach and account creation stay on their own consent-gated pages.</p>
+                    <div v-if="workflows.templates.length" class="wf-templates">
+                        <span class="muted small">Start from a preset:</span>
+                        <button v-for="t in workflows.templates" :key="t.id" class="btn btn-sm btn-outline"
+                                :data-testid="'wf-template-' + t.id" :title="t.description" @click="applyWorkflowTemplate(t)">{{ t.name }}</button>
+                    </div>
+                    <p v-if="workflows.templates.length" class="muted small" style="margin-bottom:14px;">A preset opens as a draft. Fill in the group, table or links before saving; nothing runs until you press Run.</p>
                     <p v-if="workflows.loading" class="muted small">Loading workflows…</p>
                     <p v-else-if="workflows.error && !workflows.active" role="alert" style="color:var(--danger);">{{ workflows.error }}</p>
                     <div v-else-if="!workflows.list.length" class="empty-state"><p>No workflows yet. Start one above and add a node.</p></div>
@@ -3419,6 +3526,7 @@
                             <button class="btn btn-sm btn-primary" id="wf-save" @click="saveWorkflow" :disabled="!!workflows.busy">Save</button>
                             <button class="btn btn-sm btn-outline" id="wf-run" @click="runWorkflow" :disabled="!!workflows.busy || !workflows.active.id || workflows.activeRunning">Run</button>
                             <button v-if="workflows.activeRunning" class="btn btn-sm btn-outline" @click="stopWorkflow">Stop</button>
+                            <button class="btn btn-sm btn-outline" id="wf-schedule-open" @click="toggleWorkflowSchedule" :disabled="!!workflows.busy || !workflows.active.id">{{ workflows.scheduleForm.open ? 'Hide schedule' : 'Schedule' }}</button>
                             <button class="btn btn-sm btn-danger" @click="deleteWorkflow" :disabled="!!workflows.busy || !workflows.active.id">Delete</button>
                         </div>
                     </div>
@@ -3427,13 +3535,18 @@
                             <label for="wf-name">Workflow name</label>
                             <input id="wf-name" class="form-control" v-model="workflows.nameDraft" maxlength="80" placeholder="Weekly sweep">
                         </div>
-                        <div class="form-group" style="flex:1;">
-                            <label for="wf-account">Run with account</label>
-                            <select id="wf-account" class="form-control" v-model="workflows.accountId">
-                                <option value="">Choose an account</option>
-                                <option v-for="a in accounts" :key="a.account_id" :value="a.account_id">{{ a.name || a.phone || a.account_id }}</option>
-                            </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Run with accounts</label>
+                        <div class="wf-accounts" data-testid="wf-accounts">
+                            <label v-for="a in accounts" :key="a.account_id" class="wf-account">
+                                <input type="checkbox" :value="a.account_id" :checked="workflows.accountIds.includes(a.account_id)"
+                                       :disabled="!workflows.accountIds.includes(a.account_id) && workflows.accountIds.length >= workflows.capacity.accounts"
+                                       @change="toggleWorkflowAccount(a.account_id)">
+                                <span>{{ a.name || a.phone || a.account_id }}</span>
+                            </label>
                         </div>
+                        <small>{{ workflows.accountIds.length }} of {{ workflows.capacity.accounts }} selected. Accounts run one after another with a short gap between them, and each one finishes the whole chain before the next starts.</small>
                     </div>
                     <p v-if="workflows.error" role="alert" style="color:var(--danger);margin-bottom:10px;">{{ workflows.error }}</p>
                     <div class="wf-toolbar">
@@ -3477,6 +3590,23 @@
                                 <textarea class="form-control" rows="3" :value="(selectedNode.config.urls || []).join('\n')"
                                           @change="setNodeUrls(selectedNode, $event.target.value)"></textarea>
                             </div>
+                            <div class="form-group" v-else-if="f.kind === 'table'">
+                                <label>{{ f.label }}</label>
+                                <select class="form-control" :value="selectedNode.config.table_id || ''"
+                                        @change="chooseWorkflowTable($event.target.value)">
+                                    <option value="">Choose a data table</option>
+                                    <option v-for="t in workflows.tableList" :key="t.id" :value="t.id">{{ t.name }} · {{ t.rows }} rows</option>
+                                </select>
+                                <small v-if="!workflows.tableList.length">Create a Data Table first; this node saves the scraped usernames there.</small>
+                            </div>
+                            <div class="form-group" v-else-if="f.kind === 'column'">
+                                <label>{{ f.label }}</label>
+                                <select class="form-control" v-model="selectedNode.config.column_id">
+                                    <option value="">Choose a text column</option>
+                                    <option v-for="c in workflowNodeColumns" :key="c.id" :value="c.id">{{ c.name }}</option>
+                                </select>
+                                <small v-if="selectedNode.config.table_id && !workflowNodeColumns.length">That table has no text column yet. Add one on the Data Tables page.</small>
+                            </div>
                             <div class="form-group" v-else>
                                 <label>{{ f.label }}</label>
                                 <input v-if="f.kind === 'number'" type="number" class="form-control" v-model.number="selectedNode.config[f.key]" :min="f.min" :max="f.max">
@@ -3491,10 +3621,69 @@
                             <h4>Last run · {{ workflows.run.status.replace(/_/g, ' ') }}</h4>
                             <span class="muted small">{{ workflows.run.started_at }}<span v-if="workflows.run.stopped"> · {{ workflows.run.stopped.replace(/_/g, ' ') }}</span></span>
                         </div>
-                        <div v-for="step in workflows.run.steps" :key="step.node_id" class="wf-step">
-                            <span class="wf-step-dot" :class="step.status"></span>
-                            <span class="wf-step-name">{{ nodeLabel(step.type) }}</span>
-                            <span class="muted small">{{ stepSummary(step) }}</span>
+                        <div v-if="runAccounts.length" class="wf-run-accounts">
+                            <div v-for="group in runAccounts" :key="group.account_id" class="wf-account-run" :data-testid="'wf-run-' + group.account_id">
+                                <h5>{{ accountLabel(group.account_id) }}</h5>
+                                <div v-for="step in group.steps" :key="group.account_id + '-' + step.node_id" class="wf-step">
+                                    <span class="wf-step-dot" :class="step.status"></span>
+                                    <span class="wf-step-name">{{ nodeLabel(step.type) }}</span>
+                                    <span class="muted small">{{ stepSummary(step) }}</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div v-else>
+                            <div v-for="step in workflows.run.steps" :key="step.node_id" class="wf-step">
+                                <span class="wf-step-dot" :class="step.status"></span>
+                                <span class="wf-step-name">{{ nodeLabel(step.type) }}</span>
+                                <span class="muted small">{{ stepSummary(step) }}</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div v-if="activeSchedules.length" class="wf-schedule-list" data-testid="wf-schedule-list">
+                        <h4>Scheduled runs</h4>
+                        <div v-for="s in activeSchedules" :key="s.schedule_id" class="wf-schedule-row" :data-testid="'wf-schedule-' + s.schedule_id">
+                            <span>{{ scheduleLabel(s) }}</span>
+                            <span class="muted small">{{ s.enabled === false ? 'paused' : (s.next_run ? 'next ' + formatTime(s.next_run) : '') }}</span>
+                            <button class="icon-btn" title="Delete schedule" aria-label="Delete schedule" @click="deleteWorkflowSchedule(s)" :disabled="!!workflows.busy">×</button>
+                        </div>
+                    </div>
+
+                    <div v-if="workflows.scheduleForm.open" class="wf-schedule" data-testid="wf-schedule">
+                        <h4>Schedule this workflow</h4>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="wf-schedule-repeat">Repeat</label>
+                                <select id="wf-schedule-repeat" class="form-control" v-model="workflows.scheduleForm.repeat">
+                                    <option value="once">Once</option>
+                                    <option value="daily">Every day</option>
+                                    <option value="weekly">Every week</option>
+                                    <option value="workday">Workdays</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="wf-schedule-hour">Hour</label>
+                                <input id="wf-schedule-hour" type="number" min="0" max="23" class="form-control" v-model.number="workflows.scheduleForm.hour">
+                            </div>
+                            <div class="form-group">
+                                <label for="wf-schedule-minute">Minute</label>
+                                <input id="wf-schedule-minute" type="number" min="0" max="59" class="form-control" v-model.number="workflows.scheduleForm.minute">
+                            </div>
+                            <div class="form-group" v-if="workflows.scheduleForm.repeat === 'weekly'">
+                                <label for="wf-schedule-weekday">Day</label>
+                                <select id="wf-schedule-weekday" class="form-control" v-model.number="workflows.scheduleForm.weekday">
+                                    <option v-for="(day, index) in ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday']" :key="day" :value="index">{{ day }}</option>
+                                </select>
+                            </div>
+                            <div class="form-group" v-if="workflows.scheduleForm.repeat === 'once'">
+                                <label for="wf-schedule-date">Date</label>
+                                <input id="wf-schedule-date" type="date" class="form-control" v-model="workflows.scheduleForm.date">
+                            </div>
+                        </div>
+                        <p class="muted small" style="margin-bottom:10px;">Runs with the {{ workflows.accountIds.length }} selected account{{ workflows.accountIds.length === 1 ? '' : 's' }} above. Times use this server's local clock.</p>
+                        <div style="display:flex;gap:8px;">
+                            <button id="wf-schedule-save" class="btn btn-primary" @click="saveWorkflowSchedule" :disabled="!!workflows.scheduleForm.busy || !workflows.accountIds.length">Schedule</button>
+                            <button class="btn btn-outline" @click="toggleWorkflowSchedule">Cancel</button>
                         </div>
                     </div>
                 </div>
@@ -3608,6 +3797,13 @@
                                             {{ sch.enabled ? 'Disable' : 'Enable' }}
                                         </button>
                                         <button class="btn btn-sm btn-danger" @click="deleteSchedule(i)">Delete</button>
+                                    </div>
+                                    <div v-if="sch.last_join_result" style="flex:1 0 100%;">
+                                        <p v-if="sch.last_join_result.stopped_reason" class="small" role="alert" style="margin:0 0 6px;">
+                                            Last run stopped: {{ outreachReason(sch.last_join_result.stopped_reason) }}. Links marked below were not attempted.
+                                        </p>
+                                        <job-history :job="scheduleJoinJob(sch)" :account="jobAccountLabel" :result-state="jobResultState"
+                                                     :reason="outreachReason" :stamp="jobStamp"></job-history>
                                     </div>
                                 </div>
                             </template>
@@ -4110,10 +4306,8 @@
                             <button v-if="['queued','running','waiting','paused'].includes(job.state)" class="btn btn-danger" @click="controlOutreachJob(job, 'stop')" :disabled="!!outreachJobBusy">Stop</button>
                         </div>
                         <p v-if="job.state === 'needs_review'">Delivery is uncertain. Check Telegram before creating another job; automatic retry is disabled.</p>
-                        <details><summary>{{ job.kind === 'auto_join' ? 'Link history' : 'Recipient history' }} (latest 100)</summary>
-                            <ul><li v-for="(result,index) in job.results.slice(0, 100)" :key="index">{{ jobAccountLabel(result.account_id) }} → {{ result.target }} · {{ jobResultState(job, result.state) }}<template v-if="result.reason"> · {{ outreachReason(result.reason) }}</template></li></ul>
-                            <p v-if="job.results.length > 100" class="muted small">Showing the first 100 of {{ job.results.length }}.</p>
-                        </details>
+                        <job-history :job="job" :account="jobAccountLabel" :result-state="jobResultState"
+                                     :reason="outreachReason" :stamp="jobStamp"></job-history>
                     </template>
                 </record-list>
             </div>
@@ -5289,6 +5483,60 @@
                 </div>`
         }
 
+        const JobHistory = {
+            props: {
+                job: { type: Object, required: true },
+                account: { type: Function, required: true },
+                resultState: { type: Function, required: true },
+                reason: { type: Function, required: true },
+                stamp: { type: Function, required: true },
+                limit: { type: Number, default: 12 }
+            },
+            data() { return { expanded: false } },
+            computed: {
+                noun() {
+                    return this.job.kind === 'auto_join' ? 'Group or channel' : 'Recipient'
+                },
+                rows() { return (this.job.results || []).slice().reverse() },
+                visible() { return this.expanded ? this.rows : this.rows.slice(0, this.limit) },
+                restricted() { return Object.entries(this.job.restricted_accounts || {}) }
+            },
+            methods: {
+                resultClass(state) {
+                    if (state === 'completed') return 'badge-success'
+                    if (state === 'failed') return 'badge-danger'
+                    return state === 'pending' ? 'badge-info' : 'badge-normal'
+                }
+            },
+            template: `
+                <div class="job-history" style="margin-top:10px;">
+                    <div v-if="restricted.length" role="alert" class="small" style="margin-bottom:8px;padding:8px 10px;border:1px solid var(--border);border-radius:10px;background:var(--surface-2);">
+                        <strong>Restricted account{{ restricted.length === 1 ? '' : 's' }}:</strong>
+                        <span v-for="([id, code], index) in restricted" :key="id">{{ index ? ' · ' : ' ' }}{{ account(id) }} — {{ reason(code) }}</span>.
+                        Telegram restrictions cannot be lifted from this dashboard and this job never retries the account; select another account to finish the remaining targets.
+                    </div>
+                    <p class="muted small" style="margin:0 0 6px;">{{ noun }} history ({{ rows.length }}). Newest first; the account column names the account that acted on that target.</p>
+                    <p v-if="!rows.length" class="muted small">No targets processed yet.</p>
+                    <div v-else style="overflow-x:auto;">
+                        <table>
+                            <thead><tr><th>Account</th><th>{{ noun }}</th><th>Result</th><th>Detail</th><th>Time</th></tr></thead>
+                            <tbody>
+                                <tr v-for="(row, index) in visible" :key="index">
+                                    <td>{{ account(row.account_id) }}</td>
+                                    <td style="overflow-wrap:anywhere;">{{ row.target }}</td>
+                                    <td><span class="badge" :class="resultClass(row.state)">{{ resultState(job, row.state) }}</span></td>
+                                    <td>{{ row.reason ? reason(row.reason) : '—' }}</td>
+                                    <td style="white-space:nowrap;">{{ row.updated ? stamp(row.updated) : '—' }}</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <button v-if="rows.length > limit" type="button" class="btn btn-sm btn-outline record-more" @click="expanded = !expanded">
+                        {{ expanded ? 'Show fewer' : 'Show all (' + rows.length + ')' }}
+                    </button>
+                </div>`
+        }
+
         const app = createApp({
             data() {
                 return {
@@ -5695,13 +5943,19 @@
                     // Operator-owned data tables (spreadsheet-style lists)
                     tables: {
                         loading: false, busy: '', error: '', list: [], capacity: { used: 0, limit: 30 },
-                        active: null, nameDraft: '', newName: '', columnForm: { name: '', type: 'text' },
+                        active: null, nameDraft: '', newName: '', newPreset: '',
+                        columnForm: { name: '', type: 'text' },
+                        filter: '', selected: [], columnEdits: {}, sendColumn: '',
+                        importForm: { open: false, format: 'auto', mode: 'append', content: '', filename: '' },
                     },
                     workflows: {
                         loading: false, busy: '', error: '', list: [],
-                        capacity: { used: 0, limit: 50, nodes: 20 }, catalog: [],
+                        capacity: { used: 0, limit: 50, nodes: 20, accounts: 5 }, catalog: [],
                         active: null, nameDraft: '', selectedId: '', linkFrom: '',
-                        accountId: '', run: null, activeRunning: false, poll: null,
+                        accountIds: [], templates: [], schedules: [],
+                        run: null, activeRunning: false, poll: null,
+                        tableList: [], tableDetails: {}, tableFetching: '',
+                        scheduleForm: { open: false, repeat: 'weekly', hour: 9, minute: 0, weekday: 0, date: '', busy: '' },
                     },
 
                     // Template Modal
@@ -5889,6 +6143,61 @@
                         const bend = Math.max(40, Math.abs(x2 - x1) / 2)
                         return { edge, path: `M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}` }
                     }).filter(Boolean)
+                },
+                visibleTableRows() {
+                    const active = this.tables.active
+                    if (!active) return []
+                    const term = this.tables.filter.trim().toLowerCase()
+                    if (!term) return active.rows
+                    return active.rows.filter(row => active.columns.some(column => {
+                        const value = (row.cells || {})[column.id]
+                        return value !== null && value !== undefined && String(value).toLowerCase().includes(term)
+                    }))
+                },
+                tableTextColumns() {
+                    const active = this.tables.active
+                    if (!active) return []
+                    return active.columns.filter(column => column.type === 'text')
+                },
+                tableSendColumnId() {
+                    const texts = this.tableTextColumns
+                    const chosen = this.tables.sendColumn
+                    if (chosen && texts.some(column => column.id === chosen)) return chosen
+                    return texts.length ? texts[0].id : ''
+                },
+                allVisibleRowsSelected() {
+                    const rows = this.visibleTableRows
+                    return rows.length > 0 && rows.every(row => this.tables.selected.includes(row.id))
+                },
+                runAccounts() {
+                    const run = this.workflows.run
+                    if (!run) return []
+                    const groups = []
+                    const byAccount = new Map()
+                    for (const step of run.steps || []) {
+                        const key = step.account_id || ''
+                        if (!byAccount.has(key)) {
+                            const group = { account_id: key, steps: [] }
+                            byAccount.set(key, group)
+                            groups.push(group)
+                        }
+                        byAccount.get(key).steps.push(step)
+                    }
+                    if (groups.length === 1 && !groups[0].account_id) return []
+                    return groups
+                },
+                activeSchedules() {
+                    const active = this.workflows.active
+                    if (!active || !active.id) return []
+                    return (this.workflows.schedules || []).filter(item => item.workflow_id === active.id)
+                },
+                workflowNodeColumns() {
+                    const node = this.selectedNode
+                    if (!node || node.type !== 'table_append') return []
+                    const tableId = node.config && node.config.table_id
+                    const detail = tableId ? this.workflows.tableDetails[tableId] : null
+                    if (!detail || !Array.isArray(detail.columns)) return []
+                    return detail.columns.filter(column => column.type === 'text')
                 },
                 pageMeta() {
                     const pages = {
@@ -6342,6 +6651,21 @@
                 jobStamp(timestamp) {
                     return timestamp ? new Date(timestamp * 1000).toLocaleString() : '—';
                 },
+                apiErrorText(error, fallback) {
+                    // FastAPI validation errors arrive as an array of objects; show
+                    // the field and message instead of "[object Object]".
+                    const detail = error?.response?.data?.detail;
+                    if (typeof detail === 'string' && detail) return detail;
+                    if (Array.isArray(detail)) {
+                        const parts = detail.map(item => {
+                            if (typeof item === 'string') return item;
+                            const field = Array.isArray(item?.loc) ? item.loc.filter(part => part !== 'body').join('.') : '';
+                            return [field, item?.msg].filter(Boolean).join(': ');
+                        }).filter(Boolean);
+                        if (parts.length) return parts.join('; ');
+                    }
+                    return error?.message || fallback;
+                },
                 hookStamp(timestamp) {
                     return timestamp ? new Date(timestamp * 1000).toLocaleString() : 'never';
                 },
@@ -6370,7 +6694,11 @@
                 },
                 jobAccountLabel(id) {
                     const acc = this.accounts.find(a => a.account_id === id);
-                    return acc ? this.accountDisplayName(acc) : this.shortAccountId(id);
+                    if (!acc) return this.shortAccountId(id);
+                    // Nameless accounts all share the generic fallback, which would
+                    // hide which account actually acted; the id is the only honest label.
+                    const name = this.accountDisplayName(acc);
+                    return name === 'Telegram account' ? this.shortAccountId(id) : name;
                 },
                 jobResultState(job, state) {
                     if (state === 'completed') return job.kind === 'auto_join' ? 'Joined' : (job.kind === 'member_add' ? 'Added' : 'Sent');
@@ -6409,8 +6737,28 @@
                         account_unavailable: 'Waiting for the selected account to reconnect',
                         consent_missing_or_invalid: 'Recipient has not consented, or consent expired — skipped',
                         suppressed: 'Recipient has opted out — skipped',
+                        approval_subject_mismatch: 'The consented target list changed — paused',
+                        account_banned: 'This account is banned by Telegram — it will not be retried',
+                        session_revoked: 'This account was signed out of Telegram — reconnect it first',
+                        account_frozen: 'This account is frozen by Telegram — it will not be retried',
+                        channel_limit_reached: 'This account reached Telegram\'s join limit',
+                        account_restricted: 'Telegram restricted this account — it will not be retried',
+                        not_attempted: 'Not attempted — the run stopped before this link',
+                        invalid_link: 'Not a valid group, channel or invite link — skipped',
+                        duplicate_link: 'Duplicate link in this list — skipped',
+                        target_unresolvable: 'Link could not be opened by Telegram — skipped',
+                        membership_restricted: 'The group restricts who can join — skipped',
+                        rate_store_unavailable: 'The shared rate limit store is unavailable — paused',
+                        worker_interrupted: 'The worker stopped during this target — retrying',
+                        operator_interrupted: 'Paused by the operator before this target',
+                        sender_identity_changed: 'The sending account changed — paused for review',
+                        recipient_identity_changed: 'The recipient changed — paused for review',
                     };
-                    return labels[reason] || (reason || '').replaceAll('_', ' ');
+                    if (labels[reason]) return labels[reason];
+                    if (typeof reason === 'string' && reason.endsWith('Error')) {
+                        return `Telegram refused this target (${reason})`;
+                    }
+                    return (reason || '').replaceAll('_', ' ');
                 },
                 parseAdderRecipients() {
                     const targets = [], seen = new Set(), invalidLines = [];
@@ -6470,7 +6818,7 @@
                             this.adder.resultMsg = 'Your previous submission exists. Check its progress below. Press Start again only if this edited input is a separate job.';
                             return;
                         }
-                        this.adder.resultMsg = '❌ ' + (e.response?.data?.detail || e.message);
+                        this.adder.resultMsg = '❌ ' + this.apiErrorText(e, 'Could not start member adds.');
                     } finally {
                         if (revision === this.authRevision) this.adder.loading = false;
                     }
@@ -6540,7 +6888,7 @@
                             this.autojoin.resultMsg = 'Your previous submission exists. Check its progress below. Press Start again only if this edited list is a separate job.';
                             return;
                         }
-                        this.autojoin.resultMsg = '❌ ' + (e.response?.data?.detail || e.message);
+                        this.autojoin.resultMsg = '❌ ' + this.apiErrorText(e, 'Could not start the Auto Join job.');
                     } finally {
                         if (revision === this.authRevision) this.autojoin.loading = false;
                     }
@@ -6593,7 +6941,7 @@
                             this.bulksend.resultMsg = 'Your previous submission exists. Check its progress below. Press Start again only if this edited input is a separate job.';
                             return;
                         }
-                        this.bulksend.resultMsg = '❌ ' + (e.response?.data?.detail || e.message);
+                        this.bulksend.resultMsg = '❌ ' + this.apiErrorText(e, 'Could not start the message job.');
                         if (/policy_unavailable|consent_missing_or_invalid/.test(this.bulksend.resultMsg)) this.bulksend.resultMsg += ' Confirm recipient consent before sending.';
                     } finally {
                         if (revision === this.authRevision) this.bulksend.loading = false;
@@ -10460,12 +10808,14 @@
                     return type === 'scrape' ? 'Scrape members'
                         : type === 'wait' ? 'Wait'
                         : type === 'join' ? 'Join groups'
-                        : type === 'notify' ? 'Note yourself' : 'Node'
+                        : type === 'notify' ? 'Note yourself'
+                        : type === 'table_append' ? 'Save to a table' : 'Node'
                 },
                 defaultNodeConfig(type) {
                     if (type === 'scrape') return { target: '', limit: 200, filter_bots: true }
                     if (type === 'wait') return { seconds: 30 }
                     if (type === 'join') return { urls: [], delay: 35 }
+                    if (type === 'table_append') return { table_id: '', column_id: '' }
                     return { text: '' }
                 },
                 nodeSummary(node) {
@@ -10474,6 +10824,13 @@
                     if (node.type === 'wait') return `Pause ${config.seconds || 0}s`
                     if (node.type === 'join') return `${(config.urls || []).length} link${(config.urls || []).length === 1 ? '' : 's'} · ${config.delay || 35}s apart`
                     if (node.type === 'notify') return String(config.text || 'Write a note').slice(0, 48)
+                    if (node.type === 'table_append') {
+                        const table = this.workflows.tableList.find(item => item.id === config.table_id)
+                        const detail = this.workflows.tableDetails[config.table_id]
+                        const column = detail ? (detail.columns || []).find(item => item.id === config.column_id) : null
+                        if (!table) return 'Pick a table'
+                        return `${table.name}${column ? ' · ' + column.name : ''}`
+                    }
                     return ''
                 },
                 stepSummary(step) {
@@ -10487,6 +10844,7 @@
                     if ('joined' in detail) return `${detail.joined} joined · ${detail.skipped || 0} already in · ${detail.failed || 0} failed`
                     if ('waited_seconds' in detail) return `waited ${detail.waited_seconds}s`
                     if ('characters' in detail) return `note sent (${detail.characters} chars)`
+                    if ('appended' in detail) return `${detail.appended} added · ${detail.skipped || 0} already there`
                     return ''
                 },
                 async loadWorkflows() {
@@ -10497,14 +10855,148 @@
                         this.workflows.list = data.workflows || []
                         this.workflows.capacity = data.capacity || this.workflows.capacity
                         this.workflows.catalog = data.catalog || this.workflows.catalog
+                        this.workflows.templates = data.templates || []
+                        this.workflows.schedules = data.schedules || []
                         if (this.workflows.active && this.workflows.active.id) {
                             const fresh = this.workflows.list.find(w => w.id === this.workflows.active.id)
                             if (fresh) this.workflows.activeRunning = !!fresh.running
                         }
+                        this.loadWorkflowTables()
                     } catch (e) {
                         this.workflows.error = e.response?.data?.detail || 'Could not load workflows.'
                     } finally {
                         this.workflows.loading = false
+                    }
+                },
+                async loadWorkflowTables() {
+                    try {
+                        const { data } = await _api.get('/api/tables')
+                        this.workflows.tableList = data.tables || []
+                        const active = this.workflows.active
+                        const needed = new Set((active ? active.nodes : [])
+                            .filter(node => node.type === 'table_append' && node.config && node.config.table_id)
+                            .map(node => node.config.table_id))
+                        for (const tableId of needed) this.ensureWorkflowTableDetail(tableId)
+                    } catch (e) {
+                        this.workflows.tableList = []
+                    }
+                },
+                async ensureWorkflowTableDetail(tableId) {
+                    if (!tableId || this.workflows.tableDetails[tableId] || this.workflows.tableFetching === tableId) return
+                    this.workflows.tableFetching = tableId
+                    try {
+                        const { data } = await _api.get(`/api/tables/${tableId}`)
+                        this.workflows.tableDetails = { ...this.workflows.tableDetails, [tableId]: data.table }
+                    } catch (e) {
+                        this.workflows.tableFetching = ''
+                        return
+                    }
+                    this.workflows.tableFetching = ''
+                },
+                chooseWorkflowTable(tableId) {
+                    const node = this.selectedNode
+                    if (!node) return
+                    node.config.table_id = tableId
+                    node.config.column_id = ''
+                    if (tableId) this.ensureWorkflowTableDetail(tableId)
+                },
+                applyWorkflowTemplate(template) {
+                    if (!template) return
+                    if (this.workflows.active && !this.workflows.active.id && this.workflows.active.nodes.length
+                        && !window.confirm('Replace the current unsaved draft with this preset?')) return
+                    this.workflows.active = {
+                        id: '', name: template.name, nodes: JSON.parse(JSON.stringify(template.nodes || [])),
+                        edges: JSON.parse(JSON.stringify(template.edges || [])), created_at: '', updated_at: '',
+                    }
+                    this.workflows.nameDraft = template.name
+                    this.workflows.selectedId = ''
+                    this.workflows.linkFrom = ''
+                    this.workflows.run = null
+                    this.workflows.activeRunning = false
+                    this.workflows.error = ''
+                    this.workflows.scheduleForm.open = false
+                    this.loadWorkflowTables()
+                    this.showToast('Preset opened as a draft. Fill in the details, then save.')
+                },
+                toggleWorkflowAccount(accountId) {
+                    const index = this.workflows.accountIds.indexOf(accountId)
+                    if (index !== -1) {
+                        this.workflows.accountIds.splice(index, 1)
+                        return
+                    }
+                    if (this.workflows.accountIds.length >= this.workflows.capacity.accounts) {
+                        this.workflows.error = `A run uses at most ${this.workflows.capacity.accounts} accounts.`
+                        return
+                    }
+                    this.workflows.accountIds.push(accountId)
+                    this.workflows.error = ''
+                },
+                accountLabel(accountOrId) {
+                    // Call sites pass either an account record (modals) or just its
+                    // id (pickers); both must name the account, never "All accounts".
+                    const account = accountOrId && typeof accountOrId === 'object'
+                        ? accountOrId
+                        : this.accounts.find(item => item.account_id === accountOrId)
+                    if (!account) return 'All accounts'
+                    return account.name || account.phone || account.account_id
+                },
+                scheduleLabel(schedule) {
+                    const time = schedule.execute_time || {}
+                    const hour = String(time.hour ?? 9).padStart(2, '0')
+                    const minute = String(time.minute ?? 0).padStart(2, '0')
+                    if (schedule.repeat === 'once') {
+                        const day = time.day != null ? String(time.day).padStart(2, '0') : ''
+                        const month = time.month != null ? String(time.month).padStart(2, '0') : ''
+                        return `Once on ${day}/${month} at ${hour}:${minute}`
+                    }
+                    if (schedule.repeat === 'weekly') return `Every week at ${hour}:${minute}`
+                    if (schedule.repeat === 'workday') return `Workdays at ${hour}:${minute}`
+                    if (schedule.repeat === 'daily') return `Every day at ${hour}:${minute}`
+                    return `Scheduled at ${hour}:${minute}`
+                },
+                toggleWorkflowSchedule() {
+                    this.workflows.scheduleForm.open = !this.workflows.scheduleForm.open
+                    this.workflows.error = ''
+                },
+                async saveWorkflowSchedule() {
+                    if (!this.workflows.active || !this.workflows.active.id) return
+                    if (!this.workflows.accountIds.length) {
+                        this.workflows.error = 'Choose at least one account for the schedule.'
+                        return
+                    }
+                    const form = this.workflows.scheduleForm
+                    form.busy = 'save'
+                    this.workflows.error = ''
+                    try {
+                        const { data } = await _api.post(`/api/workflows/${this.workflows.active.id}/schedule`, {
+                            account_ids: [...this.workflows.accountIds],
+                            repeat: form.repeat,
+                            hour: Number(form.hour),
+                            minute: Number(form.minute),
+                            weekday: Number(form.weekday),
+                            date: form.date,
+                        })
+                        form.open = false
+                        await this.loadWorkflows()
+                        this.showToast(`Workflow scheduled. ${this.scheduleLabel(data.schedule || {})}`)
+                    } catch (e) {
+                        this.workflows.error = e.response?.data?.detail || 'Could not schedule this workflow.'
+                    } finally {
+                        form.busy = ''
+                    }
+                },
+                async deleteWorkflowSchedule(schedule) {
+                    if (!schedule || !schedule.schedule_id) return
+                    if (!window.confirm(`Delete the ${this.scheduleLabel(schedule).toLowerCase()} schedule?`)) return
+                    this.workflows.busy = 'schedule'
+                    try {
+                        await _api.delete(`/api/schedules/${schedule.schedule_id}`)
+                        await this.loadWorkflows()
+                        this.showToast('Schedule deleted.')
+                    } catch (e) {
+                        this.workflows.error = e.response?.data?.detail || 'Could not delete that schedule.'
+                    } finally {
+                        this.workflows.busy = ''
                     }
                 },
                 newWorkflow() {
@@ -10512,9 +11004,11 @@
                     this.workflows.nameDraft = 'Untitled workflow'
                     this.workflows.selectedId = ''
                     this.workflows.linkFrom = ''
+                    this.workflows.accountIds = []
                     this.workflows.run = null
                     this.workflows.activeRunning = false
                     this.workflows.error = ''
+                    this.workflows.scheduleForm.open = false
                 },
                 openWorkflow(id) {
                     const found = this.workflows.list.find(w => w.id === id)
@@ -10523,9 +11017,12 @@
                     this.workflows.nameDraft = found.name
                     this.workflows.selectedId = ''
                     this.workflows.linkFrom = ''
+                    this.workflows.accountIds = []
                     this.workflows.run = found.last_run || null
                     this.workflows.activeRunning = !!found.running
                     this.workflows.error = ''
+                    this.workflows.scheduleForm.open = false
+                    this.loadWorkflowTables()
                     if (found.running) this.pollWorkflowRun(found.id)
                 },
                 selectNode(id) {
@@ -10641,14 +11138,14 @@
                         this.workflows.error = 'Save the workflow before running it.'
                         return
                     }
-                    if (!this.workflows.accountId) {
-                        this.workflows.error = 'Choose the account that should run this workflow.'
+                    if (!this.workflows.accountIds.length) {
+                        this.workflows.error = 'Choose at least one account to run this workflow.'
                         return
                     }
                     this.workflows.busy = 'run'
                     this.workflows.error = ''
                     try {
-                        const { data } = await _api.post(`/api/workflows/${this.workflows.active.id}/run`, { account_id: this.workflows.accountId })
+                        const { data } = await _api.post(`/api/workflows/${this.workflows.active.id}/run`, { account_ids: [...this.workflows.accountIds] })
                         this.workflows.run = data.run
                         this.workflows.activeRunning = true
                         this.pollWorkflowRun(this.workflows.active.id)
@@ -10690,11 +11187,18 @@
                     if (!window.confirm(`Delete ${this.workflows.active.name}?`)) return
                     this.workflows.busy = 'delete'
                     try {
+                        for (const schedule of this.activeSchedules) {
+                            try {
+                                await _api.delete(`/api/schedules/${schedule.schedule_id}`)
+                            } catch (e) { /* a schedule that is already gone is fine */ }
+                        }
                         await _api.delete(`/api/workflows/${this.workflows.active.id}`)
                         clearTimeout(this.workflows.poll)
                         this.workflows.active = null
                         this.workflows.run = null
+                        this.workflows.accountIds = []
                         this.workflows.activeRunning = false
+                        this.workflows.scheduleForm.open = false
                         await this.loadWorkflows()
                         this.showToast('Workflow deleted.')
                     } catch (e) {
@@ -10711,6 +11215,16 @@
                     this.showToast(this.tables.error, true)
                 },
                 applyTable(table) {
+                    const previous = this.tables.active
+                    if (!table || !previous || previous.id !== table.id) {
+                        this.tables.selected = []
+                        this.tables.filter = ''
+                        this.tables.columnEdits = {}
+                        this.tables.sendColumn = ''
+                        this.tables.importForm = { open: false, format: 'auto', mode: 'append', content: '', filename: '' }
+                    } else {
+                        this.tables.selected = this.tables.selected.filter(id => (table.rows || []).some(row => row.id === id))
+                    }
                     this.tables.active = table
                     this.tables.nameDraft = table?.name || ''
                 },
@@ -10733,13 +11247,173 @@
                     this.tables.busy = 'create'
                     this.tables.error = ''
                     try {
-                        const { data } = await _api.post('/api/tables', { name })
+                        const { data } = await _api.post('/api/tables', { name, preset: this.tables.newPreset })
                         this.tables.newName = ''
+                        this.tables.newPreset = ''
                         this.applyTable(data.table)
                         await this.loadTables()
                         this.showToast(`Created “${data.table.name}”.`)
                     } catch (e) {
                         this.tableError(e, 'Could not create that table.')
+                    } finally {
+                        this.tables.busy = ''
+                    }
+                },
+                toggleTableImport() {
+                    this.tables.importForm.open = !this.tables.importForm.open
+                    this.tables.error = ''
+                },
+                async readTableImportFile(event) {
+                    const file = event.target.files && event.target.files[0]
+                    if (!file) return
+                    try {
+                        this.tables.importForm.content = await file.text()
+                        this.tables.importForm.filename = file.name
+                        const lower = file.name.toLowerCase()
+                        if (lower.endsWith('.json')) this.tables.importForm.format = 'json'
+                        else if (lower.endsWith('.tsv')) this.tables.importForm.format = 'tsv'
+                        else if (lower.endsWith('.csv')) this.tables.importForm.format = 'csv'
+                    } catch (e) {
+                        this.tables.error = 'That file could not be read.'
+                    }
+                },
+                async importTableRows() {
+                    if (!this.tables.active) return
+                    const content = this.tables.importForm.content
+                    if (!content.trim()) return
+                    this.tables.busy = 'import'
+                    this.tables.error = ''
+                    try {
+                        const { data } = await _api.post(`/api/tables/${this.tables.active.id}/import`, {
+                            format: this.tables.importForm.format,
+                            mode: this.tables.importForm.mode,
+                            content,
+                        })
+                        const created = (data.created_columns || []).length
+                        this.applyTable(data.table)
+                        this.tables.importForm = { open: false, format: 'auto', mode: 'append', content: '', filename: '' }
+                        await this.loadTables()
+                        this.showToast(`Imported ${data.imported} row${data.imported === 1 ? '' : 's'}` +
+                            (created ? ` and added ${created} column${created === 1 ? '' : 's'}.` : '.'))
+                    } catch (e) {
+                        this.tableError(e, 'Could not import those rows.')
+                    } finally {
+                        this.tables.busy = ''
+                    }
+                },
+                async exportTable(format) {
+                    if (!this.tables.active) return
+                    this.tables.busy = 'export'
+                    this.tables.error = ''
+                    try {
+                        const { data } = await _api.get(`/api/tables/${this.tables.active.id}/export`, { params: { format } })
+                        const mime = format === 'json' ? 'application/json' : 'text/csv;charset=utf-8'
+                        const blob = new Blob([data.content], { type: mime })
+                        const url = URL.createObjectURL(blob)
+                        const link = document.createElement('a')
+                        link.href = url
+                        link.download = data.filename
+                        document.body.appendChild(link)
+                        link.click()
+                        link.remove()
+                        URL.revokeObjectURL(url)
+                        this.showToast(`Exported ${data.rows} row${data.rows === 1 ? '' : 's'} as ${format.toUpperCase()}.`)
+                    } catch (e) {
+                        this.tableError(e, 'Could not export that table.')
+                    } finally {
+                        this.tables.busy = ''
+                    }
+                },
+                toggleTableRow(row) {
+                    const index = this.tables.selected.indexOf(row.id)
+                    if (index === -1) this.tables.selected.push(row.id)
+                    else this.tables.selected.splice(index, 1)
+                },
+                toggleAllTableRows() {
+                    if (this.allVisibleRowsSelected) {
+                        const visible = new Set(this.visibleTableRows.map(row => row.id))
+                        this.tables.selected = this.tables.selected.filter(id => !visible.has(id))
+                    } else {
+                        const merged = new Set(this.tables.selected)
+                        this.visibleTableRows.forEach(row => merged.add(row.id))
+                        this.tables.selected = Array.from(merged)
+                    }
+                },
+                async deleteSelectedRows() {
+                    if (!this.tables.active || !this.tables.selected.length) return
+                    if (!window.confirm(`Delete ${this.tables.selected.length} selected row${this.tables.selected.length === 1 ? '' : 's'}?`)) return
+                    this.tables.busy = 'delete-rows'
+                    this.tables.error = ''
+                    const tableId = this.tables.active.id
+                    const ids = [...this.tables.selected]
+                    try {
+                        for (const rowId of ids) {
+                            const { data } = await _api.delete(`/api/tables/${tableId}/rows/${rowId}`)
+                            this.applyTable(data.table)
+                        }
+                        this.tables.selected = []
+                        await this.loadTables()
+                        this.showToast(`Deleted ${ids.length} row${ids.length === 1 ? '' : 's'}.`)
+                    } catch (e) {
+                        await this.openTable(tableId)
+                        this.tableError(e, 'Could not delete those rows.')
+                    } finally {
+                        this.tables.busy = ''
+                    }
+                },
+                sendTableRowsToBulk() {
+                    const active = this.tables.active
+                    if (!active || !this.tables.selected.length) return
+                    const columnId = this.tableSendColumnId
+                    if (!columnId) {
+                        this.showToast('Add a text column that holds the contact first.', true)
+                        return
+                    }
+                    const chosen = new Set(this.tables.selected)
+                    const contacts = []
+                    for (const row of active.rows) {
+                        if (!chosen.has(row.id)) continue
+                        const raw = String((row.cells || {})[columnId] || '').trim().replace(/^@/, '').toLowerCase()
+                        if (raw) contacts.push(raw)
+                    }
+                    const unique = Array.from(new Set(contacts))
+                    if (!unique.length) {
+                        this.showToast('The selected rows have no contact values in that column.', true)
+                        return
+                    }
+                    const existing = String(this.bulksend.targets || '').split('\n')
+                        .map(line => line.trim().replace(/^@/, '').toLowerCase()).filter(Boolean)
+                    const merged = Array.from(new Set([...existing, ...unique]))
+                    this.bulksend.targets = merged.join('\n')
+                    this.bulksend.messages = {}
+                    this.bulksend.consentConfirmed = false
+                    this.go('bulksend')
+                    this.showToast(`Added ${unique.length} contact${unique.length === 1 ? '' : 's'} to BulkSend. Consent is still unchecked.`)
+                },
+                editTableColumn(column) {
+                    this.tables.columnEdits[column.id] = { name: column.name, type: column.type }
+                },
+                cancelTableColumn(column) {
+                    delete this.tables.columnEdits[column.id]
+                },
+                async saveTableColumn(column) {
+                    if (!this.tables.active) return
+                    const edit = this.tables.columnEdits[column.id]
+                    if (!edit) return
+                    const name = String(edit.name || '').trim()
+                    if (!name) {
+                        this.showToast('Give the column a name first.', true)
+                        return
+                    }
+                    this.tables.busy = 'column'
+                    try {
+                        const { data } = await _api.patch(`/api/tables/${this.tables.active.id}/columns/${column.id}`, { name, type: edit.type })
+                        delete this.tables.columnEdits[column.id]
+                        this.applyTable(data.table)
+                        await this.loadTables()
+                        this.showToast('Column saved.')
+                    } catch (e) {
+                        this.tableError(e, 'Could not save that column.')
                     } finally {
                         this.tables.busy = ''
                     }
@@ -11169,8 +11843,26 @@
                     } catch { return '-' }
                 },
 
+                scheduleJoinJob(sch) {
+                    // Adapt the scheduler's last Auto Join record to the same table
+                    // shape the durable job queue returns.
+                    const record = sch.last_join_result
+                    if (!record) return null
+                    const restricted = ['account_banned', 'session_revoked', 'account_frozen', 'channel_limit_reached', 'account_restricted'].includes(record.stopped_reason)
+                    return {
+                        kind: 'auto_join',
+                        results: (record.targets || []).map(row => ({
+                            account_id: record.account,
+                            target: row.target,
+                            state: row.state === 'joined' ? 'completed' : (row.state === 'pending' ? 'skipped' : row.state),
+                            reason: row.reason || (row.state === 'pending' ? 'not_attempted' : ''),
+                            updated: row.at || 0
+                        })),
+                        restricted_accounts: restricted ? { [record.account]: record.stopped_reason } : {}
+                    }
+                },
+
                 getScheduleDescription(sch) {
-                    // Generate schedule description
                     const actionMap = {
                         'send_message': 'Send message',
                         'send_template': 'Send template',
@@ -11236,6 +11928,7 @@
         app.component('app-icon', AppIcon)
         app.component('record-list', RecordList)
         app.component('bounded-list', BoundedList)
+        app.component('job-history', JobHistory)
         app.mount('#app')
             // The app has mounted and replaced #app; drop the plain loading screen.
             if (typeof document !== 'undefined') {

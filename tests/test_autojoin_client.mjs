@@ -24,6 +24,7 @@ function harness() {
   };
   const methods = vm.runInNewContext(`({${methodSource('async runAutoJoin() {', '// ---- BulkSend ----')}})`, context);
   const state = {
+    apiErrorText: (error, fallback) => error?.message || fallback,
     accessReady: true,
     authRevision: 1,
     autojoin: {

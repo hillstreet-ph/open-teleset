@@ -1,10 +1,10 @@
 """Operator-built node workflows for internal Telegram actions.
 
 A workflow is a small directed chain the operator draws on a canvas: read a
-group's members, wait, join groups the account may join, or send itself a note.
-It is deliberately not a general automation engine. There is no node that
-creates accounts, buys numbers, adds strangers or sends cold messages, because
-those stay on their own consent-gated surfaces.
+group's members, save them to a data table, wait, join groups the account may
+join, or send itself a note. It is deliberately not a general automation
+engine. There is no node that creates accounts, buys numbers, adds strangers or
+sends cold messages, because those stay on their own consent-gated surfaces.
 
 Workflows are scoped to the operator and encrypted with the same store used by
 data tables. Run progress lives in process memory only: it tells the operator
@@ -14,11 +14,12 @@ what a run is doing, it is not an audit log.
 from __future__ import annotations
 
 import asyncio
+import copy
 import math
 import re
 import threading
 from collections import deque
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Awaitable, Callable
 from uuid import uuid4
 
@@ -34,6 +35,8 @@ STORE = "workflows"
 MAX_WORKFLOWS = 50
 MAX_NODES = 20
 MAX_NAME = 80
+MAX_ACCOUNTS_PER_RUN = 5
+ACCOUNT_GAP_SECONDS = 5.0
 MAX_WAIT_STEP = 600
 MAX_WAIT_TOTAL = 1800
 SCRAPE_LIMIT_MAX = 1000
@@ -41,9 +44,12 @@ JOIN_LIMIT = 10
 JOIN_MIN_DELAY = 35
 STEP_TIMEOUT_SECONDS = 650.0
 RUN_HISTORY = 10
+SCHEDULE_REPEATS = ("once", "daily", "weekly", "workday")
 
-NODE_TYPES = ("scrape", "wait", "join", "notify")
+NODE_TYPES = ("scrape", "wait", "join", "notify", "table_append")
 _NODE_ID = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
+_TABLE_ID = re.compile(r"^t_[A-Za-z0-9]{1,24}$")
+_COLUMN_ID = re.compile(r"^c_[A-Za-z0-9]{1,24}$")
 
 CATALOG = [
     {
@@ -81,6 +87,72 @@ CATALOG = [
             {"key": "text", "label": "Text ({scraped} and {joined} are filled in)", "kind": "textarea"},
         ],
     },
+    {
+        "type": "table_append",
+        "label": "Save to a table",
+        "hint": "Adds the usernames read by an earlier Scrape node to a Data Table, once each.",
+        "fields": [
+            {"key": "table_id", "label": "Data table", "kind": "table"},
+            {"key": "column_id", "label": "Column that receives usernames", "kind": "column"},
+        ],
+    },
+]
+
+# Drafts, not saved workflows: required fields stay empty until the operator
+# fills them in, which keeps a preset from running against a guessed target.
+TEMPLATES = [
+    {
+        "id": "member_table",
+        "name": "Member sweep to a table",
+        "description": "Read one group's members and add their usernames to a Data Table.",
+        "nodes": [
+            {"id": "n_scrape", "type": "scrape", "config": {"target": "", "limit": 200, "filter_bots": True},
+             "x": 40, "y": 60},
+            {"id": "n_table", "type": "table_append", "config": {"table_id": "", "column_id": ""},
+             "x": 290, "y": 60},
+        ],
+        "edges": [{"from": "n_scrape", "to": "n_table"}],
+    },
+    {
+        "id": "member_digest",
+        "name": "Member sweep digest",
+        "description": "Read a group, pause, then send yourself a short summary.",
+        "nodes": [
+            {"id": "n_scrape", "type": "scrape", "config": {"target": "", "limit": 200, "filter_bots": True},
+             "x": 40, "y": 60},
+            {"id": "n_wait", "type": "wait", "config": {"seconds": 30}, "x": 290, "y": 60},
+            {"id": "n_note", "type": "notify",
+             "config": {"text": "Member sweep: {scraped} members read."}, "x": 540, "y": 60},
+        ],
+        "edges": [{"from": "n_scrape", "to": "n_wait"}, {"from": "n_wait", "to": "n_note"}],
+    },
+    {
+        "id": "sweep_save_digest",
+        "name": "Sweep, save and digest",
+        "description": "Read members, save them once, wait, then note yourself the total.",
+        "nodes": [
+            {"id": "n_scrape", "type": "scrape", "config": {"target": "", "limit": 200, "filter_bots": True},
+             "x": 40, "y": 60},
+            {"id": "n_table", "type": "table_append", "config": {"table_id": "", "column_id": ""},
+             "x": 290, "y": 60},
+            {"id": "n_wait", "type": "wait", "config": {"seconds": 15}, "x": 540, "y": 60},
+            {"id": "n_note", "type": "notify",
+             "config": {"text": "Saved {scraped} members. {joined} joins."}, "x": 790, "y": 60},
+        ],
+        "edges": [{"from": "n_scrape", "to": "n_table"}, {"from": "n_table", "to": "n_wait"},
+                  {"from": "n_wait", "to": "n_note"}],
+    },
+    {
+        "id": "join_rollout",
+        "name": "Slow join rollout",
+        "description": "Wait, then join a short list of groups with the documented spacing.",
+        "nodes": [
+            {"id": "n_wait", "type": "wait", "config": {"seconds": 30}, "x": 40, "y": 60},
+            {"id": "n_join", "type": "join", "config": {"urls": [], "delay": JOIN_MIN_DELAY},
+             "x": 290, "y": 60},
+        ],
+        "edges": [{"from": "n_wait", "to": "n_join"}],
+    },
 ]
 
 _LOCK = threading.RLock()
@@ -97,6 +169,16 @@ class WorkflowPayload(BaseModel):
 
 class RunPayload(BaseModel):
     account_id: str = ""
+    account_ids: list[str] = Field(default_factory=list)
+
+
+class WorkflowSchedulePayload(BaseModel):
+    account_ids: list[str] = Field(default_factory=list)
+    repeat: str = "weekly"
+    hour: int = 9
+    minute: int = 0
+    weekday: int = 0
+    date: str = ""
 
 
 def _operator(request: Request) -> str:
@@ -176,6 +258,12 @@ def _clean_config(node_type: str, raw) -> dict:
         if not text or len(text) > 1000:
             raise ValueError("A note needs between 1 and 1000 characters.")
         return {"text": text}
+    if node_type == "table_append":
+        table_id = str(config.get("table_id") or "").strip()
+        column_id = str(config.get("column_id") or "").strip()
+        if not _TABLE_ID.match(table_id) or not _COLUMN_ID.match(column_id):
+            raise ValueError("Choose the data table and the text column that should receive the members.")
+        return {"table_id": table_id, "column_id": column_id}
     raise ValueError("Unknown node type.")
 
 
@@ -260,6 +348,13 @@ def validate_workflow(payload: dict) -> dict:
         raise ValueError("Connections cannot loop back to an earlier node.")
     if len(visited) != len(nodes):
         raise ValueError("Every node must be part of the chain, not floating on its own.")
+    by_id = {node["id"]: node for node in nodes}
+    seen_scrape = False
+    for node_id in visited:
+        if by_id[node_id]["type"] == "scrape":
+            seen_scrape = True
+        elif by_id[node_id]["type"] == "table_append" and not seen_scrape:
+            raise ValueError("Put a Scrape members node before the table node so there is something to save.")
 
     return {"name": name, "nodes": nodes, "edges": edges}
 
@@ -276,7 +371,9 @@ def _ordered_nodes(workflow: dict) -> list[dict]:
     return ordered
 
 
-def _new_run(workflow: dict) -> dict:
+def _new_run(workflow: dict, account_ids=None) -> dict:
+    ordered = _ordered_nodes(workflow)
+    accounts = [str(item) for item in (account_ids or [""])]
     return {
         "id": "run_" + uuid4().hex[:10],
         "workflow_id": workflow["id"],
@@ -284,10 +381,12 @@ def _new_run(workflow: dict) -> dict:
         "started_at": _now(),
         "finished_at": None,
         "stopped": None,
+        "account_ids": list(accounts),
         "steps": [
-            {"node_id": node["id"], "type": node["type"], "status": "pending",
-             "detail": {}, "started_at": None, "finished_at": None}
-            for node in _ordered_nodes(workflow)
+            {"node_id": node["id"], "type": node["type"], "account_id": account_id,
+             "status": "pending", "detail": {}, "started_at": None, "finished_at": None}
+            for account_id in accounts
+            for node in ordered
         ],
     }
 
@@ -300,6 +399,16 @@ def _history(workflow_id: str) -> deque:
 def _summary(workflow: dict) -> dict:
     history = list(_history(workflow["id"]))
     return {**workflow, "last_run": history[0] if history else None, "running": workflow["id"] in _RUNNING}
+
+
+def _workflow_schedules(workflow_ids: set[str]) -> list[dict]:
+    try:
+        from scheduler import task_scheduler
+    except Exception:
+        return []
+    return [schedule for schedule in task_scheduler.list_schedules()
+            if str(schedule.get("schedule_id") or "").startswith("wfsch_")
+            and schedule.get("workflow_id") in workflow_ids]
 
 
 async def _client(account_id: str):
@@ -316,8 +425,22 @@ async def _scrape_members(config: dict, context: dict, account_id: str) -> dict:
     entity = await client.get_entity(config["target"])
     participants = await client.get_participants(entity, limit=config["limit"])
     members = [p for p in participants if not (config["filter_bots"] and getattr(p, "bot", False))]
+    usernames = [f"@{person.username}" for person in members if getattr(person, "username", None)]
     context["scraped"] = len(members)
-    return {"scraped": len(members)}
+    context["members"] = usernames
+    return {"scraped": len(members), "members_with_username": len(usernames)}
+
+
+async def _append_table(config: dict, context: dict, account_id: str) -> dict:
+    from tables import append_to_table
+
+    operator = context.get("_operator")
+    if not operator:
+        raise RuntimeError("operator_required")
+    result = append_to_table(operator, config["table_id"], config["column_id"],
+                             context.get("members") or [])
+    return {"appended": result["appended"], "skipped": result["skipped"],
+            "total": result["total"]}
 
 
 async def _join_groups(config: dict, context: dict, account_id: str) -> dict:
@@ -371,38 +494,63 @@ HANDLERS: dict[str, Callable[[dict, dict, str], Awaitable[dict]]] = {
     "wait": _wait,
     "join": _join_groups,
     "notify": _notify_self,
+    "table_append": _append_table,
 }
 
 
-async def execute(workflow: dict, account_id: str, run: dict, handlers: dict | None = None) -> dict:
-    """Run a validated workflow, updating ``run`` in place. Never raises."""
+async def _run_account(nodes: dict, steps: list, context: dict, account_id: str,
+                       handlers: dict) -> tuple[str, str | None] | None:
+    """Walk one account's steps. Returns (status, stopped reason) or None on success."""
+    for step in steps:
+        node = nodes[step["node_id"]]
+        step["status"] = "running"
+        step["started_at"] = _now()
+        handler = handlers.get(node["type"])
+        if handler is None:
+            step.update(status="failed", detail={"error": "unsupported_node"}, finished_at=_now())
+            return "failed", None
+        try:
+            detail = await asyncio.wait_for(
+                handler(node["config"], context, account_id), timeout=STEP_TIMEOUT_SECONDS)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Never echo exception text: it can carry tokens or peer data.
+            step.update(status="failed", detail={"error": "step_failed"}, finished_at=_now())
+            return "failed", None
+        step.update(status="ok", detail=detail if isinstance(detail, dict) else {},
+                    finished_at=_now())
+        if isinstance(detail, dict) and detail.get("stopped"):
+            return "stopped", str(detail["stopped"])
+    return None
+
+
+async def execute(workflow: dict, account_ids, run: dict,
+                  handlers: dict | None = None, operator: str = "") -> dict:
+    """Run a validated workflow, updating ``run`` in place. Never raises.
+
+    ``account_ids`` is one id or a list. Accounts run one after another with a
+    short gap, and each account gets its own context so a member list read by
+    one account is not saved to the table a second time by the next.
+    """
     handlers = handlers or HANDLERS
     nodes = {node["id"]: node for node in workflow["nodes"]}
-    context: dict = {}
+    accounts = run.get("account_ids") or (
+        [account_ids] if isinstance(account_ids, str) else list(account_ids or []))
+    accounts = [str(item) for item in accounts] or [""]
+    steps_by_account: dict[str, list[dict]] = {}
+    for step in run["steps"]:
+        steps_by_account.setdefault(str(step.get("account_id") or ""), []).append(step)
+    if len(accounts) == 1 and accounts[0] not in steps_by_account and "" in steps_by_account:
+        steps_by_account[accounts[0]] = steps_by_account.pop("")
     try:
-        for step in run["steps"]:
-            node = nodes[step["node_id"]]
-            step["status"] = "running"
-            step["started_at"] = _now()
-            handler = handlers.get(node["type"])
-            if handler is None:
-                step.update(status="failed", detail={"error": "unsupported_node"})
-                run["status"] = "failed"
-                break
-            try:
-                detail = await asyncio.wait_for(
-                    handler(node["config"], context, account_id), timeout=STEP_TIMEOUT_SECONDS)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                # Never echo exception text: it can carry tokens or peer data.
-                step.update(status="failed", detail={"error": "step_failed"}, finished_at=_now())
-                run["status"] = "failed"
-                break
-            step.update(status="ok", detail=detail if isinstance(detail, dict) else {}, finished_at=_now())
-            if isinstance(detail, dict) and detail.get("stopped"):
-                run["status"] = "stopped"
-                run["stopped"] = detail["stopped"]
+        for index, account_id in enumerate(accounts):
+            if index:
+                await asyncio.sleep(ACCOUNT_GAP_SECONDS)
+            outcome = await _run_account(nodes, steps_by_account.get(account_id, []),
+                                         {"_operator": operator}, account_id, handlers)
+            if outcome is not None:
+                run["status"], run["stopped"] = outcome
                 break
         else:
             run["status"] = "succeeded"
@@ -420,10 +568,11 @@ async def execute(workflow: dict, account_id: str, run: dict, handlers: dict | N
     return run
 
 
-async def _run_and_record(workflow: dict, account_id: str, run: dict, handlers=None) -> None:
+async def _run_and_record(workflow: dict, account_ids, run: dict, handlers=None,
+                          operator: str = "") -> None:
     workflow_id = workflow["id"]
     try:
-        await execute(workflow, account_id, run, handlers)
+        await execute(workflow, account_ids, run, handlers, operator)
     except asyncio.CancelledError:
         pass
     finally:
@@ -434,18 +583,24 @@ async def _run_and_record(workflow: dict, account_id: str, run: dict, handlers=N
                             f"Run {run['id']} finished: {run['status']}", "info")
 
 
-def start_run(workflow: dict, account_id: str, handlers=None) -> dict:
+def start_run(workflow: dict, account_ids, handlers=None, operator: str = "") -> dict:
     """Queue a run and return its record before any step has executed."""
+    accounts = [account_ids] if isinstance(account_ids, str) else list(account_ids or [])
+    accounts = list(dict.fromkeys(str(item).strip() for item in accounts if str(item).strip()))
+    if not accounts:
+        raise HTTPException(400, "Choose at least one signed-in account to run this workflow.")
+    if len(accounts) > MAX_ACCOUNTS_PER_RUN:
+        raise HTTPException(400, f"Run at most {MAX_ACCOUNTS_PER_RUN} accounts at a time.")
     if workflow["id"] in _RUNNING:
         raise HTTPException(409, "This workflow is already running.")
-    run = _new_run(workflow)
+    run = _new_run(workflow, accounts)
     with _LOCK:
         _RUNNING.add(workflow["id"])
         # The run is recorded before it starts so polling clients can watch
         # step progress; the same dict is mutated as steps execute.
         _history(workflow["id"]).appendleft(run)
     task = asyncio.get_running_loop().create_task(
-        _run_and_record(workflow, account_id, run, handlers))
+        _run_and_record(workflow, accounts, run, handlers, operator))
     with _LOCK:
         _TASKS[workflow["id"]] = task
     return run
@@ -457,8 +612,11 @@ async def list_workflows(request: Request):
     items = _record(operator)
     return {
         "workflows": [_summary(workflow) for workflow in items],
-        "capacity": {"used": len(items), "limit": MAX_WORKFLOWS, "nodes": MAX_NODES},
+        "capacity": {"used": len(items), "limit": MAX_WORKFLOWS, "nodes": MAX_NODES,
+                     "accounts": MAX_ACCOUNTS_PER_RUN},
         "catalog": CATALOG,
+        "templates": copy.deepcopy(TEMPLATES),
+        "schedules": _workflow_schedules({workflow["id"] for workflow in items}),
     }
 
 
@@ -511,6 +669,21 @@ async def delete_workflow(workflow_id: str, request: Request):
     return {"success": True}
 
 
+@router.get("/api/workflows/templates")
+async def list_templates(request: Request):
+    _operator(request)
+    return {"templates": copy.deepcopy(TEMPLATES)}
+
+
+@router.get("/api/workflows/{workflow_id}")
+async def get_workflow(workflow_id: str, request: Request):
+    operator = _operator(request)
+    workflow = next((item for item in _record(operator) if item["id"] == workflow_id), None)
+    if workflow is None:
+        raise HTTPException(404, "That workflow does not exist.")
+    return {"workflow": _summary(workflow)}
+
+
 @router.post("/api/workflows/{workflow_id}/run")
 async def run_workflow(workflow_id: str, request: Request, payload: RunPayload):
     operator = _operator(request)
@@ -519,10 +692,77 @@ async def run_workflow(workflow_id: str, request: Request, payload: RunPayload):
         raise HTTPException(404, "That workflow does not exist.")
     import account_manager as accounts_module
 
-    if payload.account_id not in accounts_module.account_manager.accounts:
+    requested = payload.account_ids or ([payload.account_id] if payload.account_id else [])
+    if not requested or any(item not in accounts_module.account_manager.accounts for item in requested):
         raise HTTPException(400, "Choose a signed-in account to run this workflow.")
-    run = start_run(workflow, payload.account_id)
+    run = start_run(workflow, requested, operator=operator)
     return {"run": run}
+
+
+@router.post("/api/workflows/{workflow_id}/schedule")
+async def schedule_workflow(workflow_id: str, request: Request, payload: WorkflowSchedulePayload):
+    operator = _operator(request)
+    workflow = next((item for item in _record(operator) if item["id"] == workflow_id), None)
+    if workflow is None:
+        raise HTTPException(404, "That workflow does not exist.")
+    if payload.repeat not in SCHEDULE_REPEATS:
+        raise HTTPException(400, "A schedule repeats once, daily, weekly or on workdays.")
+    if not 0 <= payload.hour <= 23 or not 0 <= payload.minute <= 59 \
+            or not 0 <= payload.weekday <= 6:
+        raise HTTPException(400, "That time is not on the clock.")
+    import account_manager as accounts_module
+
+    accounts = list(dict.fromkeys(str(item) for item in payload.account_ids if str(item).strip()))
+    if not accounts or any(item not in accounts_module.account_manager.accounts for item in accounts):
+        raise HTTPException(400, "Choose the signed-in accounts this schedule runs.")
+    if len(accounts) > MAX_ACCOUNTS_PER_RUN:
+        raise HTTPException(400, f"Schedule at most {MAX_ACCOUNTS_PER_RUN} accounts at a time.")
+
+    now = datetime.now()
+    if payload.repeat == "once":
+        try:
+            target_day = datetime.strptime(payload.date, "%Y-%m-%d") if payload.date else now
+        except ValueError as exc:
+            raise HTTPException(400, "Pick the date as YYYY-MM-DD.") from exc
+        if target_day.replace(hour=payload.hour, minute=payload.minute) < now.replace(second=0,
+                                                                                     microsecond=0):
+            raise HTTPException(400, "Pick a time still ahead of today.")
+    elif payload.repeat == "weekly":
+        target_day = now + timedelta(days=(payload.weekday - now.weekday()) % 7)
+    else:
+        target_day = now
+
+    execute_time = {"year": target_day.year, "month": target_day.month, "day": target_day.day,
+                    "hour": payload.hour, "minute": payload.minute, "second": 0}
+    if payload.repeat == "once":
+        cron = f"{payload.minute} {payload.hour} {target_day.day} {target_day.month} *"
+    elif payload.repeat == "daily":
+        cron = f"{payload.minute} {payload.hour} * * *"
+    elif payload.repeat == "weekly":
+        cron = f"{payload.minute} {payload.hour} * * {(payload.weekday + 1) % 7}"
+    else:
+        cron = f"{payload.minute} {payload.hour} * * 1-5"
+
+    from scheduler import task_scheduler
+
+    schedule_id = "wfsch_" + uuid4().hex[:10]
+    saved = task_scheduler.add_schedule(
+        schedule_id=schedule_id,
+        name=f"{workflow['name']} (workflow)",
+        cron=cron,
+        action="run_workflow",
+        target="workflow",
+        account_ids=accounts,
+        execute_time=execute_time,
+        repeat=payload.repeat,
+        workflow_id=workflow_id,
+        operator_id=operator,
+    )
+    if not saved:
+        raise HTTPException(400, "That schedule could not be saved.")
+    log_manager.add_log("Workflow", workflow_id,
+                        f"Scheduled {payload.repeat} at {payload.hour:02d}:{payload.minute:02d}", "info")
+    return {"success": True, "schedule": task_scheduler.get_schedule(schedule_id)}
 
 
 @router.post("/api/workflows/{workflow_id}/stop")

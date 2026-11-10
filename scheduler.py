@@ -6,6 +6,8 @@
 import asyncio
 import json
 import os
+import re
+import time
 from datetime import datetime
 from typing import Dict, List, Optional, Callable
 from croniter import croniter
@@ -25,6 +27,13 @@ SCHEDULE_FILE = os.path.join(ACCOUNTS_DIR, "schedules.json")
 SCRAPE_LIMIT_MAX = 1000
 JOIN_LIMIT = 10
 JOIN_MIN_DELAY = 35
+# Account-level refusals a retry cannot fix; recorded with a plain reason.
+_ACCOUNT_RESTRICTIONS = (
+    (errors.UserDeactivatedBanError, "account_banned"),
+    (errors.AuthKeyUnregisteredError, "session_revoked"),
+    (errors.FrozenMethodInvalidError, "account_frozen"),
+    (errors.ChannelsTooMuchError, "channel_limit_reached"),
+)
 
 
 def join_plan(schedule):
@@ -44,6 +53,13 @@ def join_plan(schedule):
 
 def schedule_requirements(schedule):
     action = schedule.get("action")
+    if action == "run_workflow":
+        if not re.fullmatch(r"wf_[A-Za-z0-9]{6,32}", str(schedule.get("workflow_id") or "")):
+            raise ValueError("invalid_workflow_schedule")
+        accounts = schedule.get("account_ids") or schedule.get("accounts") or []
+        if not isinstance(accounts, list) or not 1 <= len(accounts) <= 5:
+            raise ValueError("invalid_workflow_schedule")
+        return None, [], 0
     if action == "scrape_members":
         target = (schedule.get("scrape_target") or "").strip()
         limit = schedule.get("scrape_limit", 200)
@@ -168,6 +184,8 @@ class TaskScheduler:
                 "scrape_limit": kwargs.get("scrape_limit", 200),
                 "join_urls": kwargs.get("join_urls", []),
                 "join_delay": kwargs.get("join_delay", JOIN_MIN_DELAY),
+                "workflow_id": kwargs.get("workflow_id"),
+                "account_ids": accounts_list,
             })
         except ValueError:
             return False
@@ -219,6 +237,8 @@ class TaskScheduler:
             "filter_bots": kwargs.get("filter_bots", True),
             "join_urls": list(kwargs.get("join_urls") or []),
             "join_delay": kwargs.get("join_delay", JOIN_MIN_DELAY),
+            "workflow_id": kwargs.get("workflow_id"),
+            "operator_id": kwargs.get("operator_id"),
         }
 
         self._save_schedules()
@@ -338,14 +358,43 @@ class TaskScheduler:
                     return False
 
             try:
-                # 获取客户端
-                client = await account_manager.get_client(account_id)
-                if not client:
+                # 获取客户端（workflow runs fetch one client per account themselves）
+                client = None
+                if action != "run_workflow":
+                    client = await account_manager.get_client(account_id)
+
+                if action == "run_workflow":
+                    # ---- Action: run_workflow ----
+                    import workflows as workflows_module
+
+                    operator_id = schedule.get("operator_id") or ""
+                    workflow = next((item for item in workflows_module._record(operator_id)
+                                     if item["id"] == schedule.get("workflow_id")), None)
+                    if workflow is None:
+                        schedule["enabled"] = False
+                        schedule["last_error"] = "workflow_missing"
+                        self._save_schedules()
+                        return False
+                    workflow_accounts = [item for item in (schedule.get("accounts") or [])
+                                         if item in account_manager.accounts]
+                    try:
+                        run = workflows_module.start_run(
+                            workflow, workflow_accounts, operator=operator_id)
+                    except Exception:
+                        results.append({"account": "workflow", "success": False,
+                                        "error": "workflow_not_started"})
+                    else:
+                        results.append({"account": "workflow", "success": True,
+                                        "run_id": run["id"]})
+                        log_manager.add_log("定时任务", workflow["id"],
+                            f"Workflow run {run['id']} started for "
+                            f"{len(run['account_ids'])} account(s)", "info")
+                elif not client:
                     log_manager.add_log("定时任务", account_id, "获取客户端失败", "error")
                     return False
 
                 # ---- Action: scrape_members ----
-                if action == "scrape_members":
+                elif action == "scrape_members":
                     scrape_target = schedule.get("scrape_target", "")
                     scrape_limit = min(int(schedule.get("scrape_limit", 200) or 200), SCRAPE_LIMIT_MAX)
                     filter_bots = schedule.get("filter_bots", True)
@@ -383,8 +432,13 @@ class TaskScheduler:
                 elif action == "auto_join":
                     from telethon import functions as tl_functions
                     targets, join_delay = join_plan(schedule)
+                    raw_urls = [str(url).strip() for url in schedule.get("join_urls") or []]
+                    detail = []
                     joined = skipped = failed = 0
+                    stopped_reason = ""
                     for idx, (kind, value) in enumerate(targets):
+                        raw = raw_urls[idx] if idx < len(raw_urls) else value
+                        state, reason, stop = "joined", "", ""
                         try:
                             if kind == "invite":
                                 await client(tl_functions.messages.ImportChatInviteRequest(value))
@@ -394,19 +448,53 @@ class TaskScheduler:
                             joined += 1
                         except errors.UserAlreadyParticipantError:
                             skipped += 1
+                            state, reason = "skipped", "already_member"
                         except errors.FloodWaitError as exc:
                             failed += 1
-                            log_manager.add_log("定时任务", account_id,
-                                f"Auto join stopped by a Telegram cooldown of {exc.seconds}s", "warning")
-                            break
+                            state, reason = "failed", "telegram_cooldown"
+                            stopped_reason = "telegram_cooldown"
+                            stop = f"a Telegram cooldown of {exc.seconds}s"
+                        except (errors.UserDeactivatedBanError, errors.AuthKeyUnregisteredError,
+                                errors.FrozenMethodInvalidError, errors.ChannelsTooMuchError) as exc:
+                            # Retrying a banned, signed-out, frozen or over-limit
+                            # account cannot help; stop the run and name the account.
+                            failed += 1
+                            reason = type(exc).__name__
+                            state = "failed"
+                            for error_type, key in _ACCOUNT_RESTRICTIONS:
+                                if isinstance(exc, error_type):
+                                    reason = key
+                                    break
+                            stopped_reason = reason
+                            stop = {
+                                "account_banned": "this account is banned",
+                                "session_revoked": "this account was signed out of Telegram",
+                                "account_frozen": "this account is frozen",
+                                "channel_limit_reached": "this account reached Telegram's join limit",
+                            }.get(reason, "this account cannot join")
                         except Exception as exc:
                             failed += 1
+                            state, reason = "failed", type(exc).__name__
+                        detail.append({"target": raw, "state": state, "reason": reason,
+                                       "at": time.time()})
+                        if stop:
                             log_manager.add_log("定时任务", account_id,
-                                f"Auto join failed for one target: {type(exc).__name__}", "error")
+                                f"Auto join stopped: {stop}", "warning")
+                            break
                         if idx < len(targets) - 1:
                             await asyncio.sleep(join_delay)
+                    for idx in range(len(detail), len(targets)):
+                        value = targets[idx][1]
+                        detail.append({"target": raw_urls[idx] if idx < len(raw_urls) else value,
+                                       "state": "pending", "reason": "not_attempted", "at": None})
+                    schedule["last_join_result"] = {
+                        "account": account_id, "joined": joined, "skipped": skipped,
+                        "failed": failed, "stopped_reason": stopped_reason,
+                        "targets": detail, "finished_at": time.time(),
+                    }
                     results.append({"account": account_id, "success": failed == 0,
-                                    "joined": joined, "skipped": skipped, "failed": failed})
+                                    "joined": joined, "skipped": skipped, "failed": failed,
+                                    "stopped_reason": stopped_reason})
 
                 # ---- Action: add_members ----
                 elif action == "add_members":
