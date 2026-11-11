@@ -77,7 +77,7 @@ def test_a_single_scrape_node_is_a_valid_chain(client):
     listing = client.get("/api/workflows").json()
     assert listing["capacity"]["used"] == 1
     assert [item["type"] for item in listing["catalog"]] == [
-        "scrape", "wait", "join", "notify", "table_append"]
+        "scrape", "group_info", "table_read", "table_append", "join", "wait", "notify"]
 
 
 def test_a_chain_keeps_operator_order(client):
@@ -367,7 +367,7 @@ def test_the_table_node_without_an_operator_fails_closed():
                                   {"scrape": scrape, "table_append": workflows.HANDLERS["table_append"]},
                                   operator=""))
     assert run["status"] == "failed"
-    assert run["steps"][1]["detail"] == {"error": "step_failed"}
+    assert run["steps"][1]["detail"] == {"error": "operator_required"}
 
 
 # ---------------- scrape action ----------------
@@ -529,7 +529,7 @@ def test_templates_are_drafts_served_as_copies(client):
     assert response.status_code == 200
     templates = response.json()["templates"]
     assert [item["id"] for item in templates] == [
-        "member_table", "member_digest", "sweep_save_digest", "join_rollout"]
+        "member_table", "member_digest", "sweep_save_digest", "join_rollout", "table_rollout"]
 
     listing = client.get("/api/workflows").json()
     assert listing["capacity"]["accounts"] == 5

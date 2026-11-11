@@ -270,8 +270,26 @@ class JobStore:
                     payload["message"] = template_manager.render_template(
                         request.template_id, time=now.strftime("%H:%M"), date=now.strftime("%Y-%m-%d")) or request.message
                 message = payload["message"]
-                if len(message) > 4096 or (not message.strip() and any(t not in request.messages for t in targets)):
-                    raise HTTPException(400, "A valid message is required")
+                if request.media_ids:
+                    # Resolve attachment ids once, at submission, so the job payload
+                    # carries only stored paths that the worker can open directly.
+                    import bulk_media
+                    try:
+                        media = bulk_media.resolve(request.media_ids, operator)
+                    except HTTPException as error:
+                        if error.status_code == 404:
+                            raise HTTPException(400, "Unknown attachment; upload it again.") from None
+                        raise
+                    payload["media_paths"] = [item["path"] for item in media]
+                    payload["media_meta"] = [{"id": item["id"], "name": item["name"],
+                                              "kind": item["kind"], "mime": item["mime"]}
+                                             for item in media]
+                    if len(message) > 1024 or any(
+                            len(value) > 1024 for value in request.messages.values()):
+                        raise HTTPException(400, "A caption is limited to 1024 characters when a file is attached")
+                if len(message) > 4096 or (not message.strip() and not request.media_ids
+                                           and any(t not in request.messages for t in targets)):
+                    raise HTTPException(400, "A valid message or attachment is required")
             # Resolve only for new jobs and freeze the selected authorization.
             # Idempotent retries above must not reselect or renew authorization.
             policy_targets = [t for t in targets if re.fullmatch(r"(?:[a-z][a-z0-9_]{3,31}|[1-9][0-9]{0,19})", t)] if kind == "member_add" else targets
@@ -953,8 +971,14 @@ class JobWorker:
                     if getattr(result, "missing_invitees", None):
                         raise OutreachDenied("invitation_not_completed")
                     return result
+                text = config["messages"].get(target, config["message"])
+                attachments = config.get("media_paths") or []
+                if attachments:
+                    payload = attachments[0] if len(attachments) == 1 else attachments
+                    return await asyncio.wait_for(
+                        client.send_file(entity, payload, caption=text or None), TELEGRAM_SEND_TIMEOUT)
                 return await asyncio.wait_for(
-                    client.send_message(entity, config["messages"].get(target, config["message"])), TELEGRAM_SEND_TIMEOUT)
+                    client.send_message(entity, text), TELEGRAM_SEND_TIMEOUT)
 
             from outreach_client import ConsentTelegramClient
             await dispatch_outreach(action=job["kind"], subject=peer, account_id=account,

@@ -46,7 +46,7 @@ async def test_tgstat_keyword_lookups_overlap_instead_of_running_serially(monkey
         peak = max(peak, active)
         await asyncio.sleep(0.2)
         active -= 1
-        return [hit(f"{keyword}_channel")], True
+        return [hit(f"{keyword}_channel")], True, ""
 
     monkeypatch.setattr(ops, "_tgstat_search", search)
     request = ops.ChannelScrapeRequest(keywords=["alpha", "bravo", "charlie", "delta"])
@@ -70,7 +70,7 @@ async def test_tgstat_dedupes_and_stops_at_the_requested_limit(monkeypatch):
 
     async def search(session, token, keyword, peer_type, country_code, limit,
                      language="", proxy=None):
-        return [hit("shared_channel"), hit("shared_channel"), hit(f"{keyword}_channel")], True
+        return [hit("shared_channel"), hit("shared_channel"), hit(f"{keyword}_channel")], True, ""
 
     monkeypatch.setattr(ops, "_tgstat_search", search)
     request = ops.ChannelScrapeRequest(keywords=["alpha", "bravo"], limit=3)
@@ -126,7 +126,7 @@ async def test_keyword_budget_returns_partial_results_instead_of_failing(monkeyp
     async def search(session, token, keyword, peer_type, country_code, limit,
                      language="", proxy=None):
         await asyncio.sleep(0.05)
-        return [hit(f"{keyword}_channel")], True
+        return [hit(f"{keyword}_channel")], True, ""
 
     monkeypatch.setattr(ops, "_tgstat_search", search)
     request = ops.ChannelScrapeRequest(keywords=[f"kw{index}" for index in range(20)])

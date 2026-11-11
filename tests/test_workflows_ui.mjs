@@ -321,7 +321,7 @@ test('step summaries cover run states and counters', () => {
   const app = { ...methods(), ...state() };
   assert.equal(app.stepSummary({ status: 'pending', detail: {} }), 'waiting');
   assert.equal(app.stepSummary({ status: 'running', detail: {} }), 'running');
-  assert.equal(app.stepSummary({ status: 'failed', detail: { error: 'step_failed' } }), 'failed');
+  assert.equal(app.stepSummary({ status: 'failed', detail: { error: 'step_failed' } }), 'failed · the step did not finish');
   assert.equal(app.stepSummary({ status: 'stopped', detail: {} }), 'stopped');
   assert.match(app.stepSummary({ status: 'ok', detail: { stopped: 'telegram_cooldown', wait_seconds: 42 } }), /42/);
   assert.equal(app.stepSummary({ status: 'ok', detail: { scraped: 12 } }), '12 members read');
@@ -329,6 +329,39 @@ test('step summaries cover run states and counters', () => {
   assert.equal(app.stepSummary({ status: 'ok', detail: { waited_seconds: 30 } }), 'waited 30s');
   assert.match(app.stepSummary({ status: 'ok', detail: { characters: 18 } }), /18 chars/);
   assert.equal(app.stepSummary({ status: 'ok', detail: { appended: 3, skipped: 1 } }), '3 added · 1 already there');
+});
+
+test('failure summaries name the safe code without leaking an exception', () => {
+  const app = { ...methods(), ...state() };
+  assert.equal(app.stepSummary({ status: 'failed', detail: { error: 'account_not_connected' } }),
+    'failed · the account is not signed in');
+  assert.equal(app.stepSummary({ status: 'failed', detail: { error: 'operator_required' } }),
+    'failed · the operator session was missing');
+  assert.equal(app.stepSummary({ status: 'failed', detail: { error: 'timed_out' } }),
+    'failed · the step timed out');
+  assert.equal(app.stepSummary({ status: 'failed', detail: { error: 'network' } }),
+    'failed · the network dropped');
+  assert.equal(app.stepSummary({ status: 'failed', detail: { error: 'invalid_link' } }),
+    'failed · not a group link');
+  assert.equal(app.stepSummary({ status: 'failed', detail: { error: 'telegram_peer_flood' } }),
+    'failed · Telegram said peer flood');
+  assert.equal(app.failureLabel('telegram_username_not_occupied'), 'Telegram said username not occupied');
+});
+
+test('the completed catalog summarises inspect, table read and honest join counts', () => {
+  const app = { ...methods(), ...state() };
+  assert.equal(app.stepSummary({ status: 'ok', detail: { title: 'Harness group', members: 1500, kind: 'group' } }),
+    'Harness group · 1500 members');
+  assert.equal(app.stepSummary({ status: 'ok', detail: { title: 'Hidden', members: null, kind: 'channel' } }),
+    'Hidden · member count hidden');
+  assert.equal(app.stepSummary({ status: 'ok', detail: { rows: 12, values: 10 } }),
+    '10 values read from 12 rows');
+  assert.equal(app.stepSummary({ status: 'ok', detail: { joined: 1, skipped: 2, failed: 1, reasons: { invalid_link: 1 } } }),
+    '1 joined · 2 already in · 1 failed (1 not a group link)');
+  assert.equal(app.stepSummary({ status: 'ok', detail: { joined: 0, skipped: 0, failed: 0, stopped: 'table_empty' } }),
+    'the table had no links');
+  assert.equal(app.stepSummary({ status: 'ok', detail: { scraped: 2, limited: true } }),
+    '2 recent posters read · partial results');
 });
 
 test('node summaries reflect the configured values', () => {

@@ -633,6 +633,25 @@
         .record-body > .proxy-item, .record-body > .contact-row { margin-bottom: 0; padding: 0; border: 0; background: transparent; }
         .record-more { justify-self: start; margin-top: 2px; }
         .bounded-list { display: contents; }
+
+        /* ---------- BulkSend attachments ---------- */
+        .attach-zone { margin-top: 10px; padding: 12px; border: 1px dashed var(--border); border-radius: 10px; background: var(--canvas-soft); transition: border-color 0.15s ease, background 0.15s ease; }
+        .attach-zone.active { border-color: var(--accent); background: var(--accent-soft); }
+        .attach-grid { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+        .attach-chip { position: relative; display: flex; align-items: center; gap: 8px; max-width: 240px; padding: 6px 10px 6px 6px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-2); }
+        .attach-chip img, .attach-chip video { width: 44px; height: 44px; object-fit: cover; border-radius: 6px; background: #000; flex: 0 0 auto; }
+        .attach-icon { display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; border-radius: 6px; background: rgba(255,255,255,0.06); font-size: 19px; flex: 0 0 auto; }
+        .attach-name { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .attach-remove { flex: 0 0 auto; width: 22px; height: 22px; border-radius: 50%; border: 0; background: rgba(255,255,255,0.12); color: var(--text-secondary); cursor: pointer; line-height: 1; }
+        .attach-remove:hover { background: var(--danger); color: #fff; }
+        .send-preview { margin: 16px 0; padding: 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--canvas-soft); }
+        .send-preview-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 10px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-dim); }
+        .send-preview-head span { text-transform: none; letter-spacing: 0; font-size: 11.5px; color: var(--text-dim); }
+        .send-preview-bubble { max-width: 420px; padding: 8px 10px; border-radius: 12px 12px 12px 3px; background: var(--accent-soft); border: 1px solid rgba(16, 163, 127, 0.35); }
+        .send-preview-media { display: grid; gap: 6px; margin-bottom: 6px; }
+        .send-preview-media img, .send-preview-media video { width: 100%; max-height: 260px; object-fit: contain; border-radius: 8px; background: #000; }
+        .send-preview-doc { padding: 10px; border-radius: 8px; background: rgba(0,0,0,0.25); font-size: 12.5px; }
+        .send-preview-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.45; }
         .row-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; align-items: stretch; min-width: 208px; max-width: 232px; margin-left: auto; }
         .row-actions > * { width: 100%; box-sizing: border-box; }
         .row-actions > select, .row-actions .row-action-wide { grid-column: 1 / -1; }
@@ -4265,6 +4284,28 @@
                     <div class="form-group">
                         <label>Message</label>
                         <textarea class="form-control" v-model="bulksend.message" rows="4" placeholder="Type your message here..."></textarea>
+                        <div class="attach-zone" :class="{ active: bulksend.dragActive }"
+                             @dragover.prevent="bulksend.dragActive = true"
+                             @dragleave.prevent="bulksend.dragActive = false"
+                             @drop.prevent="bulkMediaDrop($event)">
+                            <input id="bulksend-media-input" type="file" multiple hidden
+                                   accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/quicktime,video/webm,audio/mpeg,audio/ogg,audio/mp4,audio/wav,application/pdf,application/zip,text/plain,.doc,.docx,.xls,.xlsx,.ppt,.pptx"
+                                   :disabled="bulksend.uploading || bulksend.media.length >= 10"
+                                   @change="uploadBulkMedia($event)">
+                            <label for="bulksend-media-input" class="btn btn-sm btn-outline" style="cursor: pointer;">
+                                {{ bulksend.uploading ? 'Uploading…' : 'Attach photos, videos or files' }}
+                            </label>
+                            <small>Drop files here or choose them. Up to 10 files, 100 MB each. A caption under an attachment is limited to 1024 characters.</small>
+                            <div v-if="bulksend.media.length" class="attach-grid">
+                                <div v-for="item in bulksend.media" :key="item.id" class="attach-chip">
+                                    <img v-if="item.kind === 'image'" :src="item.url" :alt="item.name">
+                                    <video v-else-if="item.kind === 'video'" :src="item.url" muted preload="metadata"></video>
+                                    <span v-else class="attach-icon">{{ item.kind === 'audio' ? '♪' : '📄' }}</span>
+                                    <span class="attach-name" :title="item.name">{{ item.name }}</span>
+                                    <button class="attach-remove" type="button" @click="removeBulkMedia(item.id)" :aria-label="'Remove ' + item.name">×</button>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                     <div class="form-group">
                         <label>Consenting recipients (usernames or IDs, one per line)</label>
@@ -4321,7 +4362,24 @@
                         </div>
 
                     </div>
-                    <button id="gate-bulksend" class="btn btn-primary" @click="runBulkSend" :disabled="bulksend.loading || (bulksend.rotationMode === 'single' ? !bulksend.accountId : !bulksend.accountIds.length) || (!bulksend.message && !Object.keys(bulksend.messages).length) || !bulksend.targets">
+                    <div v-if="bulkPreviewVisible" class="send-preview">
+                        <div class="send-preview-head">
+                            <strong>Full preview</strong>
+                            <span>message and attachments as one</span>
+                        </div>
+                        <div class="send-preview-bubble">
+                            <div v-if="bulksend.media.length" class="send-preview-media">
+                                <template v-for="item in bulksend.media" :key="'preview-' + item.id">
+                                    <img v-if="item.kind === 'image'" :src="item.url" :alt="item.name">
+                                    <video v-else-if="item.kind === 'video'" :src="item.url" controls></video>
+                                    <audio v-else-if="item.kind === 'audio'" :src="item.url" controls></audio>
+                                    <div v-else class="send-preview-doc">📄 {{ item.name }}</div>
+                                </template>
+                            </div>
+                            <div v-if="previewText" class="send-preview-text">{{ previewText }}</div>
+                        </div>
+                    </div>
+                    <button id="gate-bulksend" class="btn btn-primary" @click="runBulkSend" :disabled="bulksend.loading || bulksend.uploading || (bulksend.rotationMode === 'single' ? !bulksend.accountId : !bulksend.accountIds.length) || (!bulksend.message && !Object.keys(bulksend.messages).length && !bulksend.media.length) || !bulksend.targets">
                         {{ bulksend.loading ? 'Submitting...' : 'Start BulkSend' }}
                     </button>
 
@@ -6233,6 +6291,9 @@
                         detectedSelected: [],
                         delay: 45,
                         loading: false,
+                        media: [],
+                        uploading: false,
+                        dragActive: false,
                         resultMsg: '',
                         results: [],
                     },
@@ -6276,6 +6337,15 @@
                     const active = this.workflows.active
                     if (!active) return null
                     return active.nodes.find(node => node.id === this.workflows.selectedId) || null
+                },
+                previewText() {
+                    const typed = (this.bulksend.message || '').trim()
+                    if (typed) return typed
+                    const first = Object.values(this.bulksend.messages || {}).find(value => value && value.trim())
+                    return (first || '').trim()
+                },
+                bulkPreviewVisible() {
+                    return Boolean(this.previewText || this.bulksend.media.length)
                 },
                 workflowLinks() {
                     const active = this.workflows.active
@@ -6340,7 +6410,7 @@
                 },
                 workflowNodeColumns() {
                     const node = this.selectedNode
-                    if (!node || node.type !== 'table_append') return []
+                    if (!node || !['table_append', 'table_read'].includes(node.type)) return []
                     const tableId = node.config && node.config.table_id
                     const detail = tableId ? this.workflows.tableDetails[tableId] : null
                     if (!detail || !Array.isArray(detail.columns)) return []
@@ -6424,6 +6494,7 @@
                     const d = this.channelScraper.diagnostics
                     if (!d) return ''
                     const label = d.mode === 'account' ? 'Telegram account'
+                        : d.fallback_from === 'tgstat' ? 'Public web sources (TGStat unavailable)'
                         : d.mode === 'tgstat' ? 'TGStat directory' : 'Public web sources'
                     const country = d.country && d.country.input
                         ? `${d.country.input}${d.country.applied && d.country.applied !== 'none' ? ' (' + d.country.applied + ')' : ' (not applied)'}`
@@ -6443,8 +6514,9 @@
                     return Object.entries(sources)
                         .filter(([, v]) => v && (v.items !== undefined || v.ok !== undefined))
                         .map(([name, v]) => {
-                            if (v.items !== undefined) return `${name}: ${v.items} candidate(s)`
-                            return `${name}: ${v.ok || 0} ok / ${v.requests || 0} request(s)`
+                            const error = v.error ? ` (${v.error})` : ''
+                            if (v.items !== undefined) return `${name}: ${v.items} candidate(s)${error}`
+                            return `${name}: ${v.ok || 0} ok / ${v.requests || 0} request(s)${error}`
                         })
                         .join(' · ')
                 },
@@ -6738,10 +6810,13 @@
                         this.channelScraper.diagnostics = res.data.diagnostics || null;
                         const total = res.data.total || 0;
                         const source = keywords.length === 1 ? '1 keyword' : `${keywords.length} keywords`;
-                        const reason = res.data.diagnostics && res.data.diagnostics.reason;
-                        this.channelScraper.summary = total
+                        const diagnostics = res.data.diagnostics || {};
+                        const reason = diagnostics.reason;
+                        const notice = diagnostics.notice;
+                        this.channelScraper.summary = (total
                             ? `Found ${total} public channel${total === 1 ? '' : 's'}/group${total === 1 ? '' : 's'} from ${source}.`
-                            : `Found 0 public channels/groups from ${source}.${reason ? ' ' + reason : ''}`;
+                            : `Found 0 public channels/groups from ${source}.${reason ? ' ' + reason : ''}`)
+                            + (notice ? ' ' + notice : '');
                     } catch (e) {
                         const message = e.code === 'ECONNABORTED'
                             ? 'Search timed out. Try fewer keywords or a narrower country filter.'
@@ -6780,6 +6855,46 @@
                         this.showToast(e.message, true);
                     } finally {
                         event.target.value = '';
+                    }
+                },
+                // ---- BulkSend attachments ----
+                uploadBulkMedia(event) {
+                    const files = Array.from(event.target.files || []);
+                    event.target.value = '';
+                    this.pushBulkMedia(files);
+                },
+                bulkMediaDrop(event) {
+                    this.bulksend.dragActive = false;
+                    this.pushBulkMedia(Array.from((event.dataTransfer && event.dataTransfer.files) || []));
+                },
+                async pushBulkMedia(files) {
+                    if (!files.length || this.bulksend.uploading) return;
+                    const room = 10 - this.bulksend.media.length;
+                    if (room <= 0) {
+                        this.showToast('At most 10 attachments per send.', true);
+                        return;
+                    }
+                    this.bulksend.uploading = true;
+                    try {
+                        for (const file of files.slice(0, room)) {
+                            const form = new FormData();
+                            form.append('file', file);
+                            const res = await _api.post('/api/bulk/media', form);
+                            this.bulksend.media.push(res.data.media);
+                        }
+                        if (files.length > room) this.showToast('Only the first 10 attachments were added.', true);
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Upload failed. Try a smaller or different file.', true);
+                    } finally {
+                        this.bulksend.uploading = false;
+                    }
+                },
+                async removeBulkMedia(id) {
+                    this.bulksend.media = this.bulksend.media.filter(item => item.id !== id);
+                    try {
+                        await _api.delete(`/api/bulk/media/${id}`);
+                    } catch (e) {
+                        // Already removed server-side; the chip is gone either way.
                     }
                 },
                 // ---- Automation ----
@@ -7242,6 +7357,14 @@
                             (this.bulksend.perAccountLimit > 0 && targets.length > accountIds.length * this.bulksend.perAccountLimit)) {
                             throw new Error('Select accounts and set the per-account cap to 0 (unlimited) or enough capacity for this run.');
                         }
+                        const mediaIds = this.bulksend.media.map(item => item.id);
+                        if (!mediaIds.length && !this.bulksend.message.trim() && !Object.keys(this.bulksend.messages).length) {
+                            throw new Error('Write a message, or attach a file to send with an empty caption.');
+                        }
+                        if (mediaIds.length && (this.bulksend.message.length > 1024 ||
+                            Object.values(this.bulksend.messages).some(value => value.length > 1024))) {
+                            throw new Error('A caption under an attachment is limited to 1024 characters.');
+                        }
                         this.bulksend.requestId ||= crypto.randomUUID();
                         const res = await _api.post('/api/outreach/jobs/personal', {
                             request_id: this.bulksend.requestId,
@@ -7254,6 +7377,7 @@
                             filter_bots: this.bulksend.filterBots,
                             messages: Object.fromEntries(targets.filter(t => Object.hasOwn(this.bulksend.messages, t)).map(t => [t, this.bulksend.messages[t]])),
                             message: this.bulksend.message,
+                            media_ids: mediaIds,
                             targets: targets,
                             delay: this.bulksend.delay,
                         });
@@ -11229,6 +11353,8 @@
                     const entry = this.workflows.catalog.find(item => item.type === type)
                     if (entry) return entry.label
                     return type === 'scrape' ? 'Scrape members'
+                        : type === 'group_info' ? 'Inspect a group'
+                        : type === 'table_read' ? 'Read a table'
                         : type === 'wait' ? 'Wait'
                         : type === 'join' ? 'Join groups'
                         : type === 'notify' ? 'Note yourself'
@@ -11236,37 +11362,61 @@
                 },
                 defaultNodeConfig(type) {
                     if (type === 'scrape') return { target: '', limit: 200, filter_bots: true }
+                    if (type === 'group_info') return { target: '' }
+                    if (type === 'table_read') return { table_id: '', column_id: '' }
                     if (type === 'wait') return { seconds: 30 }
-                    if (type === 'join') return { urls: [], delay: 35 }
+                    if (type === 'join') return { urls: [], delay: 35, from_table: false }
                     if (type === 'table_append') return { table_id: '', column_id: '' }
                     return { text: '' }
                 },
                 nodeSummary(node) {
                     const config = node.config || {}
                     if (node.type === 'scrape') return `${config.target || 'Pick a group'} · up to ${config.limit || 200}`
+                    if (node.type === 'group_info') return `${config.target || 'Pick a group'} · inspect only`
                     if (node.type === 'wait') return `Pause ${config.seconds || 0}s`
-                    if (node.type === 'join') return `${(config.urls || []).length} link${(config.urls || []).length === 1 ? '' : 's'} · ${config.delay || 35}s apart`
+                    if (node.type === 'join') return `${config.from_table ? 'Links from the table' : (config.urls || []).length + ' link' + ((config.urls || []).length === 1 ? '' : 's')} · ${config.delay || 35}s apart`
                     if (node.type === 'notify') return String(config.text || 'Write a note').slice(0, 48)
-                    if (node.type === 'table_append') {
+                    if (node.type === 'table_read' || node.type === 'table_append') {
                         const table = this.workflows.tableList.find(item => item.id === config.table_id)
                         const detail = this.workflows.tableDetails[config.table_id]
                         const column = detail ? (detail.columns || []).find(item => item.id === config.column_id) : null
                         if (!table) return 'Pick a table'
-                        return `${table.name}${column ? ' · ' + column.name : ''}`
+                        return `${config.from_table ? 'Links from ' : ''}${table.name}${column ? ' · ' + column.name : ''}`
                     }
                     return ''
+                },
+                failureLabel(code) {
+                    if (!code) return ''
+                    if (code === 'account_not_connected') return 'the account is not signed in'
+                    if (code === 'operator_required') return 'the operator session was missing'
+                    if (code === 'timed_out') return 'the step timed out'
+                    if (code === 'network') return 'the network dropped'
+                    if (code === 'invalid_link') return 'not a group link'
+                    if (String(code).startsWith('telegram_')) {
+                        return 'Telegram said ' + String(code).slice(9).replace(/_/g, ' ')
+                    }
+                    return 'the step did not finish'
                 },
                 stepSummary(step) {
                     const detail = step.detail || {}
                     if (step.status === 'pending') return 'waiting'
                     if (step.status === 'running') return 'running'
                     if (step.status === 'stopped') return 'stopped'
-                    if (detail.error) return 'failed'
+                    if (detail.error) return 'failed · ' + this.failureLabel(detail.error)
                     if (detail.stopped === 'telegram_cooldown') return `Telegram cooldown · wait ${detail.wait_seconds || '?'}s`
+                    if (detail.stopped === 'table_empty') return 'the table had no links'
                     if ('scraped' in detail) return detail.limited
                         ? `${detail.scraped} recent posters read · partial results`
                         : `${detail.scraped} members read`
-                    if ('joined' in detail) return `${detail.joined} joined · ${detail.skipped || 0} already in · ${detail.failed || 0} failed`
+                    if ('title' in detail) return `${detail.title} · ${detail.members == null ? 'member count hidden' : detail.members + ' members'}`
+                    if ('values' in detail) return `${detail.values} values read from ${detail.rows} rows`
+                    if ('joined' in detail) {
+                        const reasons = Object.entries(detail.reasons || {})
+                            .map(([code, count]) => `${count} ${this.failureLabel(code)}`)
+                            .join(', ')
+                        const base = `${detail.joined} joined · ${detail.skipped || 0} already in · ${detail.failed || 0} failed`
+                        return reasons ? `${base} (${reasons})` : base
+                    }
                     if ('waited_seconds' in detail) return `waited ${detail.waited_seconds}s`
                     if ('characters' in detail) return `note sent (${detail.characters} chars)`
                     if ('appended' in detail) return `${detail.appended} added · ${detail.skipped || 0} already there`
@@ -11526,7 +11676,7 @@
                     active.edges = active.edges.filter(item => !(item.from === edge.from && item.to === edge.to))
                 },
                 setNodeUrls(node, text) {
-                    node.config.urls = String(text || '').split('\n').map(line => line.trim()).filter(Boolean).slice(0, 10)
+                    node.config.urls = String(text || '').split('\n').map(line => line.trim()).filter(Boolean).slice(0, 10000)
                 },
                 workflowPayload() {
                     const active = this.workflows.active
