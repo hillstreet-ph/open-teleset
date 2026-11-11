@@ -1,0 +1,27 @@
+name: Debug test output
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Run mjs tests and capture output
+        run: |
+          node --test tests/*.mjs > test-output.txt 2>&1 || true
+          tail -c 60000 test-output.txt > test-output-trimmed.txt || true
+      - name: Commit output
+        run: |
+          git config user.name "ci-debug"
+          git config user.email "ci-debug@users.noreply.github.com"
+          git add test-output-trimmed.txt
+          git commit -m "debug: node test output" || echo "nothing to commit"
+          git push
