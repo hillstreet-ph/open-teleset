@@ -164,17 +164,17 @@ async def test_public_channel_scraper_enriches_dedupes_filters_limits(monkeypatc
     async def no_token(*_a, **_k):
         return ""
     monkeypatch.setattr(ops, "get_setting", no_token)
-    async def fake_ddg(session, keyword, want):
+    async def fake_source(session, keyword, want, proxy=None):
         return ["phcasino", "usadeals", "phgroup", "phcasino"]  # includes a duplicate
     previews = {
         "phcasino": {"username": "phcasino", "title": "PH Casino", "type": "channel", "members": 1200},
         "usadeals": {"username": "usadeals", "title": "USA Deals", "type": "channel", "members": 5},
         "phgroup": {"username": "phgroup", "title": "PH Group", "type": "group", "members": 30},
     }
-    async def fake_preview(session, username):
+    async def fake_preview(session, username, proxy=None):
         info = previews.get(username)
         return dict(info) if info else None
-    monkeypatch.setattr(ops, "_ddg_usernames", fake_ddg)
+    monkeypatch.setattr(ops, "_SEARCH_SOURCES", (("fake", fake_source),))
     monkeypatch.setattr(ops, "_tme_preview", fake_preview)
 
     country = await ops.scrape_channels(ops.ChannelScrapeRequest(keywords=["casino"], country="ph"))
@@ -207,7 +207,8 @@ def test_parse_tgstat_item_variants():
 async def test_tgstat_scraper_used_when_token_set(monkeypatch):
     monkeypatch.setenv("TGSTAT_TOKEN", "secret-token")
     calls = []
-    async def fake_search(session, token, keyword, peer_type, country_code, limit):
+    async def fake_search(session, token, keyword, peer_type, country_code, limit,
+                          language="", proxy=None):
         calls.append((token, keyword, peer_type, country_code))
         return [
             {"id": "phcasino", "title": "PH Casino", "username": "phcasino",
@@ -216,16 +217,18 @@ async def test_tgstat_scraper_used_when_token_set(monkeypatch):
             {"id": "usadeals", "title": "USA Deals", "username": "usadeals",
              "url": "https://t.me/usadeals", "type": "channel", "members": 5,
              "verified": False, "about": "deals in the usa"},
-        ]
+        ], True
     monkeypatch.setattr(ops, "_tgstat_search", fake_search)
     res = await ops.scrape_channels(ops.ChannelScrapeRequest(keywords=["casino"], country="philippines"))
     assert res["mode"] == "tgstat"
-    # Free-text country narrows on title/description/username; only phcasino matches.
-    assert [r["username"] for r in res["results"]] == ["phcasino"]
-    assert "about" not in res["results"][0] and calls[0][0] == "secret-token" and calls[0][3] == ""
-    # A 2-letter country code is passed to TGStat server-side instead of text-filtering.
+    # A known country is sent to TGStat as an ISO filter, so the directory's own
+    # filtering is trusted and the title text is no longer re-filtered locally.
+    assert {r["username"] for r in res["results"]} == {"phcasino", "usadeals"}
+    assert "about" not in res["results"][0] and calls[0][0] == "secret-token" and calls[0][3] == "PH"
+    # A 2-letter country code resolves to the same ISO filter.
     await ops.scrape_channels(ops.ChannelScrapeRequest(keywords=["casino"], country="ph"))
-    assert calls[-1][3] == "ph"
+    assert calls[-1][3] == "PH"
+    assert res["diagnostics"]["country"]["applied"] == "filter"
 
 
 def allow_second_account(policy):

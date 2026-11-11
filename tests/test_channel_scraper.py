@@ -39,13 +39,14 @@ async def test_tgstat_keyword_lookups_overlap_instead_of_running_serially(monkey
     active = 0
     peak = 0
 
-    async def search(session, token, keyword, peer_type, country_code, limit):
+    async def search(session, token, keyword, peer_type, country_code, limit,
+                     language="", proxy=None):
         nonlocal active, peak
         active += 1
         peak = max(peak, active)
         await asyncio.sleep(0.2)
         active -= 1
-        return [hit(f"{keyword}_channel")]
+        return [hit(f"{keyword}_channel")], True
 
     monkeypatch.setattr(ops, "_tgstat_search", search)
     request = ops.ChannelScrapeRequest(keywords=["alpha", "bravo", "charlie", "delta"])
@@ -67,8 +68,9 @@ async def test_tgstat_dedupes_and_stops_at_the_requested_limit(monkeypatch):
     monkeypatch.setattr(ops.aiohttp, "ClientSession", FakeSession)
     monkeypatch.setattr(ops.log_manager, "add_log", lambda *args, **kwargs: None)
 
-    async def search(session, token, keyword, peer_type, country_code, limit):
-        return [hit("shared_channel"), hit("shared_channel"), hit(f"{keyword}_channel")]
+    async def search(session, token, keyword, peer_type, country_code, limit,
+                     language="", proxy=None):
+        return [hit("shared_channel"), hit("shared_channel"), hit(f"{keyword}_channel")], True
 
     monkeypatch.setattr(ops, "_tgstat_search", search)
     request = ops.ChannelScrapeRequest(keywords=["alpha", "bravo"], limit=3)
@@ -86,14 +88,14 @@ async def test_web_fallback_drops_previews_that_miss_the_budget(monkeypatch):
     monkeypatch.setattr(ops.log_manager, "add_log", lambda *args, **kwargs: None)
     monkeypatch.setattr(ops, "_PUBLIC_PREVIEW_BUDGET", 0.05)
 
-    async def discover(session, keyword, want):
+    async def discover(session, keyword, want, proxy=None):
         return ["slow_channel", "quick_channel"]
 
-    async def preview(session, username):
+    async def preview(session, username, proxy=None):
         await asyncio.sleep(0.2 if username == "slow_channel" else 0)
         return hit(username)
 
-    monkeypatch.setattr(ops, "_ddg_usernames", discover)
+    monkeypatch.setattr(ops, "_SEARCH_SOURCES", (("fake", discover),))
     monkeypatch.setattr(ops, "_tme_preview", preview)
     request = ops.ChannelScrapeRequest(keywords=["alpha"])
 
@@ -121,9 +123,10 @@ async def test_keyword_budget_returns_partial_results_instead_of_failing(monkeyp
     monkeypatch.setattr(ops.log_manager, "add_log", lambda *args, **kwargs: None)
     monkeypatch.setattr(ops, "KEYWORD_SEARCH_BUDGET", 0.02)
 
-    async def search(session, token, keyword, peer_type, country_code, limit):
+    async def search(session, token, keyword, peer_type, country_code, limit,
+                     language="", proxy=None):
         await asyncio.sleep(0.05)
-        return [hit(f"{keyword}_channel")]
+        return [hit(f"{keyword}_channel")], True
 
     monkeypatch.setattr(ops, "_tgstat_search", search)
     request = ops.ChannelScrapeRequest(keywords=[f"kw{index}" for index in range(20)])

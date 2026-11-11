@@ -8,11 +8,15 @@ FastAPI APIRouter providing REST endpoints for:
 3. POST /api/bulk/send-personal   — send personal messages to many users
 """
 import asyncio
+import base64
+import json
+import os
 import re as _re
 import time
 from datetime import datetime, timedelta, timezone
 from html import unescape
 from typing import List, Optional, Literal
+from urllib.parse import quote, unquote, urlsplit
 
 import aiohttp
 from fastapi import APIRouter, HTTPException, Request
@@ -93,9 +97,38 @@ class ScrapeRequest(BaseModel):
 class ChannelScrapeRequest(BaseModel):
     account_id: str = ""   # optional: empty = account-free public discovery
     keywords: List[str] = Field(default_factory=list)      # directory search terms
-    country: str = Field(default="", max_length=64)        # optional title/username filter
+    country: str = Field(default="", max_length=64)        # name or ISO code; server maps it
+    language: str = Field(default="", max_length=32)       # optional language hint
     group_type: Literal["all", "group", "channel"] = "all"
     limit: int = Field(default=300, ge=1, le=10000, strict=True)  # result ceiling across all keywords
+    proxy_mode: Literal["none", "pool", "custom"] = "none"
+    proxy_urls: List[str] = Field(default_factory=list)
+
+    def apply_proxy_config(self):
+        """Validate and clean request-scoped proxies.
+
+        Called by the route, not by a pydantic validator: a validation error
+        returns 422 with the whole request echoed back, which would copy a
+        proxy password into the response body.
+        """
+        if self.proxy_mode != "custom":
+            self.proxy_urls = []
+            return
+        if not self.proxy_urls:
+            raise ValueError(
+                "Add at least one proxy URL for Custom proxies, or choose another proxy mode."
+            )
+        if len(self.proxy_urls) > 50:
+            raise ValueError("Custom proxies accept at most 50 URLs.")
+        validated = []
+        for index, raw in enumerate(self.proxy_urls):
+            cleaned_url = _clean_proxy_url(raw)
+            if not cleaned_url:
+                raise ValueError(
+                    f"Proxy URL #{index + 1} must be an http:// or https:// URL with a host."
+                )
+            validated.append(cleaned_url)
+        self.proxy_urls = list(dict.fromkeys(validated))
 
     @model_validator(mode="after")
     def _normalise(self):
@@ -116,6 +149,7 @@ class ChannelScrapeRequest(BaseModel):
             raise ValueError("Provide at least one search keyword")
         self.keywords = cleaned
         self.country = self.country.strip()
+        self.language = self.language.strip()
         return self
 
 
@@ -537,10 +571,226 @@ async def list_account_groups(request: GroupListRequest):
 
 # Public t.me/web discovery (used when no Telegram account is selected).
 _TME_USERNAME_RE = _re.compile(r"(?:https?://)?t\.me/(?:s/)?([A-Za-z]\w{3,31})\b", _re.I)
+_BING_WRAPPED_RE = _re.compile(r"[?&]u=a1([A-Za-z0-9_-]{8,})")
 _OG_TITLE_RE = _re.compile(r'<meta property="og:title" content="([^"]*)"', _re.I)
 _EXTRA_RE = _re.compile(r'<div class="tgme_page_extra">([^<]*)</div>', _re.I)
 _BROWSER_HEADERS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"}
+
+# Country names an operator is likely to type, mapped to ISO 3166-1 alpha-2.
+# The extra tokens are used only when a source cannot filter by country itself.
+_COUNTRY_NAMES = {
+    "PH": ("philippines", "pilipinas", "filipinas", "pinoy"),
+    "ID": ("indonesia", "indonesian"),
+    "IN": ("india", "indian"),
+    "MY": ("malaysia", "malaysian"),
+    "VN": ("vietnam", "vietnamese"),
+    "TH": ("thailand", "thai"),
+    "SG": ("singapore", "singaporean"),
+    "KH": ("cambodia", "cambodian"),
+    "BD": ("bangladesh", "bangladeshi"),
+    "PK": ("pakistan", "pakistani"),
+    "LK": ("sri lanka", "srilanka"),
+    "NP": ("nepal", "nepali"),
+    "AE": ("uae", "united arab emirates", "dubai"),
+    "SA": ("saudi arabia", "saudi"),
+    "TR": ("turkey", "turkish", "turkiye"),
+    "RU": ("russia", "russian"),
+    "UA": ("ukraine", "ukrainian"),
+    "NG": ("nigeria", "nigerian"),
+    "KE": ("kenya", "kenyan"),
+    "GH": ("ghana", "ghanaian"),
+    "ZA": ("south africa", "south african"),
+    "EG": ("egypt", "egyptian"),
+    "MA": ("morocco", "moroccan"),
+    "BR": ("brazil", "brazilian", "brasil"),
+    "MX": ("mexico", "mexican"),
+    "AR": ("argentina", "argentinian"),
+    "CO": ("colombia", "colombian"),
+    "CL": ("chile", "chilean"),
+    "PE": ("peru", "peruvian"),
+    "VE": ("venezuela", "venezuelan"),
+    "DO": ("dominican republic", "dominican"),
+    "US": ("united states", "usa", "american"),
+    "CA": ("canada", "canadian"),
+    "GB": ("united kingdom", "uk", "great britain", "british", "england"),
+    "DE": ("germany", "german"),
+    "FR": ("france", "french"),
+    "ES": ("spain", "spanish"),
+    "IT": ("italy", "italian"),
+    "PT": ("portugal", "portuguese"),
+    "PL": ("poland", "polish"),
+    "NL": ("netherlands", "dutch"),
+    "RO": ("romania", "romanian"),
+    "AU": ("australia", "australian"),
+    "JP": ("japan", "japanese"),
+    "KR": ("south korea", "korea", "korean"),
+    "CN": ("china", "chinese"),
+    "TW": ("taiwan", "taiwanese"),
+    "HK": ("hong kong", "hongkong"),
+    "IR": ("iran", "iranian", "persian"),
+    "IQ": ("iraq", "iraqi"),
+    "ET": ("ethiopia", "ethiopian"),
+    "TZ": ("tanzania", "tanzanian"),
+    "UG": ("uganda", "ugandan"),
+    "CM": ("cameroon", "cameroonian"),
+}
+
+# Language hints mapped to ISO 639-1 codes for the directory filter.
+_LANGUAGE_NAMES = {
+    "tagalog": "tl", "filipino": "tl", "pilipino": "tl",
+    "english": "en", "spanish": "es", "indonesian": "id", "malay": "ms",
+    "thai": "th", "vietnamese": "vi", "hindi": "hi", "bengali": "bn",
+    "urdu": "ur", "arabic": "ar", "russian": "ru", "portuguese": "pt",
+    "french": "fr", "german": "de", "italian": "it", "turkish": "tr",
+    "korean": "ko", "japanese": "ja", "chinese": "zh", "nepali": "ne",
+    "sinhala": "si", "khmer": "km", "burmese": "my", "persian": "fa",
+    "farsi": "fa", "swahili": "sw", "hausa": "ha", "yoruba": "yo",
+    "somali": "so", "amharic": "am", "ukrainian": "uk", "polish": "pl",
+    "dutch": "nl", "romanian": "ro", "greek": "el", "hebrew": "he",
+}
+
+
+def resolve_country(value: str):
+    """Return (ISO alpha-2 code or "", lowercase text tokens for fallback filtering)."""
+    raw = (value or "").strip()
+    if not raw:
+        return "", []
+    compact = _re.sub(r"[\s._-]+", " ", raw.lower()).strip()
+    if len(compact) == 2 and compact.isalpha():
+        if compact.upper() in _COUNTRY_NAMES:
+            return compact.upper(), list(_COUNTRY_NAMES[compact.upper()])
+    for iso, names in _COUNTRY_NAMES.items():
+        if compact in names:
+            return iso, list(names)
+    return "", ([compact] if len(compact) >= 3 else [])
+
+
+def resolve_language(value: str) -> str:
+    """Return an ISO 639-1 code, or "" when the hint is unknown."""
+    raw = (value or "").strip().lower()
+    if not raw:
+        return ""
+    if len(raw) == 2 and raw.isalpha():
+        return raw
+    return _LANGUAGE_NAMES.get(raw, "")
+
+
+def country_matches(haystack: str, tokens, iso_code: str = "") -> bool:
+    """Text filter used where no native country field exists.
+
+    Full name aliases match as substrings; a two-letter ISO code only matches as
+    a standalone word so `PH` finds "PH Casino" but not "usadeals".
+    """
+    if any(token in haystack for token in tokens):
+        return True
+    if not iso_code:
+        return False
+    pattern = rf"(?<![a-z0-9]){_re.escape(iso_code.lower())}(?![a-z0-9])"
+    return _re.search(pattern, haystack) is not None
+
+
+def _clean_proxy_url(value) -> Optional[str]:
+    """Validate an HTTP(S) proxy URL without ever echoing its credentials."""
+    if not isinstance(value, str):
+        return None
+    raw = value.strip()
+    if not raw or len(raw) > 2048 or any(ch.isspace() for ch in raw):
+        return None
+    try:
+        parts = urlsplit(raw)
+        port = parts.port
+    except ValueError:
+        return None
+    if parts.scheme.lower() not in {"http", "https"} or not parts.hostname:
+        return None
+    if port is not None and not 1 <= port <= 65535:
+        return None
+    return raw
+
+
+def build_proxy_pool(urls) -> List[str]:
+    """HTTP(S) endpoints only, de-duplicated, in the order supplied."""
+    pool = []
+    for url in urls or []:
+        cleaned = _clean_proxy_url(url)
+        if cleaned and cleaned not in pool:
+            pool.append(cleaned)
+    return pool
+
+
+async def configured_proxy_urls() -> List[str]:
+    """Server-side proxy pool: SCRAPER_PROXY_URLS plus HTTP entries in ProxyManager."""
+    raw = (os.getenv("SCRAPER_PROXY_URLS") or "").strip()
+    if not raw:
+        try:
+            raw = (await get_setting("scraper_proxy_urls", "SCRAPER_PROXY_URLS") or "").strip()
+        except Exception:
+            raw = ""
+    candidates = [part for part in _re.split(r"[\s,]+", raw) if part]
+    try:
+        from proxy_manager import proxy_manager
+        entries = list(proxy_manager.proxies.values())
+        if proxy_manager.global_proxy:
+            entries.append(proxy_manager.global_proxy)
+        for entry in entries:
+            if not isinstance(entry, dict) or entry.get("protocol") not in {"http", "https"}:
+                continue
+            host, port = entry.get("host"), entry.get("port")
+            if not host or not port:
+                continue
+            user, password = entry.get("username"), entry.get("password")
+            auth = (f"{quote(str(user), safe='')}:{quote(str(password), safe='')}@"
+                    if user and password else "")
+            candidates.append(f"http://{auth}{host}:{port}")
+    except Exception:
+        pass
+    return build_proxy_pool(candidates)
+
+
+class ProxyPicker:
+    """Round-robin over a fixed HTTP proxy pool; counts direct fallbacks."""
+
+    def __init__(self, proxies=None):
+        self.proxies = build_proxy_pool(proxies)
+        self._index = 0
+        self.fallbacks = 0
+
+    def pick(self):
+        if not self.proxies:
+            return None
+        url = self.proxies[self._index % len(self.proxies)]
+        self._index += 1
+        return url
+
+    def __bool__(self):
+        return bool(self.proxies)
+
+
+def proxy_diagnostics(mode: str, picker: Optional[ProxyPicker]) -> dict:
+    """Counts only — never endpoints, hosts or credentials."""
+    return {
+        "mode": mode,
+        "available": len(picker.proxies) if picker else 0,
+        "used": bool(picker),
+        "fallbacks": picker.fallbacks if picker else 0,
+    }
+
+
+def _picker_for(request: ChannelScrapeRequest, picker=None) -> ProxyPicker:
+    if picker is not None:
+        return picker
+    if request.proxy_mode == "custom":
+        return ProxyPicker(request.proxy_urls)
+    return ProxyPicker()
+
+
+async def _request(session, method, url, *, proxy=None, timeout=12, **kwargs):
+    """One HTTP request; a proxy connection failure never blocks the read."""
+    async with session.request(method, url, proxy=proxy,
+                               timeout=aiohttp.ClientTimeout(total=timeout),
+                               **kwargs) as resp:
+        return resp.status, await resp.read()
 
 
 def _parse_tme_preview(html: str, username: str):
@@ -570,36 +820,99 @@ def _parse_tme_preview(html: str, username: str):
     return {"username": username, "title": title, "type": kind, "members": members}
 
 
-async def _ddg_usernames(session, keyword, want):
-    """Find candidate t.me usernames via a credential-free web search."""
-    usernames: list = []
+def _decode_bing_target(value: str) -> str:
     try:
-        async with session.post("https://lite.duckduckgo.com/lite/",
-                                data={"q": f"site:t.me {keyword}"},
-                                timeout=aiohttp.ClientTimeout(total=12)) as resp:
-            html = await resp.text()
-    except (aiohttp.ClientError, asyncio.TimeoutError):
-        return usernames
-    for match in _TME_USERNAME_RE.finditer(html):
-        candidate = match.group(1)
-        if candidate.lower() in _TME_RESERVED or candidate in usernames:
-            continue
-        usernames.append(candidate)
-        if len(usernames) >= want:
-            break
-    return usernames
+        padded = value + "=" * (-len(value) % 4)
+        return base64.urlsafe_b64decode(padded).decode("utf-8", "replace")
+    except (ValueError, TypeError):
+        return ""
 
 
-async def _tme_preview(session, username):
+def _usernames_from_html(html, want):
+    """Extract public t.me usernames from a search result page.
+
+    Handles plain links, percent-encoded redirect links, and Bing's base64
+    wrapped `u=a1...` targets.
+    """
+    text = unescape(unquote(html or ""))
+    found, seen = [], set()
+
+    def add(candidate):
+        key = candidate.lower()
+        if key in _TME_RESERVED or key in seen:
+            return False
+        seen.add(key)
+        found.append(candidate)
+        return len(found) >= want
+
+    for match in _TME_USERNAME_RE.finditer(text):
+        if add(match.group(1)):
+            return found
+    for match in _BING_WRAPPED_RE.finditer(text):
+        for link in _TME_USERNAME_RE.finditer(_decode_bing_target(match.group(1))):
+            if add(link.group(1)):
+                return found
+    return found
+
+
+async def _ddg_lite_usernames(session, keyword, want, proxy=None):
+    status, body = await _request(
+        session, "POST", "https://lite.duckduckgo.com/lite/",
+        data={"q": f"site:t.me {keyword}"}, proxy=proxy, timeout=10,
+    )
+    if status != 200:
+        raise aiohttp.ClientConnectionError(f"search source returned HTTP {status}")
+    return _usernames_from_html(body.decode("utf-8", "replace"), want)
+
+
+async def _ddg_html_usernames(session, keyword, want, proxy=None):
+    status, body = await _request(
+        session, "GET", "https://html.duckduckgo.com/html/",
+        params={"q": f"site:t.me {keyword}"}, proxy=proxy, timeout=10,
+    )
+    if status != 200:
+        raise aiohttp.ClientConnectionError(f"search source returned HTTP {status}")
+    return _usernames_from_html(body.decode("utf-8", "replace"), want)
+
+
+async def _mojeek_usernames(session, keyword, want, proxy=None):
+    status, body = await _request(
+        session, "GET", "https://www.mojeek.com/search",
+        params={"q": f"site:t.me {keyword}"}, proxy=proxy, timeout=10,
+    )
+    if status != 200:
+        raise aiohttp.ClientConnectionError(f"search source returned HTTP {status}")
+    return _usernames_from_html(body.decode("utf-8", "replace"), want)
+
+
+async def _bing_usernames(session, keyword, want, proxy=None):
+    status, body = await _request(
+        session, "GET", "https://www.bing.com/search",
+        params={"q": f"site:t.me {keyword}", "count": "50"}, proxy=proxy, timeout=10,
+    )
+    if status != 200:
+        raise aiohttp.ClientConnectionError(f"search source returned HTTP {status}")
+    return _usernames_from_html(body.decode("utf-8", "replace"), want)
+
+
+# Tried in parallel; the first one that returns candidates wins.
+_SEARCH_SOURCES = (
+    ("duckduckgo", _ddg_lite_usernames),
+    ("duckduckgo_html", _ddg_html_usernames),
+    ("mojeek", _mojeek_usernames),
+    ("bing", _bing_usernames),
+)
+
+
+async def _tme_preview(session, username, proxy=None):
     try:
-        async with session.get(f"https://t.me/{username}",
-                               timeout=aiohttp.ClientTimeout(total=12)) as resp:
-            if resp.status != 200:
-                return None
-            html = await resp.text()
+        status, body = await _request(
+            session, "GET", f"https://t.me/{username}", proxy=proxy, timeout=10)
     except (aiohttp.ClientError, asyncio.TimeoutError):
         return None
-    return _parse_tme_preview(html, username)
+    if status != 200:
+        return None
+    return _parse_tme_preview(body.decode("utf-8", "replace"), username)
 
 
 # TGStat directory API — reliable account-free search (keyword over title and
@@ -638,37 +951,46 @@ def _parse_tgstat_item(item, fallback_type):
     }
 
 
-async def _tgstat_search(session, token, keyword, peer_type, country_code, limit):
+async def _tgstat_search(session, token, keyword, peer_type, country_code, limit,
+                         language="", proxy=None):
+    """Return (normalised items, whether TGStat answered successfully)."""
     params = {"token": token, "q": keyword, "search_by_description": "1",
               "peer_type": peer_type, "limit": str(min(max(limit, 1), 100))}
     if country_code:
         params["country"] = country_code
+    if language:
+        params["language"] = language
     try:
-        async with session.get(_TGSTAT_SEARCH_URL, params=params,
-                               timeout=aiohttp.ClientTimeout(total=15)) as resp:
-            data = await resp.json(content_type=None)
-    except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
-        return []
+        status, body = await _request(
+            session, "GET", _TGSTAT_SEARCH_URL, params=params, proxy=proxy, timeout=15)
+    except (aiohttp.ClientError, asyncio.TimeoutError):
+        return [], False
+    if status != 200:
+        return [], False
+    try:
+        data = json.loads(body.decode("utf-8", "replace"))
+    except ValueError:
+        return [], False
     if not isinstance(data, dict) or data.get("status") != "ok":
-        return []
+        return [], False
     response = data.get("response")
     items = response.get("items") if isinstance(response, dict) else None
     if not isinstance(items, list):
-        return []
-    return [info for info in (_parse_tgstat_item(it, peer_type) for it in items) if info]
+        return [], True
+    return [info for info in (_parse_tgstat_item(it, peer_type) for it in items) if info], True
 
 
 KEYWORD_SEARCH_BUDGET = 90.0  # seconds; queued keywords past this are reported as partial
 
 
-async def _gather_keywords(keywords, worker, budget):
+async def _gather_keywords(keywords, worker, budget, concurrency=5):
     """Look every keyword up concurrently, dropping work queued past the budget.
 
     A lookup already talking to the upstream service is allowed to finish so the
     results stay truthful; keywords that never started are reported as skipped.
     """
     deadline = time.monotonic() + budget
-    semaphore = asyncio.Semaphore(5)
+    semaphore = asyncio.Semaphore(max(1, concurrency))
     skipped: list = []
 
     async def run(keyword):
@@ -681,57 +1003,121 @@ async def _gather_keywords(keywords, worker, budget):
     return await asyncio.gather(*(run(keyword) for keyword in keywords)), skipped
 
 
-async def _scrape_channels_tgstat(request: ChannelScrapeRequest, token):
+def _rank_result(info):
+    keyword = (info.get("matched_keyword") or "").lower()
+    title = (info.get("title") or "").lower()
+    return (bool(keyword and keyword in title), info.get("members") or 0)
+
+
+async def _scrape_channels_tgstat(request: ChannelScrapeRequest, token, picker=None):
     """Account-free discovery via the TGStat directory API.
 
-    Matches the keyword over channel/chat titles AND descriptions, with TGStat's
-    native country filter when a 2-letter country code is given; a free-text
-    country narrows client-side on title/description/username.
+    Country names are mapped to ISO codes for TGStat's native filter. If TGStat
+    rejects an optional filter (language, or an unfamiliar country), the lookup
+    is retried with just the keyword so a filter guess never empties the run.
     """
     peer_type = _tgstat_peer_type(request.group_type)
-    country = request.country.strip()
-    country_code = country if len(country) == 2 and country.isalpha() else ""
-    text_filter = "" if country_code else country.lower()
+    iso_country, country_tokens = resolve_country(request.country)
+    language_code = resolve_language(request.language)
+    picker = _picker_for(request, picker)
+    stats = {"requests": 0, "ok": 0, "errors": 0, "items": 0, "rejected_filters": 0}
     seen: set = set()
     results: list = []
     async with aiohttp.ClientSession(headers=_BROWSER_HEADERS) as session:
         # Search every keyword concurrently; a runaway keyword list must not
         # push the whole request past the dashboard's 120 s timeout.
         async def search(keyword):
-            return await _tgstat_search(
-                session, token, keyword, peer_type, country_code, request.limit)
+            stats["requests"] += 1
+            proxy = picker.pick()
+            infos, ok = await _tgstat_search(
+                session, token, keyword, peer_type, iso_country, request.limit,
+                language_code, proxy=proxy)
+            if not ok and (iso_country or language_code):
+                stats["requests"] += 1
+                infos, ok = await _tgstat_search(
+                    session, token, keyword, peer_type, "", request.limit, "",
+                    proxy=picker.pick())
+                if ok:
+                    stats["rejected_filters"] += 1
+            if not ok and proxy:
+                # A dead proxy must not hide the directory behind it.
+                picker.fallbacks += 1
+                stats["requests"] += 1
+                infos, ok = await _tgstat_search(
+                    session, token, keyword, peer_type, "", request.limit, "")
+            stats["ok" if ok else "errors"] += 1
+            stats["items"] += len(infos)
+            return infos, ok
 
         per_keyword, skipped = await _gather_keywords(
-            request.keywords, search, KEYWORD_SEARCH_BUDGET)
-        for keyword, infos in per_keyword:
-            if infos is None:
+            request.keywords, search, KEYWORD_SEARCH_BUDGET, concurrency=8)
+        # Text matching is only a stand-in when TGStat has no ISO filter for the
+        # input. Once an ISO filter is rejected, the returned rows are simply
+        # keyword matches and must not be dropped by a guessed country name.
+        text_tokens = country_tokens if not iso_country else []
+        for keyword, found in per_keyword:
+            if found is None:
                 continue
+            infos, _ok = found
             for info in infos:
                 key = info["username"].lower()
                 if key in seen:
                     continue
                 if request.group_type != "all" and info["type"] != request.group_type:
                     continue
-                if text_filter and text_filter not in (
-                        info["title"] + " " + info["about"] + " " + info["username"]).lower():
+                if text_tokens and not any(
+                        token in (info["title"] + " " + info["username"]).lower()
+                        for token in text_tokens):
                     continue
                 seen.add(key)
                 info["matched_keyword"] = keyword
                 info.pop("about", None)
                 results.append(info)
-                if len(results) >= request.limit:
-                    break
-            if len(results) >= request.limit:
-                break
+    results.sort(key=_rank_result, reverse=True)
+    results = results[:request.limit]
     partial = bool(skipped)
+    reason = ""
+    if not results:
+        if stats["ok"] == 0:
+            reason = ("TGStat did not answer any keyword. Check TGSTAT_TOKEN and try again.")
+        elif stats["rejected_filters"]:
+            reason = ("TGStat rejected the country or language filter and still found no "
+                      "matches. Broaden the keywords or clear the filter.")
+        else:
+            reason = ("TGStat answered but matched no channels. Broaden the keywords or "
+                      "clear the country/language filter.")
     log_manager.add_log(
         "ChannelScraper", "tgstat",
         f"Found {len(results)} channels/groups (TGStat) for {len(request.keywords)} keyword(s)"
         + (f"; {len(skipped)} skipped at the search deadline" if partial else ""),
         "success",
     )
-    return {"success": True, "total": len(results), "results": results,
-            "mode": "tgstat", "partial": partial}
+    return {
+        "success": True,
+        "total": len(results),
+        "results": results,
+        "mode": "tgstat",
+        "partial": partial,
+        "diagnostics": {
+            "mode": "tgstat",
+            "token_configured": True,
+            "country": {
+                "input": request.country,
+                "iso": iso_country,
+                "applied": ("filter" if iso_country and not stats["rejected_filters"]
+                            else "text" if text_tokens else "none"),
+            },
+            "language": {
+                "input": request.language,
+                "code": language_code,
+                "applied": ("filter" if language_code and not stats["rejected_filters"]
+                            else "none"),
+            },
+            "proxies": proxy_diagnostics(request.proxy_mode, picker),
+            "sources": {"tgstat": stats},
+            "reason": reason,
+        },
+    }
 
 
 async def _scrape_channels_public(request: ChannelScrapeRequest):
@@ -740,33 +1126,89 @@ async def _scrape_channels_public(request: ChannelScrapeRequest):
     otherwise falls back to best-effort public web discovery. The token comes
     from the TGSTAT_TOKEN env var or the operations_shared.app_settings store."""
     token = await get_setting("tgstat_token", "TGSTAT_TOKEN")
+    pool = await configured_proxy_urls() if request.proxy_mode == "pool" else []
+    picker = ProxyPicker(request.proxy_urls if request.proxy_mode == "custom" else pool)
     if token:
-        return await _scrape_channels_tgstat(request, token)
-    return await _scrape_channels_web(request)
+        return await _scrape_channels_tgstat(request, token, picker=picker)
+    return await _scrape_channels_web(request, picker=picker)
 
 
-_PUBLIC_PREVIEW_BUDGET = 45.0  # seconds; keeps the fallback inside the client timeout
+_PUBLIC_SEARCH_BUDGET = 55.0  # seconds; leaves room for previews inside the client timeout
+_PUBLIC_PREVIEW_BUDGET = 40.0  # seconds
 _PUBLIC_CANDIDATE_MAX = 600   # preview pages fetched at most, regardless of the result ceiling
 
 
-async def _scrape_channels_web(request: ChannelScrapeRequest):
+async def _first_source_candidates(session, keyword, want, proxy, stats):
+    """Race the public search sources; return the first non-empty candidate list."""
+    async def run(name, source):
+        stats[name]["requests"] += 1
+        try:
+            return await source(session, keyword, want, proxy=proxy)
+        except (aiohttp.ClientError, asyncio.TimeoutError):
+            stats[name]["errors"] += 1
+            return []
+
+    tasks = {asyncio.create_task(run(name, source)): name for name, source in _SEARCH_SOURCES}
+    pending = set(tasks)
+    found: list = []
+    try:
+        while pending and not found:
+            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                names = task.result()
+                if names and not found:
+                    stats[tasks[task]]["items"] += len(names)
+                    stats[tasks[task]]["ok"] += 1
+                    found = names
+    finally:
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+    return found
+
+
+async def _scrape_channels_web(request: ChannelScrapeRequest, picker=None):
     """Account-free fallback: public web search + public t.me preview pages.
 
-    No credentials. Results depend on the public sources being reachable and not
-    rate-limiting the server, so this can legitimately return nothing; configure
-    TGSTAT_TOKEN for reliable account-free search.
+    Several public search sources are raced per keyword, then every candidate is
+    verified against its public t.me preview. No credentials are used; results
+    depend on those sources not rate-limiting the server. The diagnostic fields
+    explain an empty run instead of silently reporting zero.
     """
-    preview_budget = _PUBLIC_PREVIEW_BUDGET
-    country = request.country.lower()
+    picker = _picker_for(request, picker)
+    iso_country, country_tokens = resolve_country(request.country)
+    language_code = resolve_language(request.language)
     want_candidates = min(request.limit * 3, _PUBLIC_CANDIDATE_MAX)
     seen: set = set()
     candidates: list = []
+    stats = {name: {"requests": 0, "ok": 0, "errors": 0, "items": 0}
+             for name, _source in _SEARCH_SOURCES}
+    preview_stats = {"requests": 0, "ok": 0, "errors": 0}
+    filtered = {"type": 0, "country": 0}
+
     async with aiohttp.ClientSession(headers=_BROWSER_HEADERS) as session:
+        country_hint = country_tokens[0] if country_tokens else ""
+
         async def discover(keyword):
-            return await _ddg_usernames(session, keyword, want_candidates)
+            proxy = picker.pick()
+            query = f"{keyword} {country_hint}".strip() if country_hint else keyword
+            names = await _first_source_candidates(
+                session, query, want_candidates, proxy, stats)
+            if not names and country_hint:
+                # Engines that require every term can starve a country-qualified
+                # query; retry the bare keyword before calling the run empty.
+                names = await _first_source_candidates(
+                    session, keyword, want_candidates, proxy, stats)
+            if not names and proxy:
+                # If the proxy itself is dead, retry the race directly once.
+                picker.fallbacks += 1
+                names = await _first_source_candidates(
+                    session, query, want_candidates, None, stats)
+            return names
 
         per_keyword, skipped = await _gather_keywords(
-            request.keywords, discover, KEYWORD_SEARCH_BUDGET)
+            request.keywords, discover, _PUBLIC_SEARCH_BUDGET, concurrency=6)
         for keyword, usernames in per_keyword:
             if not usernames:
                 continue
@@ -776,42 +1218,42 @@ async def _scrape_channels_web(request: ChannelScrapeRequest):
                     continue
                 seen.add(key)
                 candidates.append((username, keyword))
-                if len(candidates) >= want_candidates:
-                    break
-            if len(candidates) >= want_candidates:
-                break
-        semaphore = asyncio.Semaphore(8)
+
+        semaphore = asyncio.Semaphore(10)
 
         async def enrich(username, keyword):
             async with semaphore:
-                info = await _tme_preview(session, username)
-                if info:
-                    info["matched_keyword"] = keyword
+                preview_stats["requests"] += 1
+                info = await _tme_preview(session, username, proxy=picker.pick())
+                if not info:
+                    preview_stats["errors"] += 1
+                    return None
+                preview_stats["ok"] += 1
+                info["matched_keyword"] = keyword
                 return info
 
         tasks = [asyncio.create_task(enrich(u, k)) for u, k in candidates]
-        if tasks:
-            done, pending = await asyncio.wait(tasks, timeout=preview_budget)
-        else:
-            done, pending = set(), set()
+        done, pending = (await asyncio.wait(tasks, timeout=_PUBLIC_PREVIEW_BUDGET)
+                         if tasks else (set(), set()))
         for task in pending:
             task.cancel()
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
-        enriched: list = []
-        for task in tasks:
-            if task in done and not task.cancelled() and task.exception() is None:
-                enriched.append(task.result())
-            else:
-                enriched.append(None)
 
     results: list = []
-    for info in enriched:
+    for task in tasks:
+        if task not in done or task.cancelled() or task.exception() is not None:
+            continue
+        info = task.result()
         if not info:
             continue
         if request.group_type != "all" and info["type"] != request.group_type:
+            filtered["type"] += 1
             continue
-        if country and country not in info["title"].lower() and country not in info["username"].lower():
+        haystack = (info["title"] + " " + info["username"]).lower()
+        if (country_tokens or iso_country) and not country_matches(
+                haystack, country_tokens, iso_country):
+            filtered["country"] += 1
             continue
         results.append({
             "id": info["username"],
@@ -823,18 +1265,61 @@ async def _scrape_channels_web(request: ChannelScrapeRequest):
             "verified": False,
             "matched_keyword": info["matched_keyword"],
         })
-        if len(results) >= request.limit:
-            break
 
+    results.sort(key=_rank_result, reverse=True)
+    results = results[:request.limit]
     partial = bool(skipped or pending)
+    reason = ""
+    if not results:
+        attempted = sum(source["requests"] for source in stats.values())
+        answered = sum(source["ok"] for source in stats.values())
+        errored = sum(source["errors"] for source in stats.values())
+        if not candidates and errored and not answered:
+            reason = ("Every public search source refused or timed out for this server "
+                      f"({errored} of {attempted} requests). Set TGSTAT_TOKEN for reliable "
+                      "search, or choose an HTTP proxy.")
+        elif not candidates:
+            reason = ("Public search returned no t.me links for these keywords. Try broader "
+                      "keywords or set TGSTAT_TOKEN for directory search.")
+        elif preview_stats["requests"] and preview_stats["ok"] == 0:
+            reason = "Candidate links were found but the t.me previews failed. Retry in a moment."
+        elif filtered["country"]:
+            reason = ("Candidates were found but the country filter removed all of them. "
+                      "Clear the country filter to see them.")
+        elif filtered["type"]:
+            reason = ("Candidates were found but the type filter removed all of them. "
+                      "Choose All to see them.")
+        else:
+            reason = "Candidates were found but none of them is a public channel or group."
     log_manager.add_log(
         "ChannelScraper", "public",
-        f"Found {len(results)} channels/groups (account-free) for {len(request.keywords)} keyword(s)"
-        + ("; results are partial because previews ran out of time" if partial else ""),
+        f"Found {len(results)} channels/groups from {len(candidates)} candidate(s) for "
+        f"{len(request.keywords)} keyword(s)"
+        + ("; results are partial because a budget ran out" if partial else ""),
         "success",
     )
-    return {"success": True, "total": len(results), "results": results,
-            "mode": "public", "partial": partial}
+    return {
+        "success": True,
+        "total": len(results),
+        "results": results,
+        "mode": "public",
+        "partial": partial,
+        "diagnostics": {
+            "mode": "public",
+            "token_configured": False,
+            "country": {
+                "input": request.country,
+                "iso": iso_country,
+                "applied": "text" if country_tokens else "none",
+            },
+            "language": {"input": request.language, "code": language_code, "applied": "none"},
+            "proxies": proxy_diagnostics(request.proxy_mode, picker),
+            "candidates": len(candidates),
+            "filtered": filtered,
+            "sources": {**stats, "previews": preview_stats},
+            "reason": reason,
+        },
+    }
 
 
 @telegram_ops_router.post("/api/scraper/channels")
@@ -844,10 +1329,19 @@ async def scrape_channels(request: ChannelScrapeRequest):
     With a selected account, uses Telegram's authenticated directory search
     (contacts.SearchRequest). With no account, falls back to account-free public
     discovery (web search + public t.me preview pages). Either way returns only
-    public channels/supergroups with a t.me URL, de-duplicated. Telegram exposes
-    no channel country, so `country` is a case-insensitive filter on the
-    title/username, not a geographic lookup. Read-only: no messages, no joins.
+    public channels/supergroups with a t.me URL, de-duplicated. Account-free
+    discovery maps the country to TGStat's ISO filter when it can; the account
+    path falls back to a case-insensitive title/username filter because Telegram
+    exposes no channel country. Read-only: no messages, no joins.
     """
+    try:
+        # The model is schema-validated by FastAPI; proxy checks live here so a
+        # bad proxy URL becomes a plain, sanitized 400 instead of a 422 that
+        # echoes the request body (which can carry proxy credentials).
+        request.apply_proxy_config()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
     account_id = request.account_id.strip()
     if not account_id:
         return await _scrape_channels_public(request)
@@ -856,7 +1350,8 @@ async def scrape_channels(request: ChannelScrapeRequest):
     if not client:
         raise HTTPException(status_code=400, detail=_client_unavailable_detail(account_id))
 
-    country = request.country.lower()
+    iso_country, country_tokens = resolve_country(request.country)
+    language_code = resolve_language(request.language)
     seen: set = set()
     results: list = []
     deadline = time.monotonic() + KEYWORD_SEARCH_BUDGET
@@ -889,7 +1384,9 @@ async def scrape_channels(request: ChannelScrapeRequest):
             if request.group_type != "all" and kind != request.group_type:
                 continue
             title = getattr(chat, "title", "") or ""
-            if country and country not in title.lower() and country not in username.lower():
+            haystack = f"{title} {username}".lower()
+            if (country_tokens or iso_country) and not country_matches(
+                    haystack, country_tokens, iso_country):
                 continue
             seen.add(chat_id)
             results.append({
@@ -911,8 +1408,32 @@ async def scrape_channels(request: ChannelScrapeRequest):
         + ("; stopped at the search deadline" if partial else ""),
         "success",
     )
-    return {"success": True, "total": len(results), "results": results,
-            "mode": "account", "partial": partial}
+    return {
+        "success": True,
+        "total": len(results),
+        "results": results,
+        "mode": "account",
+        "partial": partial,
+        "diagnostics": {
+            "mode": "account",
+            "token_configured": True,
+            "country": {
+                "input": request.country,
+                "iso": "",
+                "applied": "text" if country_tokens else "none",
+            },
+            "language": {
+                "input": request.language,
+                "code": language_code,
+                "applied": "none",
+            },
+            "proxies": {"mode": request.proxy_mode, "available": 0, "used": False, "fallbacks": 0},
+            "sources": {"account": {"requests": len(request.keywords), "ok": 1 if results else 0}},
+            "reason": "" if results else (
+                "Telegram's directory returned no public channels for these keywords. "
+                "Broaden the keywords or clear the country filter."),
+        },
+    }
 
 
 # ============ 2. Member Adder ============

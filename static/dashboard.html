@@ -3920,10 +3920,13 @@
                         <small v-else>Select an account to detect the groups and channels it belongs to.</small>
                     </div>
                     <div class="form-group">
-                        <label for="scraper-bulk-targets">Bulk targets (optional — one per line)</label>
-                        <textarea id="scraper-bulk-targets" class="form-control" rows="3" v-model="scraper.bulkTargets"
-                                  placeholder="https://t.me/firstchannel&#10;@secondgroup&#10;-1001234567890"></textarea>
-                        <small>Scrape several channels or groups in turn. When this has entries it replaces the single target above; each target runs separately, failures are reported per target, and a member found in more than one is listed once.</small>
+                        <label for="scraper-bulk-targets">Bulk targets (optional — links, @usernames or IDs)</label>
+                        <textarea id="scraper-bulk-targets" class="form-control" rows="4" v-model="scraper.bulkTargets"
+                                  placeholder="https://t.me/firstchannel&#10;@secondgroup&#10;-1001234567890&#10;https://t.me/+inviteHash"></textarea>
+                        <small>Scrape several channels or groups in turn. Separate entries with new lines, commas or semicolons; <code>#</code> comments are ignored and quoted spreadsheet cells work. When this has entries it replaces the single target above; each target runs separately, failures are reported per target, and a member found in more than one is listed once.</small>
+                        <small v-if="scraperTargets.length" data-testid="scraper-target-count" style="display:block;margin-top:4px;">
+                            {{ scraperTargets.length }} target{{ scraperTargets.length === 1 ? '' : 's' }}<template v-if="scraperTargetDuplicates"> · {{ scraperTargetDuplicates }} duplicate{{ scraperTargetDuplicates === 1 ? '' : 's' }} ignored</template>
+                        </small>
                     </div>
                     <div style="display: flex; gap: 15px;">
                         <div class="form-group" style="flex:1;">
@@ -4036,7 +4039,7 @@
                     <div class="card-header">
                         <h3>Channel and group finder</h3>
                     </div>
-                    <p style="color: var(--text-dim); margin-bottom: 20px;">Discover public Telegram channels and groups by keyword and export their t.me URLs. <strong>No Telegram account is used.</strong> Search runs on the server through the TGStat directory (matches channel names <em>and</em> descriptions, with a country filter) when a <code>TGSTAT_TOKEN</code> is configured; without it, it falls back to public web discovery, which a server is often rate-limited out of (may return 0 — ask an admin to set the free token). Read-only: no messages are sent and nothing is joined.</p>
+                    <p style="color: var(--text-dim); margin-bottom: 20px;">Discover public Telegram channels and groups by keyword and export their t.me URLs. <strong>No Telegram account is used.</strong> Search runs on the server. With a <code>TGSTAT_TOKEN</code> configured it uses the TGStat directory (names and descriptions, native country filter); without one it races several public search sources and verifies each t.me preview page. A server IP can still be rate-limited, so a proxy can be attached to this request. Read-only: no messages are sent and nothing is joined.</p>
 
                     <div class="form-group">
                         <label>Keywords (one per line or comma-separated — no count limit)</label>
@@ -4044,8 +4047,14 @@
                     </div>
                     <div style="display: flex; gap: 15px; flex-wrap: wrap;">
                         <div class="form-group" style="flex: 1; min-width: 150px;">
-                            <label>Country / language keyword (optional)</label>
-                            <input class="form-control" v-model="channelScraper.country" placeholder="e.g. Philippines, PH, indonesia">
+                            <label>Country (optional)</label>
+                            <input class="form-control" v-model="channelScraper.country" placeholder="e.g. Philippines or PH">
+                            <small>Country name or ISO code. TGStat filters natively; text-only values filter titles.</small>
+                        </div>
+                        <div class="form-group" style="flex: 1; min-width: 140px;">
+                            <label>Language hint (optional)</label>
+                            <input class="form-control" v-model="channelScraper.language" placeholder="e.g. tagalog, tl, english">
+                            <small>Mapped to an ISO 639-1 code for TGStat; ignored if TGStat rejects it.</small>
                         </div>
                         <div class="form-group" style="flex: 1; min-width: 120px;">
                             <label>Type</label>
@@ -4061,11 +4070,33 @@
                             <small>Results across all keywords.</small>
                         </div>
                     </div>
+                    <div style="display: flex; gap: 15px; flex-wrap: wrap;">
+                        <div class="form-group" style="flex: 1; min-width: 200px;">
+                            <label>Proxy for public search</label>
+                            <select class="form-control" v-model="channelScraper.proxyMode" data-testid="channel-proxy-mode">
+                                <option value="none">No proxy (direct)</option>
+                                <option value="pool">Configured proxy pool</option>
+                                <option value="custom">Custom proxy URLs</option>
+                            </select>
+                            <small v-if="channelScraper.proxyMode === 'pool'">Uses the HTTP/HTTPS proxies saved in Settings → Proxies, round robin. A dead proxy falls back to a direct request.</small>
+                            <small v-else-if="channelScraper.proxyMode === 'custom'">HTTP/HTTPS only. Used for this request and never saved or logged. A dead proxy falls back to a direct request.</small>
+                            <small v-else>Direct from the server.</small>
+                        </div>
+                        <div class="form-group" style="flex: 2; min-width: 260px;" v-if="channelScraper.proxyMode === 'custom'">
+                            <label>Custom proxy URLs (one per line)</label>
+                            <textarea class="form-control" rows="2" v-model="channelScraper.proxyUrls" data-testid="channel-proxy-urls" placeholder="http://user:pass@host:8080&#10;https://host:8443"></textarea>
+                            <small>Credentials in the URL are sent to that proxy only; they are never stored or shown in diagnostics.</small>
+                        </div>
+                    </div>
                     <button class="btn btn-primary" @click="runChannelScraper" :disabled="channelScraper.loading || !channelScraper.keywords.trim()">
                         {{ channelScraper.loading ? 'Searching…' : 'Find channels and groups' }}
                     </button>
-                    <p v-if="channelScraper.summary" style="margin-top: 12px;">{{ channelScraper.summary }}</p>
+                    <p v-if="channelScraper.summary" style="margin-top: 12px;" data-testid="channel-summary">{{ channelScraper.summary }}</p>
                     <p v-if="channelScraper.partial" class="muted small" style="margin-top: 8px; color: var(--warning);">The search deadline was reached, so some keywords were skipped. These results are partial — run the remaining keywords again.</p>
+                    <div v-if="channelScraper.diagnostics" class="muted small" data-testid="channel-diagnostics" style="margin-top: 8px; display: grid; gap: 4px;">
+                        <div>{{ channelDiagnosticsText }}</div>
+                        <div v-if="channelSourceSummary">Sources — {{ channelSourceSummary }}</div>
+                    </div>
 
                     <div v-if="channelScraper.results.length" style="margin-top: 20px;">
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; gap: 10px; flex-wrap: wrap;">
@@ -4073,6 +4104,7 @@
                             <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                                 <button class="btn btn-outline" @click="exportChannelCSV">Export CSV</button>
                                 <button class="btn btn-outline" @click="copyChannelUrls" style="font-size: 0.85em;">Copy URLs</button>
+                                <button class="btn btn-outline" @click="useChannelResultsAsTargets" style="font-size: 0.85em;" data-testid="channel-to-targets">Add to bulk scrape targets</button>
                             </div>
                         </div>
                         <div style="max-height: 400px; overflow-y: auto; border: 1px solid rgba(255,255,255,0.1); border-radius: 8px;">
@@ -6136,12 +6168,16 @@
                     channelScraper: {
                         keywords: '',
                         country: 'Philippines',
+                        language: '',
+                        proxyMode: 'none',
+                        proxyUrls: '',
                         groupType: 'all',
                         limit: 300,
                         summary: '',
                         partial: false,
                         loading: false,
                         results: [],
+                        diagnostics: null,
                     },
                     outreachJobs: [], outreachJobsLoading: false, outreachJobError: '', outreachWorker: '',
                     outreachJobBusy: '', jobsPoll: null,
@@ -6378,9 +6414,39 @@
                 },
                 adderRecipients() { return this.parseAdderRecipients(); },
                 scraperTargets() {
-                    const bulk = this.scraper.bulkTargets.split('\n').map(t => t.trim()).filter(Boolean)
-                    const list = bulk.length ? bulk : [this.scraper.target.trim()].filter(Boolean)
-                    return [...new Set(list)]
+                    const parsed = this.parseScrapeTargets(this.scraper.bulkTargets)
+                    return parsed.unique.length ? parsed.unique : [this.scraper.target.trim()].filter(Boolean)
+                },
+                scraperTargetDuplicates() {
+                    return this.parseScrapeTargets(this.scraper.bulkTargets).duplicates
+                },
+                channelDiagnosticsText() {
+                    const d = this.channelScraper.diagnostics
+                    if (!d) return ''
+                    const label = d.mode === 'account' ? 'Telegram account'
+                        : d.mode === 'tgstat' ? 'TGStat directory' : 'Public web sources'
+                    const country = d.country && d.country.input
+                        ? `${d.country.input}${d.country.applied && d.country.applied !== 'none' ? ' (' + d.country.applied + ')' : ' (not applied)'}`
+                        : 'none'
+                    const language = d.language && d.language.input
+                        ? `${d.language.input}${d.language.code ? ' → ' + d.language.code : ''}${d.language.applied === 'filter' ? '' : ' (not applied)'}`
+                        : 'none'
+                    const p = d.proxies || {}
+                    const proxy = p.mode && p.mode !== 'none'
+                        ? `${p.mode}${p.available ? ', ' + p.available + ' available' : ', none available'}${p.used ? '' : ', unused'}${p.fallbacks ? ', ' + p.fallbacks + ' fallback(s)' : ''}`
+                        : 'none'
+                    return `Mode: ${label} · Country: ${country} · Language: ${language} · Proxy: ${proxy}`
+                },
+                channelSourceSummary() {
+                    const sources = this.channelScraper.diagnostics && this.channelScraper.diagnostics.sources
+                    if (!sources) return ''
+                    return Object.entries(sources)
+                        .filter(([, v]) => v && (v.items !== undefined || v.ok !== undefined))
+                        .map(([name, v]) => {
+                            if (v.items !== undefined) return `${name}: ${v.items} candidate(s)`
+                            return `${name}: ${v.ok || 0} ok / ${v.requests || 0} request(s)`
+                        })
+                        .join(' · ')
                 },
                 scraperRows() { return this.scraper.results.slice(0, 200) },
                 channelRows() { return this.channelScraper.results.slice(0, 200) },
@@ -6607,23 +6673,75 @@
                     const header = this.scraper.batch ? ['target', ...fields] : fields;
                     this.downloadCSV('telegram-members.csv', [header, ...this.scraper.results.map(member => header.map(field => member[field]))]);
                 },
+                parseScrapeTargets(raw) {
+                    // Accepts pasted spreadsheets: newlines, commas, semicolons and tabs,
+                    // optional surrounding quotes, and # comment tails.
+                    const tokens = []
+                    String(raw || '').split(/\r\n|\r|\n|[,;\t]/).forEach(part => {
+                        let value = part.trim()
+                        const hash = value.search(/(^|\s)#/)
+                        if (hash >= 0) value = value.slice(0, hash).trim()
+                        value = value.replace(/^["']+|["']+$/g, '').trim()
+                        if (value) tokens.push(value)
+                    })
+                    const keyFor = value => {
+                        const lower = value.toLowerCase()
+                        if (lower.startsWith('+') || /(?:t(?:elegram)?\.me|telegram\.dog)\/(?:joinchat\/|\+)/.test(lower)) return 'invite:' + lower
+                        if (/^-?\d+$/.test(value)) return 'id:' + value
+                        const link = /^(?:https?:\/\/)?(?:t(?:elegram)?\.me|telegram\.dog)\/(?:s\/)?([A-Za-z][A-Za-z0-9_]{3,31})\/?$/i.exec(value)
+                        if (link) return 'user:' + link[1].toLowerCase()
+                        return 'user:' + lower.replace(/^@/, '')
+                    }
+                    const seen = new Set()
+                    const unique = []
+                    let duplicates = 0
+                    tokens.forEach(value => {
+                        const key = keyFor(value)
+                        if (seen.has(key)) { duplicates += 1; return }
+                        seen.add(key)
+                        unique.push(value)
+                    })
+                    return {unique, duplicates}
+                },
+                useChannelResultsAsTargets() {
+                    const existing = this.parseScrapeTargets(this.scraper.bulkTargets).unique
+                    const found = this.channelScraper.results.map(c => c.username ? '@' + c.username : c.url).filter(Boolean)
+                    const merged = this.parseScrapeTargets([...existing, ...found].join('\n')).unique
+                    this.scraper.bulkTargets = merged.join('\n')
+                    this.showToast(`${found.length} finder result${found.length === 1 ? '' : 's'} added — ${merged.length} unique target${merged.length === 1 ? '' : 's'} ready. Select an account, then scrape.`)
+                },
                 async runChannelScraper() {
                     this.channelScraper.loading = true;
                     this.channelScraper.results = [];
                     this.channelScraper.summary = '';
                     this.channelScraper.partial = false;
+                    this.channelScraper.diagnostics = null;
                     try {
-                        const keywords = this.channelScraper.keywords.split(/[\n,]/).map(k => k.trim()).filter(Boolean);
+                        const keywords = this.channelScraper.keywords.split(/[\n,;]/).map(k => k.trim()).filter(Boolean);
+                        const proxyUrls = this.channelScraper.proxyUrls.split(/[\n,]/).map(u => u.trim()).filter(Boolean);
+                        if (this.channelScraper.proxyMode === 'custom' && !proxyUrls.length) {
+                            this.showToast('Add at least one http(s) proxy URL, or choose another proxy mode.', true);
+                            return;
+                        }
                         const res = await _api.post('/api/scraper/channels', {
                             account_id: '',
                             keywords,
                             country: this.channelScraper.country,
+                            language: this.channelScraper.language,
                             group_type: this.channelScraper.groupType,
                             limit: this.channelScraper.limit,
+                            proxy_mode: this.channelScraper.proxyMode,
+                            proxy_urls: this.channelScraper.proxyMode === 'custom' ? proxyUrls : [],
                         }, {timeout: 120000});
                         this.channelScraper.results = res.data.results || [];
                         this.channelScraper.partial = res.data.partial === true;
-                        this.channelScraper.summary = `Found ${res.data.total || 0} public channels/groups from ${keywords.length} keyword${keywords.length === 1 ? '' : 's'}.`;
+                        this.channelScraper.diagnostics = res.data.diagnostics || null;
+                        const total = res.data.total || 0;
+                        const source = keywords.length === 1 ? '1 keyword' : `${keywords.length} keywords`;
+                        const reason = res.data.diagnostics && res.data.diagnostics.reason;
+                        this.channelScraper.summary = total
+                            ? `Found ${total} public channel${total === 1 ? '' : 's'}/group${total === 1 ? '' : 's'} from ${source}.`
+                            : `Found 0 public channels/groups from ${source}.${reason ? ' ' + reason : ''}`;
                     } catch (e) {
                         const message = e.code === 'ECONNABORTED'
                             ? 'Search timed out. Try fewer keywords or a narrower country filter.'
