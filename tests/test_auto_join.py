@@ -33,6 +33,16 @@ def join_client(side_effect=None):
     ("t.me/joinchat/", None),             # empty hash
     ("", None),
     ("not a link!!", None),
+    # telegram.me domain
+    ("https://telegram.me/durov", ("public", "durov")),
+    ("https://telegram.me/+AbCdEf123456", ("invite", "AbCdEf123456")),
+    ("telegram.me/joinchat/XyZ12345", ("invite", "XyZ12345")),
+    # telegram.dog domain
+    ("telegram.dog/durov", ("public", "durov")),
+    ("https://telegram.dog/+AbCdEf123456", ("invite", "AbCdEf123456")),
+    # query string params (e.g. ?start= deep links)
+    ("https://t.me/durov?start=abc", ("public", "durov")),
+    ("https://telegram.me/botname?start=ref123", ("public", "botname")),
 ])
 def test_parse_join_target(raw, expected):
     assert ops._parse_join_target(raw) == expected

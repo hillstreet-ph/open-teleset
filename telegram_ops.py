@@ -189,9 +189,10 @@ class BulkSendRequest(BaseModel):
 # A private invite link (t.me/+HASH or t.me/joinchat/HASH) is joined with an
 # invite hash; a public channel/group (t.me/<username>, @<username> or a bare
 # username) is joined by resolving its entity.
-_TME_INVITE_RE = _re.compile(r"(?:https?://)?t\.me/(?:joinchat/|\+)([A-Za-z0-9_-]{6,})", _re.I)
+_TME_INVITE_RE = _re.compile(
+    r"(?:https?://)?(?:t(?:elegram)?\.me|telegram\.dog)/(?:joinchat/|\+)([A-Za-z0-9_-]{6,})", _re.I)
 _TME_PUBLIC_RE = _re.compile(
-    r"(?:https?://)?t\.me/(?:s/)?([A-Za-z][A-Za-z0-9_]{3,31})(?:/\d+)?/?$", _re.I)
+    r"(?:https?://)?(?:t(?:elegram)?\.me|telegram\.dog)/(?:s/)?([A-Za-z][A-Za-z0-9_]{3,31})(?:/\d+)?/?(?:\?[^#]*)?$", _re.I)
 _BARE_INVITE_RE = _re.compile(r"^\+([A-Za-z0-9_-]{6,})$")
 _BARE_USERNAME_RE = _re.compile(r"^[A-Za-z][A-Za-z0-9_]{3,31}$")
 
