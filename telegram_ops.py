@@ -464,8 +464,10 @@ async def scrape_members_bulk(request: BulkScrapeRequest):
     all_members: dict[int, dict] = {}
     errors_list = []
     has_fallback = False
+    attempted: set[str] = set()
 
     for target_raw in request.targets:
+        attempted.add(target_raw)
         single_req = ScrapeRequest(
             account_id=request.account_id,
             target=target_raw,
@@ -486,6 +488,10 @@ async def scrape_members_bulk(request: BulkScrapeRequest):
                 break  # stop bulk processing on Telegram rate limit
         except Exception as e:
             errors_list.append({"target": target_raw, "error": f"{type(e).__name__}: target unavailable"})
+
+    for t in request.targets:
+        if t not in attempted:
+            errors_list.append({"target": t, "error": "skipped: rate limit reached before this target"})
 
     members = list(all_members.values())
     return {
