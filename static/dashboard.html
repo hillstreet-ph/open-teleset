@@ -4255,7 +4255,7 @@
                         <label>Channel/group links (one per line)</label>
                         <textarea class="form-control" v-model="autojoin.urls" rows="6" aria-describedby="autojoin-summary" placeholder="https://t.me/examplechannel&#10;@examplegroup&#10;https://t.me/+AbCdEf123456"></textarea>
                         <small id="autojoin-summary" role="status" aria-live="polite">
-                            {{ autojoinLinks.length }} valid unique links{{ autojoin.limit ? ' (up to ' + autojoin.limit + ' joined this run)' : ' (every link is queued; no per-run cap)' }}. Invalid links are skipped automatically; blank lines ignored.
+                            {{ autojoinValidLinks.length }} valid {{ autojoinValidLinks.length === 1 ? 'link' : 'links' }}{{ autojoin.limit ? ' (up to ' + autojoin.limit + ' joined this run)' : '' }}{{ autojoinLinks.length > autojoinValidLinks.length ? ' — ' + (autojoinLinks.length - autojoinValidLinks.length) + (autojoinLinks.length - autojoinValidLinks.length === 1 ? ' line has' : ' lines have') + ' unrecognised format and will be skipped' : '' }}. Blank lines ignored.
                         </small>
                     </div>
                     <div class="form-group">
@@ -4273,7 +4273,7 @@
                             <input class="form-control" type="number" v-model.number="autojoin.limit" min="0" step="1">
                         </div>
                     </div>
-                    <button id="gate-autojoin" class="btn btn-primary" @click="runAutoJoin" :disabled="autojoin.loading || (autojoin.rotationMode === 'single' ? !autojoin.accountId : !autojoin.accountIds.length) || !autojoinLinks.length">
+                    <button id="gate-autojoin" class="btn btn-primary" @click="runAutoJoin" :disabled="autojoin.loading || (autojoin.rotationMode === 'single' ? !autojoin.accountId : !autojoin.accountIds.length) || !autojoinValidLinks.length">
                         {{ autojoin.loading ? 'Joining...' : 'Start Auto Join' }}
                     </button>
 
@@ -6275,9 +6275,24 @@
                 scraperRows() { return this.scraper.results.slice(0, 200) },
                 channelRows() { return this.channelScraper.results.slice(0, 200) },
                 autojoinLinks() {
-                    // Unique, non-blank links; the server does the authoritative
-                    // parsing and skips anything it cannot recognise.
+                    // Unique, non-blank lines; server does authoritative parsing.
                     return [...new Set((this.autojoin.urls || '').split(/\r\n|\r|\n/).map(l => l.trim()).filter(Boolean))];
+                },
+                autojoinValidLinks() {
+                    const RESERVED = new Set(['s','share','joinchat','addstickers','addtheme',
+                        'addemoji','addlist','proxy','socks','bg','login','iv','setlanguage',
+                        'confirmphone','c','contact']);
+                    const invRe = /^(?:https?:\/\/)?(?:t(?:elegram)?\.me|telegram\.dog)\/(?:joinchat\/|\+)[A-Za-z0-9_-]{6,}/i;
+                    const pubRe = /^(?:https?:\/\/)?(?:t(?:elegram)?\.me|telegram\.dog)\/(?:s\/)?([A-Za-z][A-Za-z0-9_]{3,31})(?:\/\d+)?\/?(?:\?[^#]*)?$/i;
+                    const bareInvRe = /^\+[A-Za-z0-9_-]{6,}$/;
+                    const bareRe = /^[A-Za-z][A-Za-z0-9_]{3,31}$/;
+                    return this.autojoinLinks.filter(raw => {
+                        if (invRe.test(raw) || bareInvRe.test(raw)) return true;
+                        const m = pubRe.exec(raw);
+                        if (m && !RESERVED.has(m[1].toLowerCase())) return true;
+                        const bare = raw.startsWith('@') ? raw.slice(1) : raw;
+                        return bareRe.test(bare) && !RESERVED.has(bare.toLowerCase());
+                    });
                 },
                 progressJobs() {
                     const kind = this.tab === 'adder' ? 'member_add' : (this.tab === 'autojoin' ? 'auto_join' : (this.tab === 'bulksend' ? 'personal_send' : ''));
@@ -6858,8 +6873,8 @@
                     this.autojoin.loading = true;
                     this.autojoin.resultMsg = '';
                     try {
-                        const urls = this.autojoinLinks;
-                        if (!urls.length) throw new Error('Enter at least one channel or group link.');
+                        const urls = this.autojoinValidLinks;
+                        if (!urls.length) throw new Error('Enter at least one valid channel or group link.');
                         if (!Number.isFinite(this.autojoin.delay) || this.autojoin.delay < 30 || this.autojoin.delay > 3600) {
                             throw new Error('Delay between joins must be a number from 30 to 3600 seconds.');
                         }
