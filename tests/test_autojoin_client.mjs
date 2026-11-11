@@ -23,6 +23,7 @@ function harness() {
     crypto: { randomUUID: () => 'request-key-1234567890' },
   };
   const methods = vm.runInNewContext(`({${methodSource('async runAutoJoin() {', '// ---- BulkSend ----')}})`, context);
+  const computed = vm.runInNewContext(`({${methodSource('autojoinLinks() {', 'progressJobs() {')}}})`, {});
   const state = {
     apiErrorText: (error, fallback) => error?.message || fallback,
     accessReady: true,
@@ -32,12 +33,13 @@ function harness() {
       urls: 'https://t.me/chanone\nhttps://t.me/chantwo', delay: 45, limit: 20,
       loading: false, resultMsg: '',
     },
-    get autojoinLinks() {
-      return [...new Set(this.autojoin.urls.split(/\r\n|\r|\n/).map(l => l.trim()).filter(Boolean))];
-    },
     outreachJobs: [],
     loadOutreachJobs: async () => {},
   };
+  // Bind the real computed properties so runAutoJoin sees autojoinValidLinks.
+  for (const name of ['autojoinLinks', 'autojoinValidLinks']) {
+    Object.defineProperty(state, name, { get: () => computed[name].call(state) });
+  }
   state.runAutoJoin = methods.runAutoJoin.bind(state);
   return { state, calls };
 }
@@ -86,6 +88,15 @@ test('auto join has no per-run cap and zero queues every link', async () => {
   assert.ok(!/max="2000"/.test(html), 'the per-run ceiling must be gone');
   assert.ok(!html.includes('from 1 to 50'), 'the old fifty-link cap must be gone');
   assert.match(html, /limit: 0,/, 'the dashboard must default to no per-run cap');
+});
+
+test('unrecognised lines are filtered before queuing', async () => {
+  const { state, calls } = harness();
+  state.autojoin.urls = 'https://t.me/chanone\nnot a link!!\n\nhttps://t.me/chantwo';
+  assert.equal(state.autojoinLinks.length, 3);
+  assert.equal(state.autojoinValidLinks.length, 2);
+  await state.runAutoJoin();
+  assert.deepEqual(calls[0].body.urls, ['https://t.me/chanone', 'https://t.me/chantwo']);
 });
 
 test('a negative per-run cap is refused before it reaches the server', async () => {
