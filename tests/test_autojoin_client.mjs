@@ -51,7 +51,7 @@ test('auto join queues a durable job instead of the synchronous join endpoint', 
   assert.equal(calls[0].url, '/api/join/jobs');
   assert.ok(!html.includes("_api.post('/api/channels/join'"), 'synchronous join call must be gone');
   assert.equal(calls[0].body.account_id, 'acct');
-  assert.deepEqual(calls[0].body.urls, ['https://t.me/chanone', 'https://t.me/chantwo']);
+  assert.deepEqual([...calls[0].body.urls], ['https://t.me/chanone', 'https://t.me/chantwo']);
   assert.equal(calls[0].body.request_id, 'request-key-1234567890');
   assert.equal(state.autojoin.requestId, '');
   assert.equal(state.autojoin.loading, false);
@@ -83,7 +83,7 @@ test('auto join has no per-run cap and zero queues every link', async () => {
   await state.runAutoJoin();
   assert.equal(calls.length, 1);
   assert.equal(calls[0].body.limit, 0);
-  assert.deepEqual(calls[0].body.urls, ['https://t.me/chanone', 'https://t.me/chantwo']);
+  assert.deepEqual([...calls[0].body.urls], ['https://t.me/chanone', 'https://t.me/chantwo']);
   assert.match(html, /v-model\.number="autojoin\.limit" min="0"/);
   assert.ok(!/max="2000"/.test(html), 'the per-run ceiling must be gone');
   assert.ok(!html.includes('from 1 to 50'), 'the old fifty-link cap must be gone');
@@ -96,7 +96,7 @@ test('unrecognised lines are filtered before queuing', async () => {
   assert.equal(state.autojoinLinks.length, 3);
   assert.equal(state.autojoinValidLinks.length, 2);
   await state.runAutoJoin();
-  assert.deepEqual(calls[0].body.urls, ['https://t.me/chanone', 'https://t.me/chantwo']);
+  assert.deepEqual([...calls[0].body.urls], ['https://t.me/chanone', 'https://t.me/chantwo']);
 });
 
 test('a negative per-run cap is refused before it reaches the server', async () => {
