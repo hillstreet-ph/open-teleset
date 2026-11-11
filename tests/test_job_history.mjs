@@ -127,3 +127,20 @@ test('a scheduled Auto Join record becomes the same table shape', () => {
   assert.equal(scheduleJoinJob({}), null);
   assert.deepEqual(plain(scheduleJoinJob({ last_join_result: { account: 'acct', stopped_reason: 'telegram_cooldown', targets: [] } }).restricted_accounts), {});
 });
+
+test('a rotated Auto Join record names the account behind every row', () => {
+  const { scheduleJoinJob } = methods(slice('scheduleJoinJob(sch) {', 'getScheduleDescription(sch) {'));
+  const job = scheduleJoinJob({ last_join_result: {
+    account: 'b',
+    accounts: ['a', 'b'],
+    stopped_reason: 'account_banned',
+    targets: [
+      { target: 'https://t.me/one', state: 'joined', reason: '', account: 'a', at: 1000 },
+      { target: 'https://t.me/two', state: 'failed', reason: 'account_banned', account: 'a', at: 1010 },
+      { target: 'https://t.me/three', state: 'joined', reason: '', account: 'b', at: 1020 },
+    ],
+  } });
+  assert.deepEqual(job.results.map(row => row.account_id), ['a', 'a', 'b']);
+  assert.deepEqual(job.results.map(row => row.state), ['completed', 'failed', 'completed']);
+  assert.deepEqual(plain(job.restricted_accounts), { a: 'account_banned' });
+});

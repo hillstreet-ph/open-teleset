@@ -16,7 +16,16 @@ from croniter import croniter
 from account_manager import account_manager
 from template_manager import template_manager
 from log_manager import log_manager
-from outreach_policy import outreach_policy, dispatch_outreach, valid_bounds
+from outreach_policy import (
+    OutreachDenied,
+    account_cooldown_remaining,
+    account_pacing_remaining,
+    clear_account_cooldowns,
+    dispatch_outreach,
+    outreach_policy,
+    record_provider_restriction,
+    valid_bounds,
+)
 from open_teleset.operator_store import feature_enabled
 from telethon import errors, utils
 
@@ -358,9 +367,9 @@ class TaskScheduler:
                     return False
 
             try:
-                # 获取客户端（workflow runs fetch one client per account themselves）
+                # 获取客户端（workflow and auto join pick their own clients per account）
                 client = None
-                if action != "run_workflow":
+                if action not in ("run_workflow", "auto_join"):
                     client = await account_manager.get_client(account_id)
 
                 if action == "run_workflow":
@@ -389,7 +398,7 @@ class TaskScheduler:
                         log_manager.add_log("定时任务", workflow["id"],
                             f"Workflow run {run['id']} started for "
                             f"{len(run['account_ids'])} account(s)", "info")
-                elif not client:
+                elif action != "auto_join" and not client:
                     log_manager.add_log("定时任务", account_id, "获取客户端失败", "error")
                     return False
 
@@ -433,52 +442,110 @@ class TaskScheduler:
                     from telethon import functions as tl_functions
                     targets, join_delay = join_plan(schedule)
                     raw_urls = [str(url).strip() for url in schedule.get("join_urls") or []]
+                    selected = schedule.get("accounts") or schedule.get("account_ids") or []
+                    join_accounts = [item for item in selected if item in account_manager.accounts]
+                    if not join_accounts:
+                        log_manager.add_log("定时任务", "system",
+                            "Auto join: no signed-in account selected", "error")
+                        return False
                     detail = []
                     joined = skipped = failed = 0
                     stopped_reason = ""
+                    used_accounts = []
                     for idx, (kind, value) in enumerate(targets):
                         raw = raw_urls[idx] if idx < len(raw_urls) else value
-                        state, reason, stop = "joined", "", ""
-                        try:
-                            if kind == "invite":
-                                await client(tl_functions.messages.ImportChatInviteRequest(value))
+                        attempted, last_failure = set(), None
+                        state, reason, stop, account_used = "", "", "", ""
+                        while True:
+                            chosen, soonest = None, None
+                            # Rotation order moves forward for every link, so a
+                            # cooled-down or refused account never pins the run.
+                            for offset in range(len(join_accounts)):
+                                candidate = join_accounts[(idx + offset) % len(join_accounts)]
+                                if candidate in attempted:
+                                    continue
+                                try:
+                                    hold = max(account_cooldown_remaining(candidate, "join"),
+                                               account_pacing_remaining(candidate))
+                                except OutreachDenied:
+                                    hold = 0
+                                if hold > 0:
+                                    soonest = hold if soonest is None else min(soonest, hold)
+                                    continue
+                                chosen = candidate
+                                break
+                            if chosen is None:
+                                if last_failure:
+                                    state, reason, stop = last_failure
+                                    stopped_reason = reason
+                                elif soonest is not None:
+                                    state, reason = "failed", "telegram_cooldown"
+                                    stopped_reason = "telegram_cooldown"
+                                    stop = f"a Telegram cooldown of {int(soonest) + 1}s"
+                                else:
+                                    state, reason = "failed", "account_unavailable"
+                                    stopped_reason = "account_unavailable"
+                                    stop = "no selected account is available"
+                                break
+                            attempted.add(chosen)
+                            account_used = chosen
+                            join_client = await account_manager.get_client(chosen)
+                            if not join_client:
+                                last_failure = ("failed", "account_unavailable",
+                                                "no selected account is available")
+                                continue
+                            if chosen not in used_accounts:
+                                used_accounts.append(chosen)
+                            try:
+                                if kind == "invite":
+                                    await join_client(tl_functions.messages.ImportChatInviteRequest(value))
+                                else:
+                                    entity = await join_client.get_entity(value)
+                                    await join_client(tl_functions.channels.JoinChannelRequest(entity))
+                            except errors.UserAlreadyParticipantError:
+                                state, reason = "skipped", "already_member"
+                            except errors.FloodWaitError as exc:
+                                # The limit is scoped to joining this account; the
+                                # next account may still join the same link.
+                                record_provider_restriction(chosen, exc, "auto_join")
+                                last_failure = ("failed", "telegram_cooldown",
+                                                f"a Telegram cooldown of {exc.seconds}s")
+                                continue
+                            except (errors.UserDeactivatedBanError, errors.AuthKeyUnregisteredError,
+                                    errors.FrozenMethodInvalidError, errors.ChannelsTooMuchError) as exc:
+                                # Retrying this account cannot help; name it and let
+                                # the other selected accounts continue.
+                                record_provider_restriction(chosen, exc, "auto_join")
+                                reason = type(exc).__name__
+                                for error_type, key in _ACCOUNT_RESTRICTIONS:
+                                    if isinstance(exc, error_type):
+                                        reason = key
+                                        break
+                                last_failure = ("failed", reason, {
+                                    "account_banned": "this account is banned",
+                                    "session_revoked": "this account was signed out of Telegram",
+                                    "account_frozen": "this account is frozen",
+                                    "channel_limit_reached": "this account reached Telegram's join limit",
+                                }.get(reason, "this account cannot join"))
+                                continue
+                            except Exception as exc:
+                                state, reason = "failed", type(exc).__name__
                             else:
-                                entity = await client.get_entity(value)
-                                await client(tl_functions.channels.JoinChannelRequest(entity))
-                            joined += 1
-                        except errors.UserAlreadyParticipantError:
+                                state, reason = "joined", ""
+                                joined += 1
+                                try:
+                                    clear_account_cooldowns(chosen, "join")
+                                except OutreachDenied:
+                                    pass
+                            break
+                        if state == "failed":
+                            failed += 1
+                        elif state == "skipped":
                             skipped += 1
-                            state, reason = "skipped", "already_member"
-                        except errors.FloodWaitError as exc:
-                            failed += 1
-                            state, reason = "failed", "telegram_cooldown"
-                            stopped_reason = "telegram_cooldown"
-                            stop = f"a Telegram cooldown of {exc.seconds}s"
-                        except (errors.UserDeactivatedBanError, errors.AuthKeyUnregisteredError,
-                                errors.FrozenMethodInvalidError, errors.ChannelsTooMuchError) as exc:
-                            # Retrying a banned, signed-out, frozen or over-limit
-                            # account cannot help; stop the run and name the account.
-                            failed += 1
-                            reason = type(exc).__name__
-                            state = "failed"
-                            for error_type, key in _ACCOUNT_RESTRICTIONS:
-                                if isinstance(exc, error_type):
-                                    reason = key
-                                    break
-                            stopped_reason = reason
-                            stop = {
-                                "account_banned": "this account is banned",
-                                "session_revoked": "this account was signed out of Telegram",
-                                "account_frozen": "this account is frozen",
-                                "channel_limit_reached": "this account reached Telegram's join limit",
-                            }.get(reason, "this account cannot join")
-                        except Exception as exc:
-                            failed += 1
-                            state, reason = "failed", type(exc).__name__
                         detail.append({"target": raw, "state": state, "reason": reason,
-                                       "at": time.time()})
+                                       "account": account_used, "at": time.time()})
                         if stop:
-                            log_manager.add_log("定时任务", account_id,
+                            log_manager.add_log("定时任务", account_used or account_id,
                                 f"Auto join stopped: {stop}", "warning")
                             break
                         if idx < len(targets) - 1:
@@ -486,13 +553,16 @@ class TaskScheduler:
                     for idx in range(len(detail), len(targets)):
                         value = targets[idx][1]
                         detail.append({"target": raw_urls[idx] if idx < len(raw_urls) else value,
-                                       "state": "pending", "reason": "not_attempted", "at": None})
+                                       "state": "pending", "reason": "not_attempted",
+                                       "account": "", "at": None})
                     schedule["last_join_result"] = {
-                        "account": account_id, "joined": joined, "skipped": skipped,
+                        "account": used_accounts[0] if used_accounts else join_accounts[0],
+                        "accounts": used_accounts, "joined": joined, "skipped": skipped,
                         "failed": failed, "stopped_reason": stopped_reason,
                         "targets": detail, "finished_at": time.time(),
                     }
-                    results.append({"account": account_id, "success": failed == 0,
+                    results.append({"account": used_accounts[0] if used_accounts else join_accounts[0],
+                                    "success": failed == 0,
                                     "joined": joined, "skipped": skipped, "failed": failed,
                                     "stopped_reason": stopped_reason})
 

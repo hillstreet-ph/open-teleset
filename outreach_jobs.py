@@ -30,6 +30,7 @@ from outreach_policy import (
     OutreachDenied,
     account_cooldown_remaining,
     account_pacing_remaining,
+    cooldown_scope,
     dispatch_guard,
     dispatch_outreach,
     hash_identifier,
@@ -230,7 +231,6 @@ class JobStore:
                 payload.pop("urls", None)
                 payload["operator"] = operator
                 payload["sender_identities"] = identities
-                payload["limited_accounts"] = []
                 job = str(uuid4())
                 db.execute("INSERT INTO jobs(id,owner,request_id,fingerprint,kind,payload,state,created) "
                            "VALUES(?,?,?,?,?,?,?,?)",
@@ -313,7 +313,25 @@ class JobStore:
                             "invalid_username" if invalid else "duplicate_recipient" if duplicate else ""))
             return job
 
+    def relevant_accounts(self, db, job, config):
+        """Who can move this job next: every selected account when it rotates,
+        otherwise only the accounts still holding pending work."""
+        if job["kind"] == "auto_join" or config.get("rotate_any_account"):
+            return list(config.get("sender_identities") or {})
+        rows = db.execute("SELECT payload FROM items WHERE job=? AND state IN ('pending','sending') "
+                          "ORDER BY seq", (job["id"],)).fetchall()
+        return list(dict.fromkeys(self.unpack(row[0])["account"] for row in rows))
+
+    @staticmethod
+    def wait_remaining(accounts, kind):
+        """The soonest any of these accounts could act, from the live rate store."""
+        if not accounts:
+            return 0
+        scope = cooldown_scope(kind)
+        return min(account_cooldown_remaining(account, scope) for account in accounts)
+
     def snapshot(self, job, operator):
+        release = False
         with self.db() as db:
             row = db.execute("SELECT * FROM jobs WHERE id=? AND owner=?",
                              (job, hash_identifier(operator))).fetchone()
@@ -331,16 +349,51 @@ class JobStore:
                                 "state": item["state"], "reason": item["reason"],
                                 "updated": item["updated"]})
             config = self.unpack(row["payload"])
-            return {"id": job, "kind": row["kind"], "state": row["state"], "reason": row["reason"],
-                    "retry_at": row["retry_at"],
-                    "next_account_id": self.unpack(next_item[0])["account"] if next_item else None,
-                    "retry_after": max(0, row["retry_at"] - time.time()), "total": sum(counts.values()),
-                    "completed": counts.get("completed", 0), "skipped": counts.get("skipped", 0),
-                    "failed": counts.get("failed", 0), "uncertain": counts.get("uncertain", 0),
-                    "pending": counts.get("pending", 0), "in_flight": counts.get("sending", 0),
-                    "restricted_accounts": config.get("restricted_accounts") or {},
-                    "results": list(reversed(results)), "created": row["created"],
-                    "started": row["started"], "finished": row["finished"]}
+            retry_at = row["retry_at"]
+            if row["state"] in ("waiting", "paused") and row["reason"] == "telegram_cooldown":
+                try:
+                    live = self.wait_remaining(
+                        self.relevant_accounts(db, row, config), row["kind"])
+                except OutreachDenied:
+                    live = None
+                if live is not None and retry_at > time.time():
+                    # An earlier build parked the job on a stored timestamp. The
+                    # rate store is the source of truth, so never show a wait no
+                    # account is serving, and let the worker pick the job up.
+                    if live <= 0:
+                        release, retry_at = True, 0
+                    else:
+                        retry_at = min(retry_at, time.time() + live)
+            snapshot = {"id": job, "kind": row["kind"], "state": row["state"], "reason": row["reason"],
+                        "retry_at": retry_at,
+                        "next_account_id": self.unpack(next_item[0])["account"] if next_item else None,
+                        "retry_after": max(0, retry_at - time.time()), "total": sum(counts.values()),
+                        "completed": counts.get("completed", 0), "skipped": counts.get("skipped", 0),
+                        "failed": counts.get("failed", 0), "uncertain": counts.get("uncertain", 0),
+                        "pending": counts.get("pending", 0), "in_flight": counts.get("sending", 0),
+                        "restricted_accounts": config.get("restricted_accounts") or {},
+                        "results": list(reversed(results)), "created": row["created"],
+                        "started": row["started"], "finished": row["finished"]}
+        if release:
+            with self.db() as db:
+                db.execute("UPDATE jobs SET retry_at=0 WHERE id=? AND state IN ('waiting','paused')", (job,))
+        return snapshot
+
+    def release_stale_waits(self):
+        """Drop waits no account is serving any more, including ones an older build wrote."""
+        now = time.time()
+        with self.db() as db:
+            jobs = db.execute("SELECT * FROM jobs WHERE state='waiting' "
+                              "AND reason='telegram_cooldown' AND retry_at>?",
+                              (now + 60,)).fetchall()
+            for job in jobs:
+                config = self.unpack(job["payload"])
+                try:
+                    live = self.wait_remaining(self.relevant_accounts(db, job, config), job["kind"])
+                except OutreachDenied:
+                    continue
+                if live <= 0:
+                    db.execute("UPDATE jobs SET retry_at=0 WHERE id=? AND state='waiting'", (job["id"],))
 
     def listing(self, operator, kind=None):
         with self.db() as db:
@@ -366,14 +419,23 @@ class JobStore:
                 item = db.execute("SELECT payload,reason FROM items WHERE job=? AND state='pending' "
                                   "ORDER BY seq LIMIT 1", (job,)).fetchone()
                 if item:
-                    remaining = account_cooldown_remaining(self.unpack(item["payload"])["account"])
+                    config = self.unpack(row["payload"])
+                    remaining = self.wait_remaining(
+                        self.relevant_accounts(db, row, config), row["kind"])
                     if remaining:
-                        db.execute("UPDATE jobs SET retry_at=MAX(retry_at,?) WHERE id=?",
+                        # The live record is authoritative at this instant; a
+                        # stored timestamp from an older build may be inflated.
+                        db.execute("UPDATE jobs SET retry_at=? WHERE id=?",
                                    (time.time() + remaining, job))
                         state, reason = "waiting", "telegram_cooldown"
                     elif row["retry_at"] > time.time():
-                        state = "waiting"
-                        reason = item["reason"] if item["reason"] in ("telegram_timeout", "account_unavailable") else "scheduled_wait"
+                        if row["reason"] == "telegram_cooldown":
+                            # The live store says no account is serving a wait any
+                            # more, so the stored timestamp is stale and must go.
+                            db.execute("UPDATE jobs SET retry_at=0 WHERE id=?", (job,))
+                        else:
+                            state = "waiting"
+                            reason = item["reason"] if item["reason"] in ("telegram_timeout", "account_unavailable") else "scheduled_wait"
             elif row["state"] in ("completed", "stopped", "needs_review"):
                 raise HTTPException(409, "Job is already terminal or requires review")
             else:
@@ -395,7 +457,7 @@ class JobStore:
             db.execute("UPDATE items SET state='uncertain',reason='delivery_uncertain_after_restart',"
                        "updated=? WHERE state='sending'", (time.time(),))
 
-    def restrict_account(self, job, account, reason, limited=None):
+    def restrict_account(self, job, account, reason):
         """Persist an account-level refusal so every job view can name the account."""
         with self.db() as db:
             row = db.execute("SELECT payload FROM jobs WHERE id=?", (job,)).fetchone()
@@ -405,8 +467,6 @@ class JobStore:
             restricted = dict(config.get("restricted_accounts") or {})
             restricted[account] = reason
             config["restricted_accounts"] = restricted
-            if limited is not None:
-                config["limited_accounts"] = sorted(limited)
             db.execute("UPDATE jobs SET payload=? WHERE id=?", (self.pack(config), job))
 
     def guard(self, job, seq, mark=False):
@@ -571,6 +631,9 @@ class JobWorker:
             await asyncio.sleep(1)
 
     async def tick(self):
+        # A wait written by an older build must not strand the queue; the rate
+        # store, not the stored timestamp, decides whether a job may run.
+        self.store.release_stale_waits()
         with self.store.db() as db:
             jobs = db.execute("SELECT * FROM jobs WHERE state IN ('queued','running','waiting') "
                               "AND retry_at<=? ORDER BY created", (time.time(),)).fetchall()
@@ -626,10 +689,11 @@ class JobWorker:
             # account's timed cooldown must not stall the whole job; wait only when
             # every selected account is cooling down.
             senders = list(config.get("sender_identities") or {})
+            scope = cooldown_scope(job["kind"])
             ready, soonest, soonest_reason = set(), None, "telegram_cooldown"
             try:
                 for sender in senders:
-                    cooldown = account_cooldown_remaining(sender)
+                    cooldown = account_cooldown_remaining(sender, scope)
                     pacing = account_pacing_remaining(sender)
                     hold = max(cooldown, pacing)
                     if hold <= 0:
@@ -680,7 +744,7 @@ class JobWorker:
             # The creating operator must still have administrator access after
             # a browser closes, a restart, or a long cooldown.
             await _load_profile(config["operator"])
-            remaining = account_cooldown_remaining(account)
+            remaining = account_cooldown_remaining(account, cooldown_scope(job["kind"]))
             if remaining:
                 self.store.waiting(job_id, "telegram_cooldown", remaining)
                 return
@@ -690,7 +754,8 @@ class JobWorker:
                 return
             client = await asyncio.wait_for(account_manager.get_client(account), TELEGRAM_READ_TIMEOUT)
             if not client:
-                self.store.waiting(job_id, "account_unavailable", max(30, account_cooldown_remaining(account)))
+                self.store.waiting(job_id, "account_unavailable", max(30, account_cooldown_remaining(
+                    account, cooldown_scope(job["kind"]))))
                 return
             async def check_sender():
                 expected = config.get("sender_identities", {}).get(account)
@@ -816,19 +881,19 @@ class JobWorker:
             # pinned to its consented account. The job keeps running so recipients on
             # other available accounts continue sending; process() waits the whole job
             # only once every pending recipient's account is cooling down.
-            record_provider_restriction(account, exc)
+            record_provider_restriction(account, exc, job["kind"])
             self.store.outcome(job_id, seq, "pending", "telegram_cooldown")
         except errors.PeerFloodError as exc:
             # Telegram spam-limited this account (not this recipient). Cool the
             # account and requeue so other available accounts keep sending and the
             # job auto-resumes when the limit clears, instead of pausing the list.
-            record_provider_restriction(account, exc)
+            record_provider_restriction(account, exc, job["kind"])
             self.store.outcome(job_id, seq, "pending", "telegram_cooldown")
         except (errors.UserDeactivatedBanError, errors.AuthKeyUnregisteredError,
                 errors.FrozenMethodInvalidError) as exc:
             # The account itself is banned, signed out or frozen — retrying cannot
             # help and a human must choose another account, so pause and name it.
-            record_provider_restriction(account, exc)
+            record_provider_restriction(account, exc, job["kind"])
             reason = ACCOUNT_RESTRICTIONS.get(type(exc), "account_restricted")
             self.store.restrict_account(job_id, account, reason)
             self.store.outcome(job_id, seq, "pending", reason, 86400, "paused")
@@ -914,25 +979,19 @@ class JobWorker:
         rotation = (config.get("rotation_mode") == "round_robin"
                     and len(config.get("account_ids") or []) > 1)
         accounts = [a for a in (config.get("account_ids") if rotation else [config.get("account_id")]) if a]
-        limited = set(config.get("limited_accounts") or [])
+        restricted = set(config.get("restricted_accounts") or {})
         ordered = [accounts[(seq + offset) % len(accounts)] for offset in range(len(accounts))]
-        candidates = [account for account in ordered if account not in limited]
+        # A soft Telegram limit only removes the account from the rotation while
+        # it cools down; it becomes eligible again automatically. Hard account
+        # refusals stay out of this job until the operator acts on the account.
+        candidates = [account for account in ordered if account not in restricted]
         if not candidates:
-            soonest = None
-            for account in accounts:
-                try:
-                    remaining = account_cooldown_remaining(account)
-                except OutreachDenied as exc:
-                    self.store.outcome(job_id, seq, "pending", "rate_store_unavailable", job_state="paused")
-                    log.warning("Join job %s paused: %s", job_id, exc)
-                    return
-                soonest = remaining if soonest is None else min(soonest, remaining)
-            self.store.waiting(job_id, "telegram_cooldown", max(1, soonest or 30))
+            self.store.outcome(job_id, seq, "pending", "all_accounts_restricted", job_state="paused")
             return
         chosen, soonest = None, None
         for account in candidates:
             try:
-                remaining = account_cooldown_remaining(account)
+                remaining = account_cooldown_remaining(account, "join")
             except OutreachDenied as exc:
                 self.store.outcome(job_id, seq, "pending", "rate_store_unavailable", job_state="paused")
                 log.warning("Join job %s paused: %s", job_id, exc)
@@ -985,32 +1044,22 @@ class JobWorker:
         except errors.UserAlreadyParticipantError:
             self.store.outcome(job_id, seq, "skipped", "already_member", delay=delay)
         except errors.FloodWaitError as exc:
-            record_provider_restriction(chosen, exc)
-            if rotation:
-                limited.add(chosen)
-                with self.store.db() as db:
-                    updated = dict(config)
-                    updated["limited_accounts"] = sorted(limited)
-                    db.execute("UPDATE jobs SET payload=? WHERE id=?",
-                               (self.store.pack(updated), job_id))
-                self.store.outcome(job_id, seq, "pending", "telegram_cooldown")
-            else:
-                self.store.outcome(job_id, seq, "pending", "telegram_cooldown")
+            # The wait is scoped to joining, so the very next tick can hand this
+            # link to another account instead of idling the whole job.
+            record_provider_restriction(chosen, exc, "auto_join")
+            self.store.outcome(job_id, seq, "pending", "telegram_cooldown")
+            if not rotation:
                 self.store.waiting(job_id, "telegram_cooldown", max(1, exc.seconds))
         except (errors.ChannelsTooMuchError, errors.UserDeactivatedBanError,
                 errors.AuthKeyUnregisteredError, errors.FrozenMethodInvalidError) as exc:
             # The account itself is banned, signed out, frozen or over Telegram's
             # channel limit — retrying cannot help until a human acts, so name the
             # account and never loop on it.
-            record_provider_restriction(chosen, exc)
+            record_provider_restriction(chosen, exc, "auto_join")
             reason = ACCOUNT_RESTRICTIONS.get(type(exc), "account_restricted")
-            if rotation:
-                limited.add(chosen)
-                self.store.restrict_account(job_id, chosen, reason, limited=limited)
-                self.store.outcome(job_id, seq, "pending", reason)
-            else:
-                self.store.restrict_account(job_id, chosen, reason)
-                self.store.outcome(job_id, seq, "pending", reason, job_state="paused")
+            self.store.restrict_account(job_id, chosen, reason)
+            self.store.outcome(job_id, seq, "pending", reason,
+                               job_state=None if rotation else "paused")
         except (errors.InviteHashExpiredError, errors.InviteHashInvalidError,
                 errors.InviteRequestSentError, errors.UsernameInvalidError,
                 errors.UsernameNotOccupiedError) as exc:

@@ -330,7 +330,7 @@ async def poll_operator(operator: str, *, get_client=None, now: float = None) ->
 
 async def _account_client(getter, account_id: str):
     try:
-        if account_cooldown_remaining(account_id) > 0:
+        if account_cooldown_remaining(account_id, "send") > 0:
             return None
         client = await asyncio.wait_for(getter(account_id), timeout=30)
     except Exception:
@@ -461,7 +461,7 @@ async def _send(client, account_id: str, entity, text: str):
         sent = await asyncio.wait_for(client.send_message(entity, text), timeout=60)
     except (errors.FloodWaitError, errors.PeerFloodError) as exc:
         try:
-            record_provider_restriction(account_id, exc)
+            record_provider_restriction(account_id, exc, "auto_reply")
         except OutreachDenied:
             log.warning("Auto reply could not record the Telegram wait")
         return None
@@ -784,7 +784,7 @@ async def send_draft(draft_id: str, request: Request):
     if not record["daily_cap"] or _sent_today(record) >= record["daily_cap"]:
         raise HTTPException(409, f"The daily limit of {record['daily_cap']} replies is used up.")
     try:
-        if account_cooldown_remaining(draft.get("account")) > 0:
+        if account_cooldown_remaining(draft.get("account"), "send") > 0:
             raise HTTPException(409, "Telegram asked us to wait before this account sends again.")
         if draft.get("suppress_key") and outreach_policy.is_suppressed(draft["suppress_key"]):
             raise HTTPException(409, "That person is on the opt-out list.")

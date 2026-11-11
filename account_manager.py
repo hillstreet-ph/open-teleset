@@ -11,7 +11,8 @@ import re
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 from outreach_client import ConsentTelegramClient as TelegramClient
-from outreach_policy import account_cooldown_remaining, record_provider_restriction, OutreachDenied
+from outreach_policy import (account_cooldown_remaining, clear_account_cooldowns,
+                             record_provider_restriction, OutreachDenied)
 from proxy_manager import proxy_transport
 from telethon.sessions import StringSession
 from telethon import functions
@@ -672,8 +673,11 @@ class AccountManager:
         return True
 
     def _paused_by_cooldown(self, account_id):
+        # Only the account-wide scope (ban, revoked session, frozen account,
+        # connection flood) blocks connecting. Message, join and invite limits are
+        # action scoped, so the account can still connect and run the other actions.
         try:
-            remaining = account_cooldown_remaining(account_id)
+            remaining = account_cooldown_remaining(account_id, "account")
         except OutreachDenied:
             self.connection_errors[account_id] = "Provider cooldown storage is unavailable. Connection paused."
             return True
@@ -682,18 +686,20 @@ class AccountManager:
             return True
         return False
 
-    async def get_client(self, account_id: str = "default", proxy: Dict = None) -> Optional[TelegramClient]:
+    async def get_client(self, account_id: str = "default", proxy: Dict = None,
+                         ignore_cooldown: bool = False) -> Optional[TelegramClient]:
         """
         获取指定账号的客户端
 
         Args:
             account_id: 账号ID
             proxy: 代理配置（可选，如果为 None 则自动从 proxy_manager 获取）
+            ignore_cooldown: 显式健康检查时绕过等待，验证账号是否真的可用
 
         Returns:
             TelegramClient 实例
         """
-        if self._paused_by_cooldown(account_id):
+        if not ignore_cooldown and self._paused_by_cooldown(account_id):
             return None
 
         # 处理默认账号
@@ -708,7 +714,7 @@ class AccountManager:
         # not cancel another caller's bounded connection attempt.
         task = self._client_tasks.get(account_id)
         if task is None:
-            task = asyncio.create_task(self._connect_saved_account(account_id, proxy))
+            task = asyncio.create_task(self._connect_saved_account(account_id, proxy, ignore_cooldown))
             self._client_tasks[account_id] = task
             task.add_done_callback(lambda completed: self._client_tasks.pop(account_id, None)
                                    if self._client_tasks.get(account_id) is completed else None)
@@ -753,8 +759,9 @@ class AccountManager:
         await client(functions.updates.GetStateRequest())
 
 
-    async def _connect_saved_account(self, account_id: str, proxy: Dict = None):
-        if self._paused_by_cooldown(account_id):
+    async def _connect_saved_account(self, account_id: str, proxy: Dict = None,
+                                     ignore_cooldown: bool = False):
+        if not ignore_cooldown and self._paused_by_cooldown(account_id):
             return None
         if account_id not in self.accounts:
             self.connection_errors[account_id] = "Account no longer exists. Refresh the account list."
@@ -806,6 +813,11 @@ class AccountManager:
             self._update_online_status(account_id)
             self.clients[account_id] = client
             self.connection_errors.pop(account_id, None)
+            # A live connection disproves a stale ban/connection wait.
+            try:
+                clear_account_cooldowns(account_id, "account")
+            except OutreachDenied:
+                pass
             return client
         except (asyncio.TimeoutError, TimeoutError):
             self.connection_errors[account_id] = "Connection timed out. Check the assigned proxy and try again."

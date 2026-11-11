@@ -12,7 +12,8 @@ from datetime import datetime
 from typing import Dict, List
 from account_manager import account_manager
 from proxy_manager import proxy_manager
-from outreach_policy import account_cooldown_remaining, record_provider_restriction
+from outreach_policy import (account_cooldown_remaining, clear_account_cooldowns,
+                              record_provider_restriction, OutreachDenied)
 
 
 ACCOUNTS_DIR = "./accounts"
@@ -168,23 +169,24 @@ class HealthMonitor:
             "details": self.health_data
         }
 
-    async def check_account_health(self, account_id: str) -> Dict:
+    async def check_account_health(self, account_id: str, probe: bool = False) -> Dict:
         """
         检查账号健康状态
 
         Args:
             account_id: 账号ID
+            probe: 操作员显式检查时绕过等待并验证账号是否真的可用
 
         Returns:
             健康状态
         """
         try:
-            remaining = account_cooldown_remaining(account_id)
-            if remaining:
+            remaining = account_cooldown_remaining(account_id, "account")
+            if remaining and not probe:
                 return {"status": "cooldown", "retry_after": int(remaining) + 1}
-            client = await account_manager.get_client(account_id)
+            client = await account_manager.get_client(account_id, ignore_cooldown=probe)
             if not client:
-                remaining = account_cooldown_remaining(account_id)
+                remaining = account_cooldown_remaining(account_id, "account")
                 if remaining:
                     return {"status": "cooldown", "retry_after": int(remaining) + 1}
                 error = account_manager.connection_errors.get(account_id, "Account unavailable. Sign in again.")
@@ -210,6 +212,12 @@ class HealthMonitor:
 
             # Clear a previous transient error even when the client was cached.
             account_manager.connection_errors.pop(account_id, None)
+            # get_me proves the account is alive; discard any stale wait so the
+            # dashboard stops hiding a usable account behind an old limit.
+            try:
+                clear_account_cooldowns(account_id, "account")
+            except OutreachDenied:
+                pass
             self.record_login_success(account_id)
 
             # 检查代理响应时间
@@ -240,7 +248,7 @@ class HealthMonitor:
 
         except Exception as exc:
             record_provider_restriction(account_id, exc)
-            remaining = account_cooldown_remaining(account_id)
+            remaining = account_cooldown_remaining(account_id, "account")
             if remaining:
                 error = f"Telegram requires a wait of {int(remaining) + 1} seconds. Try after the cooldown."
                 account_manager.connection_errors[account_id] = error

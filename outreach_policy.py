@@ -438,7 +438,61 @@ def _rate_path():
     return Path(os.getenv("OUTREACH_RATE_DB", "./accounts/outreach_rate.sqlite3"))
 
 
-def account_cooldown(account_id, seconds):
+# Telegram limits messages, joins and invites separately; only a ban, a signed
+# out session or a frozen account applies to every action at once. Keeping the
+# scopes apart stops a message limit from blocking joins and the other way round.
+_ACTION_SCOPES = {
+    "personal_send": "send",
+    "scheduled_send": "send",
+    "auto_reply": "send",
+    "member_add": "invite",
+    "auto_join": "join",
+}
+_SOFT_REASONS = ("", "legacy", "flood_wait", "peer_flood")
+
+
+def cooldown_scope(action):
+    return _ACTION_SCOPES.get(action, "account")
+
+
+def _scope_key(account_id, scope):
+    base = hash_identifier(account_id)
+    return base if scope in (None, "account") else f"{base}|{scope}"
+
+
+def _remaining_keys(account_id, scope):
+    base = hash_identifier(account_id)
+    if scope is None:
+        return [base] + [_scope_key(account_id, name) for name in ("send", "invite", "join")]
+    if scope == "account":
+        return [base]
+    return [base, _scope_key(account_id, scope)]
+
+
+def _ensure_cooldowns(db):
+    db.execute("CREATE TABLE IF NOT EXISTS cooldowns "
+               "(account TEXT PRIMARY KEY, until REAL NOT NULL, reason TEXT NOT NULL DEFAULT '')")
+    if "reason" in {row[1] for row in db.execute("PRAGMA table_info(cooldowns)")}:
+        return
+    db.execute("ALTER TABLE cooldowns ADD COLUMN reason TEXT NOT NULL DEFAULT ''")
+    # Rows written before scoping carry no reason; they were all soft waits from
+    # the old one-day PeerFlood rule. Cap them so a stale lock cannot hide a
+    # usable account for a day. A real limit is re-recorded on the next attempt.
+    limit = time.time() + 900
+    db.execute("UPDATE cooldowns SET until=MIN(until, ?), reason='legacy' WHERE until>?", (limit, limit))
+
+
+def prepare_rate_store():
+    path = _rate_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(path, timeout=1) as db:
+            _ensure_cooldowns(db)
+    except (OSError, sqlite3.Error):
+        raise OutreachDenied("rate_store_unavailable") from None
+
+
+def account_cooldown(account_id, seconds, scope="account", reason=""):
     """Persist provider restrictions across batches, processes and restarts."""
     if not isinstance(seconds, (int, float)) or not math.isfinite(seconds) or seconds <= 0:
         raise OutreachDenied("invalid_cooldown")
@@ -446,22 +500,32 @@ def account_cooldown(account_id, seconds):
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(path, timeout=1) as db:
-            db.execute("CREATE TABLE IF NOT EXISTS cooldowns (account TEXT PRIMARY KEY, until REAL NOT NULL)")
-            db.execute("INSERT INTO cooldowns VALUES (?, ?) ON CONFLICT(account) DO UPDATE SET until=MAX(until, excluded.until)",
-                       (hash_identifier(account_id), time.time() + seconds))
+            _ensure_cooldowns(db)
+            db.execute("INSERT INTO cooldowns(account,until,reason) VALUES (?,?,?) "
+                       "ON CONFLICT(account) DO UPDATE SET "
+                       "reason=CASE WHEN excluded.until>=cooldowns.until THEN excluded.reason ELSE cooldowns.reason END, "
+                       "until=MAX(until, excluded.until)",
+                       (_scope_key(account_id, scope), time.time() + seconds, reason))
     except (OSError, sqlite3.Error):
         raise OutreachDenied("rate_store_unavailable") from None
 
 
-def _check_cooldown(db, key):
-    db.execute("CREATE TABLE IF NOT EXISTS cooldowns (account TEXT PRIMARY KEY, until REAL NOT NULL)")
-    row = db.execute("SELECT until FROM cooldowns WHERE account=?", (key,)).fetchone()
-    if row and row[0] > time.time():
+def _check_cooldown(db, account_id, action):
+    db.execute("CREATE TABLE IF NOT EXISTS cooldowns "
+               "(account TEXT PRIMARY KEY, until REAL NOT NULL, reason TEXT NOT NULL DEFAULT '')")
+    keys = _remaining_keys(account_id, cooldown_scope(action))
+    row = db.execute(f"SELECT 1 FROM cooldowns WHERE account IN ({','.join('?' * len(keys))}) AND until>?",
+                     (*keys, time.time())).fetchone()
+    if row:
         raise OutreachDenied("account_cooldown")
 
 
-def account_cooldown_remaining(account_id):
-    """Read persisted provider waits without extending or clearing them."""
+def account_cooldown_remaining(account_id, scope=None):
+    """Read persisted provider waits without extending or clearing them.
+
+    ``scope=None`` reports the longest wait across every scope; ``account`` is
+    the hard scope (ban, revoked session, frozen account, connection flood).
+    """
     path = _rate_path()
     if not path.exists():
         return 0
@@ -469,8 +533,40 @@ def account_cooldown_remaining(account_id):
         with sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=1) as db:
             if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='cooldowns'").fetchone():
                 return 0
-            row = db.execute("SELECT until FROM cooldowns WHERE account=?", (hash_identifier(account_id),)).fetchone()
-        return max(0, row[0] - time.time()) if row else 0
+            keys = _remaining_keys(account_id, scope)
+            row = db.execute(f"SELECT MAX(until) FROM cooldowns WHERE account IN ({','.join('?' * len(keys))})",
+                             keys).fetchone()
+        return max(0, row[0] - time.time()) if row and row[0] else 0
+    except (OSError, sqlite3.Error):
+        raise OutreachDenied("rate_store_unavailable") from None
+
+
+def clear_account_cooldowns(account_id, scope="account"):
+    """Forget a wait a live check or a successful action just disproved.
+
+    A working connection proves the account is not banned, signed out or frozen,
+    so the bare ``account`` scope clears only that row; Telegram's message, join
+    and invite limits stay until they expire or that action succeeds. A narrower
+    scope clears that action's wait plus a soft legacy/global row it disproves,
+    and ``None`` forgets every scope.
+    """
+    path = _rate_path()
+    if not path.exists():
+        return
+    base = hash_identifier(account_id)
+    try:
+        with sqlite3.connect(path, timeout=1) as db:
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='cooldowns'").fetchone():
+                return
+            if scope is None:
+                keys = [base] + [_scope_key(account_id, name) for name in ("send", "invite", "join")]
+                db.execute(f"DELETE FROM cooldowns WHERE account IN ({','.join('?' * len(keys))})", keys)
+            elif scope == "account":
+                db.execute("DELETE FROM cooldowns WHERE account=?", (base,))
+            else:
+                db.execute(f"DELETE FROM cooldowns WHERE account=? OR (account=? AND reason IN "
+                           f"({','.join('?' * len(_SOFT_REASONS))}))",
+                           (_scope_key(account_id, scope), base, *_SOFT_REASONS))
     except (OSError, sqlite3.Error):
         raise OutreachDenied("rate_store_unavailable") from None
 
@@ -491,13 +587,23 @@ def account_pacing_remaining(account_id):
         raise OutreachDenied("rate_store_unavailable") from None
 
 
-def record_provider_restriction(account_id, exc):
+def record_provider_restriction(account_id, exc, action=None):
     from telethon import errors
+    scope = cooldown_scope(action)
     if isinstance(exc, errors.FloodWaitError):
-        account_cooldown(account_id, max(1, exc.seconds))
-    elif isinstance(exc, (errors.PeerFloodError, errors.UserDeactivatedBanError,
-                          errors.AuthKeyUnregisteredError, errors.FrozenMethodInvalidError)):
-        account_cooldown(account_id, 86400)
+        account_cooldown(account_id, max(1, getattr(exc, "seconds", 1)), scope, "flood_wait")
+    elif isinstance(exc, errors.PeerFloodError):
+        # Telegram reports a peer flood after a burst; it clears in minutes, not
+        # a day, and only affects the action that triggered it.
+        account_cooldown(account_id, 900, scope, "peer_flood")
+    elif isinstance(exc, errors.ChannelsTooMuchError):
+        account_cooldown(account_id, 86400, "join", "channel_limit_reached")
+    elif isinstance(exc, errors.UserDeactivatedBanError):
+        account_cooldown(account_id, 86400, "account", "account_banned")
+    elif isinstance(exc, errors.AuthKeyUnregisteredError):
+        account_cooldown(account_id, 86400, "account", "session_revoked")
+    elif isinstance(exc, errors.FrozenMethodInvalidError):
+        account_cooldown(account_id, 86400, "account", "account_frozen")
 
 
 async def dispatch_outreach(*, action, subject, account_id, approval_id, send, delay=None, defer_attempt=False):
@@ -520,8 +626,15 @@ async def dispatch_outreach(*, action, subject, account_id, approval_id, send, d
             await dispatch_guard.get()(False)
         with outreach_context(action=action, subject=subject, account_id=account_id,
                               approval_id=approval_id, delay=delay):
-            return await send()
+            result = await send()
+        try:
+            clear_account_cooldowns(account_id, cooldown_scope(action))
+        except OutreachDenied:
+            logging.getLogger("outreach.audit").warning(
+                "cooldown_clear_failed account=%s action=%s", hash_identifier(account_id)[:12], action)
+        return result
     key = hash_identifier(account_id)
+    scope = cooldown_scope(action)
     rate_path = _rate_path()
     while True:
         if dispatch_guard.get():
@@ -535,7 +648,7 @@ async def dispatch_outreach(*, action, subject, account_id, approval_id, send, d
             with sqlite3.connect(rate_path, timeout=1) as db:
                 db.execute("CREATE TABLE IF NOT EXISTS attempts (account TEXT PRIMARY KEY, until REAL NOT NULL)")
                 db.execute("BEGIN IMMEDIATE")
-                _check_cooldown(db, key)
+                _check_cooldown(db, account_id, action)
                 now = time.time()
                 row = db.execute("SELECT until FROM attempts WHERE account=?", (key,)).fetchone()
                 wait = max(0, row[0] - now) if row else 0
@@ -552,7 +665,7 @@ async def dispatch_outreach(*, action, subject, account_id, approval_id, send, d
         raise OutreachDenied(decision.reason)
     try:
         with sqlite3.connect(rate_path, timeout=1) as db:
-            _check_cooldown(db, key)
+            _check_cooldown(db, account_id, action)
     except (OSError, sqlite3.Error):
         raise OutreachDenied("rate_store_unavailable") from None
     if dispatch_guard.get():
@@ -564,7 +677,7 @@ async def dispatch_outreach(*, action, subject, account_id, approval_id, send, d
             raise OutreachDenied(decision.reason)
         try:
             with sqlite3.connect(rate_path, timeout=1) as db:
-                _check_cooldown(db, key)
+                _check_cooldown(db, account_id, action)
         except (OSError, sqlite3.Error):
             raise OutreachDenied("rate_store_unavailable") from None
     try:
@@ -573,7 +686,7 @@ async def dispatch_outreach(*, action, subject, account_id, approval_id, send, d
                               approval_id=approval_id, delay=delay):
             result = await send()
     except Exception as exc:
-        record_provider_restriction(account_id, exc)
+        record_provider_restriction(account_id, exc, action)
         logging.getLogger("outreach.audit").warning(
             "outreach_attempt action=%s account=%s subject=%s outcome=%s",
             action, key[:12], decision.subject_ref, type(exc).__name__,
@@ -583,4 +696,10 @@ async def dispatch_outreach(*, action, subject, account_id, approval_id, send, d
         "outreach_attempt action=%s account=%s subject=%s outcome=sent",
         action, key[:12], decision.subject_ref,
     )
+    # A delivered action disproves a stale wait on this scope.
+    try:
+        clear_account_cooldowns(account_id, scope)
+    except OutreachDenied:
+        logging.getLogger("outreach.audit").warning(
+            "cooldown_clear_failed account=%s scope=%s", key[:12], scope)
     return result

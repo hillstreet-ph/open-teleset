@@ -20,6 +20,12 @@ provider cooldowns, temporary server failures, and data-center redirects. An
 expired/revoked session needs a new Telegram sign-in; reconnecting cannot restore
 revoked authorization. Existing records and encrypted sessions are retained.
 
+Only an account-wide wait (ban, revoked session, frozen account, connection
+flood) pauses connecting. Message, join and invite limits are scoped to those
+actions and never stop the account from connecting for other work. An operator
+Check connection probes the account; when the probe succeeds it clears the
+account-wide wait it disproved and never touches an action-specific limit.
+
 The Phone column displays the saved phone number. New account timestamps include
 UTC offsets; the dashboard interprets legacy offset-free runtime timestamps as
 UTC. Tables scroll within mobile cards rather than widening the entire page.

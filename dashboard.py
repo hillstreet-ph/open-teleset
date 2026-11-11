@@ -64,6 +64,14 @@ async def lifespan(app: FastAPI):
     # Network discovery cannot delay liveness or authentication startup.
     proxy_task = asyncio.create_task(initialize_free_proxy())
 
+    # Upgrade the shared rate store before any worker reads it: adds the scope
+    # reason column and caps legacy unverified waits.
+    from outreach_policy import prepare_rate_store
+    try:
+        prepare_rate_store()
+    except Exception as exc:
+        log_manager.add_log("Outreach", "rate_store", f"Rate store unavailable: {type(exc).__name__}", "error")
+
     # 启动定时任务调度器
     scheduler_task = asyncio.create_task(task_scheduler.start())
     print("✅ 定时任务调度器已启动")
@@ -749,8 +757,8 @@ async def get_health_report(account_id: Optional[str] = None):
 
 @app.post("/api/health/check/{account_id}")
 async def check_account_health(account_id: str):
-    """检查账号健康状态"""
-    result = await health_monitor.check_account_health(account_id)
+    """检查账号健康状态（操作员显式检查会探测并清除过期等待）"""
+    result = await health_monitor.check_account_health(account_id, probe=True)
     return {
         "success": True,
         "result": result

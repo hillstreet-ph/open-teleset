@@ -880,7 +880,7 @@ async def add_members(request: AddMembersRequest):
                 )
             except Exception as e:
                 error_msg = str(e) if isinstance(e, OutreachDenied) else type(e).__name__
-                record_provider_restriction(request.account_id, e)
+                record_provider_restriction(request.account_id, e, "member_add")
                 results.append({"username": username, "success": False, "error": error_msg})
                 failed += 1
                 log_manager.add_log(
@@ -1029,21 +1029,21 @@ async def bulk_send_personal(request: BulkSendRequest, http_request: Request = N
                 except account_limit_errors as exc:
                     # Account-wide limit: drop it from the pool and switch to the next
                     # available account for this recipient.
-                    record_provider_restriction(account_id, exc)
+                    record_provider_restriction(account_id, exc, "personal_send")
                     if rotate:
                         limited.add(account_id)
                         continue
                     outcome = ("stop", type(exc).__name__, account_id)
                     break
                 except OutreachDenied as exc:
-                    record_provider_restriction(account_id, exc)
+                    record_provider_restriction(account_id, exc, "personal_send")
                     if str(exc) == "account_cooldown" and rotate:
                         limited.add(account_id)
                         continue
                     outcome = ("stop", str(exc), account_id)
                     break
                 except Exception as exc:
-                    record_provider_restriction(account_id, exc)
+                    record_provider_restriction(account_id, exc, "personal_send")
                     outcome = ("failed", type(exc).__name__, account_id)
                     break
             if outcome is None:
@@ -1168,7 +1168,7 @@ async def join_channels(request: JoinChannelsRequest):
                     outcome = ("already", "", account_id)
                     break
                 except account_limit_errors as exc:
-                    record_provider_restriction(account_id, exc)
+                    record_provider_restriction(account_id, exc, "auto_join")
                     if rotate:
                         limited.add(account_id)
                         continue
@@ -1178,7 +1178,7 @@ async def join_channels(request: JoinChannelsRequest):
                     outcome = ("failed", type(exc).__name__, account_id)
                     break
                 except Exception as exc:
-                    record_provider_restriction(account_id, exc)
+                    record_provider_restriction(account_id, exc, "auto_join")
                     outcome = ("failed", type(exc).__name__, account_id)
                     break
 

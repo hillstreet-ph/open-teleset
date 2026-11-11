@@ -1404,8 +1404,8 @@
                                     <p class="muted small" style="margin-top:4px;">Created {{ jobStamp(job.created) }} · Started {{ jobStamp(job.started) }} · Finished {{ jobStamp(job.finished) }}<template v-if="job.started"> · Elapsed {{ outreachDuration(jobElapsed(job)) }}</template></p>
                                     <p v-if="job.next_account_id && ['queued','running','waiting','paused'].includes(job.state)" class="muted small" style="margin-top:4px;">Assigned account: {{ jobAccountLabel(job.next_account_id) }}</p>
                                     <p v-if="job.retry_after > 0 && ['queued','running','waiting'].includes(job.state)" class="small" style="color:var(--warning);margin-top:4px;">Next eligible attempt in {{ outreachDuration(job.retry_after) }}<span v-if="job.retry_at"> · {{ outreachRetryTime(job.retry_at) }}</span>.</p>
-                                    <p v-if="job.reason === 'telegram_cooldown' && job.state === 'running'" class="muted small" style="margin-top:4px;">A selected account is in a Telegram cooldown. Remaining work on the other available accounts keeps going automatically; work pinned to the limited account resumes once its cooldown ends. No click is needed.</p>
-                                    <p v-if="job.reason === 'telegram_cooldown' && ['queued','waiting'].includes(job.state)" class="muted small" style="margin-top:4px;">Every selected account is in a Telegram cooldown, so the job waits automatically and resumes after the soonest one clears; no click is needed. Pause, Resume, or a new job cannot shorten Telegram's wait.</p>
+                                    <p v-if="job.reason === 'telegram_cooldown' && job.state === 'running'" class="muted small" style="margin-top:4px;">A selected account hit Telegram's limit for this action. The job switches to the next eligible account automatically; only work pinned to the limited account waits for its cooldown to end. No click is needed.</p>
+                                    <p v-if="job.reason === 'telegram_cooldown' && ['queued','waiting'].includes(job.state)" class="muted small" style="margin-top:4px;">No selected account can act yet. The job resumes automatically when the soonest Telegram wait clears; a real wait cannot be shortened by Pause, Resume or a new job, and a stale wait is re-read from the live limit records and released on its own.</p>
                                     <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;">
                                         <button v-if="['queued','running','waiting'].includes(job.state)" class="btn btn-outline btn-sm" @click="controlOutreachJob(job, 'pause')" :disabled="!!outreachJobBusy">Pause</button>
                                         <button v-if="job.state === 'paused'" class="btn btn-primary btn-sm" @click="controlOutreachJob(job, 'resume')" :disabled="!!outreachJobBusy">Resume</button>
@@ -4295,10 +4295,10 @@
                         <progress :value="job.completed + job.skipped + job.failed + job.uncertain" :max="job.total || 1" style="width:100%;"></progress>
                         <p aria-live="polite">Total {{ job.total }} · {{ jobCountLabel(job) }} {{ job.completed }} · Pending {{ job.pending }} · In flight {{ job.in_flight }} · Skipped {{ job.skipped }} · Failed {{ job.failed }}<template v-if="job.kind !== 'auto_join'"> · Uncertain {{ job.uncertain }}</template></p>
                         <p class="muted small" style="margin-top:4px;">Created {{ jobStamp(job.created) }} · Started {{ jobStamp(job.started) }} · Finished {{ jobStamp(job.finished) }}<template v-if="job.started"> · Elapsed {{ outreachDuration(jobElapsed(job)) }}</template></p>
-                        <p v-if="job.next_account_id && ['queued','running','waiting','paused'].includes(job.state)">Assigned account: {{ job.next_account_id }}</p>
+                        <p v-if="job.next_account_id && ['queued','running','waiting','paused'].includes(job.state)">Assigned account: {{ jobAccountLabel(job.next_account_id) }}</p>
                         <p v-if="job.retry_after > 0 && ['queued','running','waiting'].includes(job.state)">Next eligible attempt in {{ outreachDuration(job.retry_after) }}<span v-if="job.retry_at"> · {{ outreachRetryTime(job.retry_at) }} (your local time)</span>. Updates every 2 seconds.</p>
-                        <p v-if="job.reason === 'telegram_cooldown' && job.state === 'running'">A selected account is in a Telegram cooldown. Remaining work on the other available accounts keeps going automatically; work pinned to the limited account resumes once its cooldown ends. No click is needed.</p>
-                        <p v-if="job.reason === 'telegram_cooldown' && ['queued','waiting'].includes(job.state)">Every selected account is in a Telegram cooldown, so the job waits automatically and resumes after the soonest one clears; no click is needed. Pause, Resume, or a new job cannot shorten Telegram's wait.</p>
+                        <p v-if="job.reason === 'telegram_cooldown' && job.state === 'running'">A selected account hit Telegram's limit for this action. The job switches to the next eligible account automatically; only the limited account's remaining items wait for its cooldown to end. No click is needed.</p>
+                        <p v-if="job.reason === 'telegram_cooldown' && ['queued','waiting'].includes(job.state)">No selected account can act yet. The job resumes automatically when the soonest Telegram wait clears; a real wait cannot be shortened by Pause, Resume or a new job, and a stale wait is re-read from the live limit records and released on its own. Updates every 2 seconds.</p>
                         <p v-if="job.state === 'paused'">Paused. Resume is required to continue; any remaining Telegram cooldown still applies.</p>
                         <div style="display:flex;flex-wrap:wrap;gap:8px;margin:10px 0;">
                             <button v-if="['queued','running','waiting'].includes(job.state)" class="btn btn-outline" @click="controlOutreachJob(job, 'pause')" :disabled="!!outreachJobBusy">Pause</button>
@@ -11848,17 +11848,25 @@
                     // shape the durable job queue returns.
                     const record = sch.last_join_result
                     if (!record) return null
-                    const restricted = ['account_banned', 'session_revoked', 'account_frozen', 'channel_limit_reached', 'account_restricted'].includes(record.stopped_reason)
+                    const hard = ['account_banned', 'session_revoked', 'account_frozen', 'channel_limit_reached', 'account_restricted']
+                    const rows = record.targets || []
+                    const restricted = {}
+                    for (const row of rows) {
+                        if (row.account && hard.includes(row.reason)) restricted[row.account] = row.reason
+                    }
+                    if (!Object.keys(restricted).length && hard.includes(record.stopped_reason) && record.account) {
+                        restricted[record.account] = record.stopped_reason
+                    }
                     return {
                         kind: 'auto_join',
-                        results: (record.targets || []).map(row => ({
-                            account_id: record.account,
+                        results: rows.map(row => ({
+                            account_id: row.account || record.account || '',
                             target: row.target,
                             state: row.state === 'joined' ? 'completed' : (row.state === 'pending' ? 'skipped' : row.state),
                             reason: row.reason || (row.state === 'pending' ? 'not_attempted' : ''),
                             updated: row.at || 0
                         })),
-                        restricted_accounts: restricted ? { [record.account]: record.stopped_reason } : {}
+                        restricted_accounts: restricted
                     }
                 },
 

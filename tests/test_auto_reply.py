@@ -37,7 +37,7 @@ def workspace(tmp_path, monkeypatch):
     monkeypatch.setenv("SESSION_ENCRYPTION_KEY", Fernet.generate_key().decode())
     monkeypatch.setenv("OUTREACH_POLICY_FILE", str(policy))
     operator_store.set_features({"auto_reply_enabled": True})
-    monkeypatch.setattr(auto_reply, "account_cooldown_remaining", lambda account: 0)
+    monkeypatch.setattr(auto_reply, "account_cooldown_remaining", lambda *_args: 0)
     monkeypatch.setattr(auto_reply, "outreach_policy", OutreachPolicy(policy))
     monkeypatch.setattr(auto_reply.log_manager, "add_log", lambda *a, **k: None)
     monkeypatch.setattr(auto_reply.knowledge, "settings_for",
@@ -818,8 +818,8 @@ def test_a_telegram_wait_is_recorded_and_its_detail_never_leaks(monkeypatch):
     clock = Clock()
     recorded = []
 
-    def capture(account, exc):
-        recorded.append((account, exc.seconds))
+    def capture(account, exc, action):
+        recorded.append((account, exc.seconds, action))
 
     monkeypatch.setattr(auto_reply, "record_provider_restriction", capture)
 
@@ -840,7 +840,7 @@ def test_a_telegram_wait_is_recorded_and_its_detail_never_leaks(monkeypatch):
     counts = run(scenario())
 
     assert counts["skipped"] == 1
-    assert recorded == [(ACCOUNT, 37)]
+    assert recorded == [(ACCOUNT, 37, "auto_reply")]
     raw = json.dumps(auto_reply._record("operator-1")["activity"])
     assert "37" not in raw
     assert any("did not accept" in item["detail"] for item in auto_reply._record("operator-1")["activity"])
@@ -913,7 +913,7 @@ def test_an_account_telegram_told_us_to_leave_alone_is_not_touched():
         await add_rule(match="any")
         await watch()
         original = auto_reply.account_cooldown_remaining
-        auto_reply.account_cooldown_remaining = lambda account: 120
+        auto_reply.account_cooldown_remaining = lambda *_args: 120
         try:
             getter, client = a_client(a_dialog(clock, 11, "are you there"))
             return await auto_reply.poll_operator("operator-1", get_client=getter, now=clock.t), client
@@ -1111,7 +1111,7 @@ def test_send_rechecks_the_daily_cap():
 def test_send_rechecks_the_account_cooldown():
     ref, draft_id = a_draft()
     original = auto_reply.account_cooldown_remaining
-    auto_reply.account_cooldown_remaining = lambda account: 120
+    auto_reply.account_cooldown_remaining = lambda *_args: 120
     try:
         with pytest.raises(HTTPException) as error:
             run(auto_reply.send_draft(draft_id, REQUEST))

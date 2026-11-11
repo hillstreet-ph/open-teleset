@@ -810,7 +810,7 @@ def test_legacy_message_events_backfill_aggregates_exactly_once(tmp_path, monkey
 async def test_rate_store_outage_keeps_recipient_pending(env, monkeypatch):
     job = env.submit(['111'])
     monkeypatch.setattr(jobs, 'account_cooldown_remaining',
-                        lambda _: (_ for _ in ()).throw(policy.OutreachDenied('rate_store_unavailable')))
+                        lambda *_args: (_ for _ in ()).throw(policy.OutreachDenied('rate_store_unavailable')))
     await env.worker.tick()
     result = env.store.snapshot(job, 'owner')
     assert result['state'] == 'paused'
@@ -1165,3 +1165,35 @@ async def test_member_source_revocation_after_peer_binding_prevents_invite(env, 
     monkeypatch.setattr(jobs.account_manager, 'get_client', AsyncMock(return_value=client))
     await env.worker.tick()
     assert env.store.snapshot(job, 'owner')['state'] == 'paused'
+
+
+def test_a_stale_stored_wait_is_released_from_the_live_records(env):
+    job = env.submit()
+    with env.store.db() as db:
+        db.execute("UPDATE jobs SET state='waiting',reason='telegram_cooldown',retry_at=? WHERE id=?",
+                   (env.clock[0] + 21 * 3600, job))
+    shown = env.store.snapshot(job, 'owner')
+    assert shown['retry_after'] == 0 and shown['retry_at'] == 0
+    with env.store.db() as db:
+        assert db.execute('SELECT retry_at FROM jobs WHERE id=?', (job,)).fetchone()[0] == 0
+
+
+def test_resume_releases_a_wait_the_live_records_no_longer_hold(env):
+    job = env.submit()
+    with env.store.db() as db:
+        db.execute("UPDATE jobs SET state='paused',reason='telegram_cooldown',retry_at=? WHERE id=?",
+                   (env.clock[0] + 21 * 3600, job))
+    resumed = env.store.control(job, 'owner', 'resume')
+    assert resumed['state'] == 'queued' and resumed['retry_after'] == 0
+
+
+def test_resume_uses_the_live_wait_instead_of_an_inflated_timestamp(env):
+    job = env.submit()
+    policy.account_cooldown('a', 120, 'send', 'flood_wait')
+    with env.store.db() as db:
+        db.execute("UPDATE jobs SET state='paused',reason='telegram_cooldown',retry_at=? WHERE id=?",
+                   (env.clock[0] + 21 * 3600, job))
+    resumed = env.store.control(job, 'owner', 'resume')
+    assert resumed['state'] == 'waiting'
+    assert resumed['reason'] == 'telegram_cooldown'
+    assert 100 <= resumed['retry_after'] <= 120

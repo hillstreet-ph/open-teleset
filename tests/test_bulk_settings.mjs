@@ -16,7 +16,7 @@ test('wait status explains a multi-hour cooldown and does not promise paused job
   assert.match(waitHelpers.outreachReason('delivery_timeout'), /Check Telegram/);
   assert.match(html, /job.retry_after > 0 && \['queued','running','waiting'\].includes\(job.state\)/);
   assert.match(html, /Paused\. Resume is required/);
-  assert.match(html, /Assigned account: \{\{ job.next_account_id \}\}/);
+  assert.match(html, /Assigned account: \{\{ jobAccountLabel\(job\.next_account_id\) \}\}/);
 });
 const method = html.slice(html.indexOf('async runBulkSend() {'), html.indexOf('// === Auth Methods ==='));
 test('unreachable, opted-out and non-consenting recipients are labelled as skips', () => {

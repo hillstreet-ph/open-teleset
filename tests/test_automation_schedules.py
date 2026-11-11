@@ -23,6 +23,7 @@ import workflows
 def store(tmp_path, monkeypatch):
     monkeypatch.setattr(module, "ACCOUNTS_DIR", str(tmp_path))
     monkeypatch.setattr(module, "SCHEDULE_FILE", str(tmp_path / "schedules.json"))
+    monkeypatch.setenv("OUTREACH_RATE_DB", str(tmp_path / "rate.sqlite"))
     monkeypatch.setattr(module.log_manager, "add_log", lambda *args, **kwargs: None)
     monkeypatch.setattr(module.asyncio, "sleep", AsyncMock())
     return module.TaskScheduler()
@@ -200,6 +201,44 @@ async def test_auto_join_stops_on_flood_wait(store, client):
     assert await store._execute_schedule(join_schedule()) is False
     assert client.call_count == 1
     module.asyncio.sleep.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_auto_join_rotates_to_the_next_account_when_one_is_limited(store, monkeypatch):
+    flooded = AsyncMock(side_effect=errors.FloodWaitError(None, 60))
+    healthy = AsyncMock()
+    healthy.get_entity = AsyncMock(side_effect=lambda value: SimpleNamespace(id=7, username=str(value)))
+    clients = {"a": flooded, "b": healthy}
+    manager = SimpleNamespace(accounts={"a": {}, "b": {}},
+                              get_client=AsyncMock(side_effect=lambda account: clients[account]))
+    monkeypatch.setattr(module, "account_manager", manager)
+    schedule = join_schedule(accounts=["a", "b"])
+
+    assert await store._execute_schedule(schedule) is True
+    record = schedule["last_join_result"]
+    assert record["joined"] == 2 and record["failed"] == 0
+    assert record["stopped_reason"] == ""
+    assert flooded.call_count == 1
+    assert [row["account"] for row in record["targets"]] == ["b", "b"]
+    # The limit stays scoped to joining, so the next schedule can use account a
+    # for a send immediately.
+    assert module.account_cooldown_remaining("a", "send") == 0
+    assert module.account_cooldown_remaining("a", "join") > 0
+
+
+@pytest.mark.asyncio
+async def test_auto_join_waits_without_calling_telegram_while_every_account_cools(store, client):
+    import outreach_policy
+
+    outreach_policy.account_cooldown("acct", 120, "join", "flood_wait")
+    schedule = join_schedule()
+
+    assert await store._execute_schedule(schedule) is False
+    assert client.call_count == 0
+    record = schedule["last_join_result"]
+    assert record["failed"] == 1 and record["stopped_reason"] == "telegram_cooldown"
+    assert record["targets"][0]["reason"] == "telegram_cooldown"
+    assert record["targets"][1]["state"] == "pending"
 
 
 @pytest.mark.asyncio

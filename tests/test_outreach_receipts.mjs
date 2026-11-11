@@ -51,10 +51,11 @@ test('both durable job cards render account → target receipts', () => {
   assert.match(html, /resultState\(job, row\.state\)/);
 });
 
-test('the Tasks outreach panel explains a whole-job Telegram cooldown', () => {
+test('the Tasks outreach panel explains rotation and a whole-job Telegram cooldown', () => {
   const overview = html.slice(html.indexOf('<h3>Outreach jobs</h3>'), html.indexOf('<!-- ============ Automation ============ -->'));
   assert.match(overview, /<job-history :job="job" :account="jobAccountLabel"/);
-  assert.match(overview, /Every selected account is in a Telegram cooldown/);
-  assert.match(overview, /cannot shorten Telegram's wait/);
+  assert.match(overview, /switches to the next eligible account automatically/);
+  assert.match(overview, /cannot be shortened by Pause, Resume or a new job/);
+  assert.match(overview, /stale wait is re-read from the live limit records/);
   assert.match(overview, /Assigned account: \{\{ jobAccountLabel\(job\.next_account_id\) \}\}/);
 });

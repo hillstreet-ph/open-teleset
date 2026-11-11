@@ -10,22 +10,28 @@ when no eligible work remains. It does not acquire additional recipients.
 - Start submits the explicit recipients. The browser reuses its submission key
   if an HTTP response is lost. Changed input with the same key returns 409;
   inspect the original job before explicitly starting a separate job.
-- Pause prevents the next dispatch. Resume retains any outstanding cooldown.
+- Pause prevents the next dispatch. Resume re-reads the live limit records: a
+  genuine Telegram wait is kept, while a stale stored time is released.
 - Stop is terminal. An operation already in flight may finish and is recorded.
 - Completed, skipped and failed recipients leave the pending queue; records
   remain in history. Counts cover the full job; the UI displays its latest 100
   recipients. All active jobs and the most recent 30 terminal jobs are listed.
 - Duplicate normalized inputs and resolved aliases are skipped within a job.
   Member Adder checks membership before inviting and skips existing members.
-- A timed Telegram flood wait pauses the whole job, preserves the assigned
-  account and recipient, and resumes only after the stored wait expires.
+- A timed Telegram flood wait is scoped to that account and action. Round-robin
+  work moves to the next ready account immediately; only items tied to the
+  limited account wait, and the job resumes by itself when the soonest real
+  wait ends. The tracker reads that wait from the live limit records, so a
+  stored value left by an older build is released instead of stranding the job.
 - Other provider restrictions pause for operator review. Network loss or a
   server error after dispatch, or restart during dispatch, produces
   `needs_review`. That job cannot automatically resume or repeat delivery.
-- Single-account and existing round-robin assignment are supported. Recipients
-  remain pinned to their assigned sender and verified Telegram user ID. Replacing
-  an account under the same application ID pauses the job. An offline account waits; another
-  account is never substituted to evade a restriction.
+- Single-account and round-robin rotation are supported. In rotation mode the
+  operator's consent covers the whole selected set, and the earliest pending
+  recipient is sent through whichever selected account is ready, re-pinned for
+  that attempt. In assignment mode a recipient keeps its consented account and
+  verified Telegram user ID. Replacing an account under the same application ID
+  pauses the job. No account outside the selected set is ever substituted.
 
 The creator must retain current administrator access. Ownership is enforced on
 every job read and control. Consent, suppression and member-add approval checks

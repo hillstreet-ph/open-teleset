@@ -48,16 +48,30 @@ resumed or automatically resent.
 
 ## Provider restrictions and recovery
 
-A Telegram flood wait stops the entire batch and stores the reported cooldown.
-Peer-flood, frozen, banned or invalid-session errors stop the batch and impose
-a 24-hour cooldown, requiring operator investigation before another run.
-Policy or rate-store denial also stops the batch. Other recipients are never
-rerouted to evade a restriction. Unknown delivery failures are not retried.
+Telegram limits messages, joins and invites separately, so every recorded wait
+is scoped to the action that hit it. In a round-robin job a flood wait sidelines
+that account for that action only: the next selected account takes over the same
+recipient or link immediately, and the limited account returns to the rotation
+once its own wait ends. A job waits only when no selected account can act, then
+resumes automatically at the soonest real wait. Single-account work waits for
+its own cooldown.
+
+Flood-wait and peer-flood limits are soft and last for the duration Telegram
+reports (15 minutes for a peer flood). A ban, a revoked session, a frozen
+account or Telegram's channel-join limit is hard: the account is named in the
+job, left out until an operator acts, and never retried in a loop. Only the
+accounts the operator selected are used; work is never rerouted to other
+accounts or proxies to evade a restriction. Policy or rate-store denial also
+stops the batch, and unknown delivery failures are not retried.
 
 Cooldowns share the existing mounted `OUTREACH_RATE_DB` SQLite file. All workers
-for an account must use that same persistent path. A later worker cannot shorten
-a cooldown, and a cooldown created while an attempt is waiting blocks dispatch.
-An unavailable rate store fails closed. The dispatcher applies cooldown checks
+for an account must use that same persistent path. The rate store is the single
+source of truth: a job's stored wait is re-read from it on every view and in the
+worker tick, so a wait written by an older build is released as soon as no
+account is serving it, while a genuine wait is never shortened by Pause, Resume
+or a new job. Rows written before scoping existed are capped at 15 minutes once
+and marked `legacy`; a real limit is re-recorded on the next attempt. An
+unavailable rate store fails closed, and the dispatcher applies cooldown checks
 to all existing outreach callers, including batch and scheduled operations.
 
 Tests use synthetic peers and mocked clients; no real Telegram messages are
