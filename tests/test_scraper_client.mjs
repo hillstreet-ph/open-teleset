@@ -30,6 +30,9 @@ function harness(source, post) {
     scraper: { accountId: 'acct_1', target: '@channel', limit: 200, filterBots: true, activityFilter: 'all', loading: false, results: [], summary: '' },
     channelScraper: { accountId: '', keywords: 'casino', country: '', groupType: 'all', limit: 100, loading: false, results: [], summary: '' },
     showToast: (message, error) => toasts.push({ message, error }),
+    get scraperValidTargets() {
+      return (this.scraper.target || '').split(/\r\n|\r|\n/).map(l => l.trim()).filter(Boolean);
+    },
   };
   const methods = vm.runInNewContext(`({${source}})`, context);
   for (const [name, fn] of Object.entries(methods)) state[name] = fn.bind(state);
@@ -75,6 +78,24 @@ test('request timeout becomes a clear message rather than axios internals', asyn
   assert.equal(toasts.length, 1);
   assert.match(toasts[0].message, /timed out/i);
   assert.doesNotMatch(toasts[0].message, /90000|ECONNABORTED/);
+});
+
+test('single target routes to member endpoint', async () => {
+  const { state, calls } = harness(scraperMethods, async () => ({ data: { members: [{ id: 1 }], total: 1, scanned: 1, excluded: 0 } }));
+  state.scraper.target = '@onechan';
+  await state.runScraper();
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, '/api/scraper/members');
+  assert.equal(calls[0].body.target, '@onechan');
+});
+
+test('multiple targets route to bulk endpoint', async () => {
+  const { state, calls } = harness(scraperMethods, async () => ({ data: { members: [], total: 0, errors: [] } }));
+  state.scraper.target = '@chan1\n@chan2\n@chan3';
+  await state.runScraper();
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, '/api/scraper/members/bulk');
+  assert.deepEqual(calls[0].body.targets, ['@chan1', '@chan2', '@chan3']);
 });
 
 test('scraper tables render at most 200 rows while keeping every result for export', () => {
