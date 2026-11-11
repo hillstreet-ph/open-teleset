@@ -1,0 +1,39 @@
+name: Configure runtime settings
+
+# Writes server-owned runtime settings into operations_shared.app_settings, the
+# store src/open_teleset/app_settings.py reads at runtime, and proves the
+# credential works. Values come from environment secrets and are never printed.
+# The production environment only permits runs from main.
+
+on:
+  workflow_dispatch:
+    inputs:
+      keyword:
+        description: "Keyword used to verify the TGStat token"
+        type: string
+        default: "news"
+
+permissions:
+  contents: read
+
+jobs:
+  store-tgstat-token:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - name: Store the token in the server-owned settings table
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SETTING_VALUE: ${{ secrets.TGSTAT_TOKEN }}
+        run: python scripts/store_runtime_setting.py tgstat_token
+      - name: Verify the token against the TGStat API (reports the subscription state)
+        # The subscription is the account owner's to activate; an inactive one
+        # makes discovery fall back to public search, so report it without
+        # failing the run that already stored the setting.
+        continue-on-error: true
+        env:
+          TGSTAT_TOKEN: ${{ secrets.TGSTAT_TOKEN }}
+          KEYWORD: ${{ inputs.keyword }}
+        run: python scripts/check_tgstat_token.py "$KEYWORD"
