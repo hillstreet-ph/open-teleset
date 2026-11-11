@@ -33,11 +33,83 @@ _KEY_CODES: dict[str, dict[str, Any]] = {
 
 KEY_REJECTED_MESSAGE = "That key cannot be sent from the dashboard."
 _BUTTON_MASK = {"left": 1, "middle": 4, "right": 8}
+_MODIFIER_MASK = {"Alt": 1, "Control": 2, "Meta": 4, "Shift": 8}
+_MODIFIER_NAMES = {name.lower(): name for name in _MODIFIER_MASK}
+_PUNCTUATION_CODES = {
+    "-": "Minus", "=": "Equal", "[": "BracketLeft", "]": "BracketRight",
+    "\\": "Backslash", ";": "Semicolon", "'": "Quote", ",": "Comma",
+    ".": "Period", "/": "Slash", "`": "Backquote",
+    "!": "Digit1", "@": "Digit2", "#": "Digit3", "$": "Digit4", "%": "Digit5",
+    "^": "Digit6", "&": "Digit7", "*": "Digit8", "(": "Digit9", ")": "Digit0",
+    "_": "Minus", "+": "Equal", "{": "BracketLeft", "}": "BracketRight",
+    "|": "Backslash", ":": "Semicolon", '"': "Quote", "<": "Comma",
+    ">": "Period", "?": "Slash", "~": "Backquote",
+}
 
 
 def pressable_keys() -> list[str]:
     """The allowlist the cockpit renders, so the UI can never offer a dead key."""
     return list(_KEY_CODES)
+
+
+def _key_spec(name: str) -> dict[str, Any]:
+    """Resolve one key name to its DevTools key/code/virtual-key triple."""
+    if name == " ":
+        return _KEY_CODES["Space"]
+    spec = _KEY_CODES.get(name)
+    if spec is not None:
+        return spec
+    if len(name) == 1 and name.isascii() and name.isalnum():
+        upper = name.upper()
+        code = f"Digit{upper}" if upper.isdigit() else f"Key{upper}"
+        return {"key": upper, "code": code, "vk": ord(upper)}
+    upper = name.upper()
+    if 2 <= len(upper) <= 3 and upper.startswith("F") and upper[1:].isdigit():
+        number = int(upper[1:])
+        if 1 <= number <= 12:
+            return {"key": upper, "code": upper, "vk": 111 + number}
+    raise CdpError(KEY_REJECTED_MESSAGE)
+
+
+def parse_combo(combo: str) -> tuple[str, int]:
+    """Split "Control+Shift+T" into its canonical key name and modifier mask.
+
+    Modifier names are case-insensitive and may be comma-separated because the
+    dashboard joins its toggle buttons with a comma. The final segment is the key.
+    """
+    chunks = str(combo or "").split("+")
+    key = chunks[-1]
+    mask = 0
+    seen: set[str] = set()
+    for chunk in chunks[:-1]:
+        for piece in chunk.split(","):
+            name = _MODIFIER_NAMES.get(piece.strip().lower())
+            if name is None or name in seen:
+                raise CdpError(KEY_REJECTED_MESSAGE)
+            seen.add(name)
+            mask |= _MODIFIER_MASK[name]
+    _key_spec(key)
+    if key in _KEY_CODES:
+        canonical = key
+    elif key == " ":
+        canonical = "Space"
+    else:
+        canonical = key.upper()
+    return canonical, mask
+
+
+def _character_spec(char: str) -> dict[str, Any]:
+    if char in ("\n", "\r"):
+        return {"key": "Enter", "code": "Enter", "vk": 13}
+    if char == " ":
+        return {"key": " ", "code": "Space", "vk": 32}
+    if char.isascii() and char.isalpha():
+        upper = char.upper()
+        return {"key": char, "code": f"Key{upper}", "vk": ord(upper)}
+    if char.isdigit():
+        return {"key": char, "code": f"Digit{char}", "vk": ord(char)}
+    vk = ord(char) if char.isascii() and char.isprintable() else 0
+    return {"key": char, "code": _PUNCTUATION_CODES.get(char, ""), "vk": vk}
 
 
 class CdpError(RuntimeError):
@@ -242,6 +314,93 @@ class CdpClient:
         await self.call("Input.dispatchKeyEvent", {"type": "keyDown", **base}, session_id)
         await self.call("Input.dispatchKeyEvent", {"type": "keyUp", **base}, session_id)
 
+    async def press_combo(self, target_id: str, combo: str) -> None:
+        key, mask = parse_combo(combo)
+        spec = _key_spec(key)
+        session_id = await self._page_session(target_id)
+        base = {
+            "key": spec["key"],
+            "code": spec["code"],
+            "windowsVirtualKeyCode": spec["vk"],
+            "nativeVirtualKeyCode": spec["vk"],
+        }
+        if mask:
+            base["modifiers"] = mask
+        await self.call("Input.dispatchKeyEvent", {"type": "keyDown", **base}, session_id)
+        await self.call("Input.dispatchKeyEvent", {"type": "keyUp", **base}, session_id)
+
+    async def type_keystrokes(self, target_id: str, text: str) -> None:
+        """One keyDown/keyUp pair per character, so key listeners see real typing."""
+        session_id = await self._page_session(target_id)
+        for char in text:
+            spec = _character_spec(char)
+            base = {
+                "key": spec["key"],
+                "code": spec["code"],
+                "windowsVirtualKeyCode": spec["vk"],
+                "nativeVirtualKeyCode": spec["vk"],
+            }
+            await self.call(
+                "Input.dispatchKeyEvent",
+                {"type": "keyDown", "text": char, "unmodifiedText": char, **base},
+                session_id,
+            )
+            await self.call("Input.dispatchKeyEvent", {"type": "keyUp", **base}, session_id)
+
+    async def history(self, target_id: str) -> dict:
+        answer = await self.call("Page.getNavigationHistory", {}, await self._page_session(target_id))
+        raw = answer.get("entries") or []
+        if not isinstance(raw, list):
+            raw = []
+        index = _as_int(answer.get("currentIndex"))
+        current = raw[index] if 0 <= index < len(raw) else {}
+        entries = [
+            {
+                "id": _as_int(item.get("id")),
+                "url": str(item.get("url") or "")[:500],
+                "title": str(item.get("title") or "")[:200],
+            }
+            for item in raw[-50:]
+            if isinstance(item, dict)
+        ]
+        return {
+            "index": index,
+            "entries": entries,
+            "url": str(current.get("url") or "")[:500],
+            "title": str(current.get("title") or "")[:200],
+            "can_go_back": index > 0,
+            "can_go_forward": index < len(raw) - 1,
+        }
+
+    async def _history_step(self, target_id: str, offset: int) -> None:
+        session_id = await self._page_session(target_id)
+        answer = await self.call("Page.getNavigationHistory", {}, session_id)
+        entries = answer.get("entries") or []
+        if not isinstance(entries, list):
+            entries = []
+        index = _as_int(answer.get("currentIndex")) + offset
+        entry = entries[index] if 0 <= index < len(entries) else None
+        if not isinstance(entry, dict):
+            raise CdpError(
+                "There is no earlier page in this tab." if offset < 0 else "There is no later page in this tab."
+            )
+        await self.call("Page.navigateToHistoryEntry", {"entryId": _as_int(entry.get("id"))}, session_id)
+
+    async def go_back(self, target_id: str) -> None:
+        await self._history_step(target_id, -1)
+
+    async def go_forward(self, target_id: str) -> None:
+        await self._history_step(target_id, 1)
+
+    async def reload(self, target_id: str) -> None:
+        await self.call("Page.reload", {"ignoreCache": True}, await self._page_session(target_id))
+
+    async def allow_downloads(self, target_id: str) -> None:
+        await self.call(
+            "Browser.setDownloadBehavior",
+            {"behavior": "allowAndName", "eventsEnabled": True},
+        )
+
     async def start_screencast(self, target_id: str, on_frame, quality: int = 60,
                                max_width: int = 1280, max_height: int = 800) -> str:
         """Stream JPEG frames; returns the page session the frames belong to."""
@@ -360,4 +519,11 @@ def _positive(value) -> float:
     except (TypeError, ValueError):
         return 0.0
     return number if number > 0 else 0.0
+
+
+def _as_int(value, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 

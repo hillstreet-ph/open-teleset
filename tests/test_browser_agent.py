@@ -416,6 +416,12 @@ class FakeClient:
     async def press_key(self, target_id, key):
         self.calls.append(("key", target_id, key))
 
+    async def allow_downloads(self, target_id):
+        self.calls.append(("downloads", target_id))
+
+    def subscribe(self, method, handler):
+        self.calls.append(("subscribe", method))
+
     async def navigate(self, target_id, url):
         self.calls.append(("navigate", target_id, url))
 

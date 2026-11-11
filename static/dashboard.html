@@ -2208,33 +2208,59 @@
                         <button class="btn btn-outline" @click="toggleCloudBrowserReel" :disabled="!!cloudBrowser.busy || !cloudBrowser.live">{{ cloudBrowser.recording ? 'Stop recording' : 'Record frames' }}</button>
                         <button class="btn btn-outline" @click="downloadCloudBrowserReel" :disabled="!!cloudBrowser.busy || !cloudBrowser.reel_frames">Download reel<span v-if="cloudBrowser.reel_frames"> ({{ cloudBrowser.reel_frames }})</span></button>
                     </div>
-                    <div style="border:1px solid var(--border);border-radius:10px;overflow:hidden;background:var(--surface-2);">
+                    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:8px;">
+                        <button class="btn btn-sm btn-outline" @click="cloudBrowserBack" :disabled="!!cloudBrowser.busy || !cloudBrowser.pageState.can_go_back" title="Back in this tab's history">Back</button>
+                        <button class="btn btn-sm btn-outline" @click="cloudBrowserForward" :disabled="!!cloudBrowser.busy || !cloudBrowser.pageState.can_go_forward" title="Forward in this tab's history">Forward</button>
+                        <button class="btn btn-sm btn-outline" @click="cloudBrowserReload" :disabled="!!cloudBrowser.busy" title="Reload from the network">Reload</button>
+                        <input ref="cloudBrowserAddress" v-model="cloudBrowser.address" class="form-control mono" style="flex:1;min-width:200px;" placeholder="https://web.telegram.org/a/" autocomplete="off" spellcheck="false" @keyup.enter="navigateCloudBrowserPage">
+                        <button class="btn btn-sm btn-outline" @click="navigateCloudBrowserPage" :disabled="!!cloudBrowser.busy || !cloudBrowser.address.trim()">Go</button>
+                    </div>
+                    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:8px;">
+                        <button v-for="page in cloudBrowser.pages" :key="page.target_id" class="btn btn-sm" :class="cloudBrowser.selected === page.target_id ? 'btn-primary' : 'btn-outline'" :title="page.url || ''" @click="selectCloudBrowserPage(page)">
+                            {{ cloudBrowserTabLabel(page) }}<span class="mono" style="margin-left:8px;" title="Close this page" @click.stop="closeCloudBrowserPage(page)">×</span>
+                        </button>
+                        <button class="btn btn-sm btn-outline" title="Type an address to open or navigate" @click="focusCloudBrowserAddress">+</button>
+                    </div>
+                    <div ref="cloudBrowserSurface" tabindex="0" @mousedown="focusCloudBrowserSurface" @keydown="cloudBrowserKeydown" style="border:1px solid var(--border);border-radius:10px;overflow:hidden;background:var(--surface-2);outline:none;">
                         <img v-if="cloudBrowser.view" :src="cloudBrowser.view" alt="Live view of the selected page in the hosted browser" style="display:block;width:100%;height:auto;cursor:crosshair;" @click="cloudBrowserClick" @dblclick="cloudBrowserDoubleClick" @contextmenu.prevent="cloudBrowserRightClick" @wheel.prevent="cloudBrowserScroll">
                         <p v-else class="empty-state" style="margin:0;"><span>{{ cloudBrowser.busy === 'stream' ? 'Opening the live view…' : 'No frame yet — start the live view or take a still.' }}</span></p>
                     </div>
-                    <p class="muted small" style="margin-top:8px;">Clicks land where you click; the browser decides the coordinates from its own viewport. {{ cloudBrowser.watchers > 1 ? cloudBrowser.watchers + ' tabs are watching this view.' : 'Recording keeps recent frames in memory only - the server stores nothing after a restart.' }}</p>
+                    <p class="muted small" style="margin-top:8px;">Clicks land where you click; the browser decides the coordinates from its own viewport. Click the picture once, then type - letters and shortcuts reach the page as you press them. {{ cloudBrowser.watchers > 1 ? cloudBrowser.watchers + ' tabs are watching this view.' : 'Recording keeps recent frames in memory only - the server stores nothing after a restart.' }}</p>
                     <p v-if="cloudBrowser.streamError" class="small" style="color:var(--danger);">{{ cloudBrowser.streamError }}</p>
                     <div class="form-group" style="margin-top:14px;">
-                        <label>Go to</label>
-                        <div style="display:flex;gap:8px;flex-wrap:wrap;">
-                            <input v-model="cloudBrowser.navigateUrl" class="form-control mono" style="flex:1;min-width:220px;" placeholder="https://web.telegram.org/a/" autocomplete="off" spellcheck="false">
-                            <button class="btn btn-outline" @click="navigateCloudBrowserPage" :disabled="!!cloudBrowser.busy">Go</button>
-                        </div>
-                    </div>
-                    <div class="form-group">
                         <label>Type into the focused field</label>
                         <div style="display:flex;gap:8px;flex-wrap:wrap;">
                             <input v-model="cloudBrowser.text" class="form-control" type="password" style="flex:1;min-width:220px;" placeholder="Phone number, code or password" autocomplete="off">
                             <button class="btn btn-outline" @click="typeIntoCloudBrowserPage" :disabled="!!cloudBrowser.busy">Send text</button>
                         </div>
-                        <p class="muted small" style="margin-top:6px;">Cleared from this form as soon as it is sent. Nothing typed here is stored or logged.</p>
+                        <p class="muted small" style="margin-top:6px;">Sent one keystroke at a time, then cleared from this form. Nothing typed here is stored or logged.</p>
+                    </div>
+                    <div class="form-group">
+                        <label>Modifiers for the key buttons</label>
+                        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                            <button v-for="mod in ['Shift', 'Control', 'Alt', 'Meta']" :key="mod" class="btn btn-sm" :class="cloudBrowser.modifiers.includes(mod) ? 'btn-primary' : 'btn-outline'" @click="toggleCloudBrowserModifier(mod)">{{ mod }}</button>
+                        </div>
                     </div>
                     <div class="form-group">
                         <label>Keys the browser accepts</label>
                         <div style="display:flex;gap:8px;flex-wrap:wrap;">
                             <button v-for="key in cloudBrowser.config.keys" :key="key" class="btn btn-outline btn-sm" @click="pressCloudBrowserKey(key)" :disabled="!!cloudBrowser.busy">{{ key }}</button>
                         </div>
-                        <p class="muted small" style="margin-top:6px;">Enter, arrows, space and editing keys. Letters and digits go through the type field so a key press can never carry a secret into the logs.</p>
+                        <p class="muted small" style="margin-top:6px;">Toggled modifiers apply to these buttons. Enter, arrows, space and editing keys; letters and digits travel per keystroke so a key press can never carry a secret into the logs.</p>
+                    </div>
+                    <div style="margin-top:14px;">
+                        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;justify-content:space-between;">
+                            <label style="margin:0;">Downloads on the browser host</label>
+                            <button class="btn btn-sm btn-outline" @click="loadCloudBrowserDownloads" :disabled="!!cloudBrowser.busy">Refresh</button>
+                        </div>
+                        <p v-if="!cloudBrowser.downloads.length" class="muted small" style="margin-top:6px;">Nothing has started in this view. Files save on the browser host - this list only shows what started and finished.</p>
+                        <div v-else style="margin-top:6px;">
+                            <div v-for="item in cloudBrowser.downloads" :key="item.guid + item.at" class="status-row">
+                                <span class="mono small" style="overflow-wrap:anywhere;">{{ item.filename || 'Unnamed file' }}</span>
+                                <span class="muted small">{{ item.host || 'unknown host' }} <span class="badge" :class="item.state === 'completed' ? 'badge-info' : (item.state === 'canceled' ? 'badge-danger' : 'badge-warning')">{{ item.state }}</span></span>
+                            </div>
+                        </div>
+                        <p v-if="cloudBrowser.downloadsError" class="small" style="color:var(--danger);">{{ cloudBrowser.downloadsError }}</p>
                     </div>
                     <div class="form-row" style="align-items:flex-end;">
                         <div class="form-group">
@@ -5544,6 +5570,9 @@
         // with fetch + ReadableStream. The abort handle lives outside Vue's reactive
         // state: a controller proxy would break the underlying connection.
         let _cloudStream = null
+        // Keystrokes must reach the page in the order they were typed. Each one is
+        // its own request, so they are chained rather than fired side by side.
+        let _cloudKeyQueue = Promise.resolve()
         let _mailboxStream = null
         // A page of chat history can carry dozens of photos. The inbox opens one at a time and
         // only for the newest few, so reading a chat never turns into a burst of downloads.
@@ -5801,7 +5830,9 @@
                     cloudBrowser: {
                         config: { configured: false, host: '', has_token: false, updated_at: '', enabled: false, encryption_ready: false, keys: [], profiles: [], active: '', max_profiles: 12 },
                         endpoint: '', token: '', name: '', product: '', revision: '',
-                        pages: [], selected: '', url: '', navigateUrl: '', text: '', otpAccount: '',
+                        pages: [], selected: '', url: '', address: '', navigateUrl: '', text: '', otpAccount: '',
+                        pageState: { index: 0, entries: [], url: '', title: '', can_go_back: false, can_go_forward: false },
+                        modifiers: [], downloads: [], downloadsError: '', stateTimer: null,
                         view: '', busy: '', error: '', message: '',
                         live: false, frames: 0, watchers: 0, recording: false, reel_frames: 0, reel_bytes: 0, streamError: '',
                         plan: { id: '', goal: '', page: '', steps: [], next: null, done: false, seconds_left: 0, text: '', error: '' },
@@ -8865,6 +8896,10 @@
                     this.cloudBrowser.pages = []
                     this.cloudBrowser.selected = ''
                     this.cloudBrowser.view = ''
+                    this.cloudBrowser.address = ''
+                    this.cloudBrowser.pageState = { index: 0, entries: [], url: '', title: '', can_go_back: false, can_go_forward: false }
+                    this.cloudBrowser.downloads = []
+                    this.cloudBrowser.downloadsError = ''
                     this.cloudBrowser.product = ''
                     this.cloudBrowser.revision = ''
                     this.cloudBrowser.message = ''
@@ -9054,6 +9089,8 @@
                             this.stopCloudBrowserStream()
                             this.cloudBrowser.selected = ''
                             this.cloudBrowser.view = ''
+                            this.cloudBrowser.address = ''
+                            this.cloudBrowser.pageState = { index: 0, entries: [], url: '', title: '', can_go_back: false, can_go_forward: false }
                         }
                         await this.loadCloudBrowserPages()
                     } catch (e) {
@@ -9070,11 +9107,17 @@
                     this.cloudBrowser.frames = 0
                     this.cloudBrowser.reel_frames = 0
                     this.cloudBrowser.streamError = ''
-                    this.cloudBrowser.navigateUrl = page.url && page.url !== 'about:blank' ? page.url : ''
+                    const address = page.url && page.url !== 'about:blank' ? page.url : ''
+                    this.cloudBrowser.address = address
+                    this.cloudBrowser.navigateUrl = address
+                    this.cloudBrowser.pageState = { index: 0, entries: [], url: address, title: page.title || '', can_go_back: false, can_go_forward: false }
                     // Moving to another page should not silently drop the view the
                     // operator already asked for.
                     if (wasLive) this.startCloudBrowserStream()
-                    else this.refreshCloudBrowserView()
+                    else {
+                        this.loadCloudBrowserState()
+                        this.refreshCloudBrowserView()
+                    }
                 },
                 async refreshCloudBrowserView() {
                     if (!this.cloudBrowser.selected) return
@@ -9089,7 +9132,7 @@
                     }
                 },
                 async navigateCloudBrowserPage() {
-                    const url = this.cloudBrowser.navigateUrl.trim()
+                    const url = this.cloudBrowser.address.trim()
                     if (!/^https?:\/\//i.test(url)) {
                         this.showToast('Enter the full https:// address to go to.', true)
                         return
@@ -9097,6 +9140,7 @@
                     this.cloudBrowser.busy = 'navigate'
                     try {
                         await _api.post(`/api/cloud-browser/pages/${encodeURIComponent(this.cloudBrowser.selected)}/navigate`, { url })
+                        await this.loadCloudBrowserState()
                         await this.refreshCloudBrowserView()
                         await this.loadCloudBrowserPages()
                     } catch (e) {
@@ -9111,7 +9155,7 @@
                     this.cloudBrowser.text = ''
                     this.cloudBrowser.busy = 'type'
                     try {
-                        const { data } = await _api.post(`/api/cloud-browser/pages/${encodeURIComponent(this.cloudBrowser.selected)}/type`, { text })
+                        const { data } = await _api.post(`/api/cloud-browser/pages/${encodeURIComponent(this.cloudBrowser.selected)}/keys`, { text })
                         this.showToast(`Sent ${data.characters} characters to the page.`)
                         await this.refreshCloudBrowserView()
                     } catch (e) {
@@ -9120,10 +9164,11 @@
                         this.cloudBrowser.busy = ''
                     }
                 },
-                async pressCloudBrowserKey(key) {
+                async pressCloudBrowserKey(key, modifiers) {
+                    const comboModifiers = modifiers === undefined ? this.cloudBrowser.modifiers.join(',') : modifiers
                     this.cloudBrowser.busy = 'key'
                     try {
-                        await _api.post(`/api/cloud-browser/pages/${encodeURIComponent(this.cloudBrowser.selected)}/key`, { key })
+                        await _api.post(`/api/cloud-browser/pages/${encodeURIComponent(this.cloudBrowser.selected)}/key`, { key, modifiers: comboModifiers })
                         await this.refreshCloudBrowserView()
                     } catch (e) {
                         this.showToast(e.response?.data?.detail || 'Could not send that key.', true)
@@ -9168,6 +9213,7 @@
                     this.cloudBrowser.busy = 'stream'
                     this.cloudBrowser.streamError = ''
                     this.cloudBrowser.live = true
+                    this.startCloudBrowserStatePolling()
                     try {
                         const { data: { session } } = await _supabase.auth.getSession()
                         if (!session?.access_token) throw new Error('Sign in to continue')
@@ -9211,6 +9257,7 @@
                             this.cloudBrowser.live = false
                             this.cloudBrowser.recording = false
                             this.cloudBrowser.busy = ''
+                            this.stopCloudBrowserStatePolling()
                         }
                     }
                 },
@@ -9222,6 +9269,137 @@
                     this.cloudBrowser.live = false
                     this.cloudBrowser.recording = false
                     this.cloudBrowser.watchers = 0
+                    this.stopCloudBrowserStatePolling()
+                },
+                startCloudBrowserStatePolling() {
+                    this.stopCloudBrowserStatePolling()
+                    this.loadCloudBrowserState()
+                    this.loadCloudBrowserDownloads()
+                    this.cloudBrowser.stateTimer = setInterval(() => {
+                        if (!this.cloudBrowser.selected) {
+                            this.stopCloudBrowserStatePolling()
+                            return
+                        }
+                        this.loadCloudBrowserState()
+                    }, 2000)
+                },
+                stopCloudBrowserStatePolling() {
+                    if (this.cloudBrowser.stateTimer) {
+                        clearInterval(this.cloudBrowser.stateTimer)
+                        this.cloudBrowser.stateTimer = null
+                    }
+                },
+                async loadCloudBrowserState() {
+                    const target = this.cloudBrowser.selected
+                    if (!target) return
+                    try {
+                        const { data } = await _api.get(`/api/cloud-browser/pages/${encodeURIComponent(target)}/state`)
+                        if (this.cloudBrowser.selected !== target) return
+                        this.cloudBrowser.pageState = {
+                            index: data.index || 0,
+                            entries: Array.isArray(data.entries) ? data.entries : [],
+                            url: data.url || '',
+                            title: data.title || '',
+                            can_go_back: !!data.can_go_back,
+                            can_go_forward: !!data.can_go_forward,
+                        }
+                        // A poll must not overwrite an address the operator is editing.
+                        const input = this.$refs.cloudBrowserAddress
+                        const active = typeof document !== 'undefined' ? document.activeElement : null
+                        if (!input || active !== input) this.cloudBrowser.address = data.url || this.cloudBrowser.address
+                    } catch (e) {
+                        // A page that closed under the view is reported once, not every two seconds.
+                    }
+                },
+                async _cloudBrowserHistory(action) {
+                    if (!this.cloudBrowser.selected) return
+                    this.cloudBrowser.busy = 'history'
+                    try {
+                        await _api.post(`/api/cloud-browser/pages/${encodeURIComponent(this.cloudBrowser.selected)}/${action}`)
+                        await this.loadCloudBrowserState()
+                        if (!this.cloudBrowser.live) await this.refreshCloudBrowserView()
+                        await this.loadCloudBrowserPages()
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'That navigation did not reach the browser.', true)
+                    } finally {
+                        this.cloudBrowser.busy = ''
+                    }
+                },
+                cloudBrowserBack() { return this._cloudBrowserHistory('back') },
+                cloudBrowserForward() { return this._cloudBrowserHistory('forward') },
+                cloudBrowserReload() { return this._cloudBrowserHistory('reload') },
+                cloudBrowserTabLabel(page) {
+                    const title = (page.title || '').trim()
+                    if (title) return title.length > 28 ? title.slice(0, 27) + '…' : title
+                    try { return new URL(page.url).hostname || 'Untitled page' } catch (_) { return 'Untitled page' }
+                },
+                focusCloudBrowserAddress() {
+                    this.$nextTick(() => this.$refs.cloudBrowserAddress?.focus())
+                },
+                focusCloudBrowserSurface() {
+                    this.$nextTick(() => this.$refs.cloudBrowserSurface?.focus())
+                },
+                toggleCloudBrowserModifier(mod) {
+                    const current = this.cloudBrowser.modifiers
+                    this.cloudBrowser.modifiers = current.includes(mod) ? current.filter(item => item !== mod) : current.concat(mod)
+                },
+                _queueCloudBrowserInput(send) {
+                    _cloudKeyQueue = _cloudKeyQueue.then(send).catch(() => {})
+                },
+                sendCloudBrowserKeys(text) {
+                    if (!text || !this.cloudBrowser.selected) return
+                    const target = this.cloudBrowser.selected
+                    this._queueCloudBrowserInput(async () => {
+                        if (this.cloudBrowser.selected !== target) return
+                        try {
+                            await _api.post(`/api/cloud-browser/pages/${encodeURIComponent(target)}/keys`, { text })
+                        } catch (e) {
+                            this.showToast(e.response?.data?.detail || 'That keystroke did not reach the browser.', true)
+                        }
+                    })
+                },
+                sendCloudBrowserCombo(key, modifiers) {
+                    if (!key || !this.cloudBrowser.selected) return
+                    const target = this.cloudBrowser.selected
+                    this._queueCloudBrowserInput(async () => {
+                        if (this.cloudBrowser.selected !== target) return
+                        try {
+                            await _api.post(`/api/cloud-browser/pages/${encodeURIComponent(target)}/key`, { key, modifiers })
+                        } catch (e) {
+                            this.showToast(e.response?.data?.detail || 'That key did not reach the browser.', true)
+                        }
+                    })
+                },
+                cloudBrowserKeydown(event) {
+                    if (!this.cloudBrowser.selected) return
+                    const named = ['Enter', 'Tab', 'Escape', 'Backspace', 'Delete', 'Home', 'End', 'PageUp', 'PageDown', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']
+                    const modifiers = []
+                    if (event.shiftKey) modifiers.push('Shift')
+                    if (event.ctrlKey) modifiers.push('Control')
+                    if (event.altKey) modifiers.push('Alt')
+                    if (event.metaKey) modifiers.push('Meta')
+                    const key = event.key
+                    if (named.includes(key) || /^F([1-9]|1[0-2])$/.test(key)) {
+                        event.preventDefault()
+                        this.sendCloudBrowserCombo(key, modifiers.join(','))
+                        return
+                    }
+                    if (typeof key === 'string' && key.length === 1) {
+                        event.preventDefault()
+                        if (modifiers.length > 1) return
+                        // Shift is already in the character; the others are shortcuts.
+                        if (modifiers.some(mod => mod !== 'Shift')) this.sendCloudBrowserCombo(key, modifiers.join(','))
+                        else this.sendCloudBrowserKeys(key)
+                    }
+                },
+                async loadCloudBrowserDownloads() {
+                    this.cloudBrowser.downloadsError = ''
+                    try {
+                        const { data } = await _api.get('/api/cloud-browser/downloads')
+                        this.cloudBrowser.downloads = Array.isArray(data.downloads) ? data.downloads : []
+                    } catch (e) {
+                        this.cloudBrowser.downloadsError = e.response?.data?.detail || 'Could not read the download list.'
+                    }
                 },
                 _cloudBrowserPoint(event) {
                     const rect = event.target.getBoundingClientRect()

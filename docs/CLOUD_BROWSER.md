@@ -53,8 +53,8 @@ nothing is lost on the upgrade.
 | Open / Refresh pages | Page targets only; capped at 40 |
 | View | A still JPEG frame of the page |
 | Go | Navigates the selected page to an http(s) URL |
-| Send text | Types into the focused field, then clears the form |
-| Keys | The 14 keys the browser accepts: Enter, Tab, Escape, Backspace, Delete, Space, Home, End, PageUp, PageDown and the four arrows. The panel renders exactly this list, so a key you can see is a key that works. |
+| Send text | Types into the focused field one keystroke at a time, then clears the form |
+| Keys | The 14 keys the browser accepts: Enter, Tab, Escape, Backspace, Delete, Space, Home, End, PageUp, PageDown and the four arrows. The panel renders exactly this list, so a key you can see is a key that works. Shift, Control, Alt and Meta toggles turn a press into a shortcut. |
 | Close | Closes the page in the browser |
 | Send current code | Generates the Cloud Phone record's TOTP and types it into the page |
 
@@ -94,6 +94,42 @@ the stream.
 
 Each action with no live view open uses its own DevTools connection and closes it
 afterwards. The only session the server holds is the one a live view opened.
+
+## Browser chrome
+
+The live cockpit carries the same controls a browser window does:
+
+| Control | What it does |
+|---|---|
+| Address bar | Shows the page's current address and navigates there on **Enter** or **Go**. |
+| **Back** / **Forward** | Steps through that tab's own history. They are disabled when there is nowhere to go. |
+| **Reload** | Reloads from the network, ignoring the cache. |
+| Tab strip | One tab per open page, titled from the page (or its host when untitled). Click to switch; **×** closes that page; **+** puts the cursor in the address bar. |
+
+While the live view is open the panel asks the browser for its history every two seconds, so
+the address bar and the Back / Forward buttons follow redirects and clicks without you
+reloading anything.
+
+**Typing.** **Send text** now types one keystroke at a time (`Input.dispatchKeyEvent` with
+`text` and `unmodifiedText`), so a page that listens for `keydown` or `input` behaves the
+same as it would with a real keyboard. Click the picture once to give it focus and type
+directly: printable characters go through the same per-keystroke path, named keys
+(Enter, Tab, Escape, Backspace, Delete, Home, End, PageUp, PageDown, the arrows and F1–F12)
+go to the key endpoint. Up to one of Shift, Control, Alt or Meta may be held; more than one
+is ignored rather than guessed.
+
+**Modifier shortcuts.** The Shift, Control, Alt and Meta buttons toggle a modifier for the
+key buttons: with Control and Shift lit, pressing **T** sends `Control+Shift+T`. The same
+mask works for a single letter, digit or function key, so browser and page shortcuts no
+longer need a separate tool. Unknown keys and repeated modifiers are refused before
+anything reaches the browser.
+
+**Downloads.** The browser is told to allow downloads and name them
+(`Browser.setDownloadBehavior`). The strip under the picture lists what started and finished
+with the file name, the host it came from and its state. The file itself lands on the
+**browser host**, not on this server; there is nothing to collect here. Only the hostname is
+kept, never the download URL or its query string, and a browser that does not support the
+command simply shows an empty list.
 
 ## Let your own AI plan the steps
 
