@@ -292,6 +292,35 @@ async def test_scrape_filters_bots(store, client):
 
 
 @pytest.mark.asyncio
+async def test_scheduled_scrape_falls_back_to_recent_posters_for_non_admins(store, client):
+    from telethon import types
+
+    client.get_entity = AsyncMock(return_value=types.Channel(
+        id=7, title="Hidden Members", photo=types.ChatPhotoEmpty(), date=None))
+    client.get_participants = AsyncMock(
+        side_effect=errors.ChatAdminRequiredError(request=None))
+    recent = types.User(id=21, first_name="Recent", username="recent_poster")
+
+    async def history(entity, limit):
+        yield SimpleNamespace(sender=recent)
+
+    client.iter_messages = history
+    schedule = {
+        "id": "sched_scrape", "name": "Members", "cron": "0 9 * * 1",
+        "action": "scrape_members", "accounts": ["acct"],
+        "scrape_target": "@hidden_members", "scrape_limit": 100,
+        "filter_bots": True,
+    }
+
+    assert await store._execute_schedule(schedule) is True
+    record = schedule["last_scrape_result"]
+    assert record["source"] == "recent_posters"
+    assert record["limited"] is True
+    assert "non-admin" in record["notice"].lower()
+    assert [member["username"] for member in record["members"]] == ["recent_poster"]
+
+
+@pytest.mark.asyncio
 async def test_scrape_disables_a_schedule_whose_limit_was_edited_up(store, client):
     schedule = {
         "id": "sched_scrape", "name": "Members", "cron": "0 9 * * 1",

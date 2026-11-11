@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
-from telethon import types, utils
+from telethon import errors, functions, types, utils
 
 import telegram_ops as ops
 
@@ -61,6 +61,164 @@ async def test_unresolvable_target_returns_400_not_500(monkeypatch):
         )
     assert exc.value.status_code == 400
     assert "could not find" in exc.value.detail.lower()
+
+
+class NonAdminClient:
+    """A non-admin account: the roster is hidden, recent messages are readable."""
+
+    def __init__(self, entity, messages, member_count=1500):
+        self.get_entity = AsyncMock(return_value=entity)
+        self.get_participants = AsyncMock(
+            side_effect=errors.ChatAdminRequiredError(request=None))
+        self.iter_messages = self._messages(messages)
+        self.member_count = member_count
+        self.history_limit = None
+
+    def _messages(self, messages):
+        async def walk(entity, limit):
+            self.history_limit = limit
+            for message in messages:
+                yield message
+        return walk
+
+    async def __call__(self, request):
+        assert isinstance(request, functions.channels.GetFullChannelRequest)
+        return SimpleNamespace(
+            full_chat=SimpleNamespace(participants_count=self.member_count))
+
+
+@pytest.mark.asyncio
+async def test_non_admin_scrape_returns_recent_posters_with_a_clear_notice(monkeypatch):
+    entity = types.Channel(id=9, title="Hidden Members", photo=types.ChatPhotoEmpty(),
+                           date=None)
+    ana = types.User(id=11, first_name="Ana", username="ana")
+    ben = types.User(id=12, first_name="Ben")
+    channel_post = types.Channel(id=9, title="Hidden Members",
+                                 photo=types.ChatPhotoEmpty(), date=None)
+    client = NonAdminClient(entity, [
+        SimpleNamespace(sender=ana),
+        SimpleNamespace(sender=ana),
+        SimpleNamespace(sender=channel_post),
+        SimpleNamespace(sender=ben),
+    ])
+    monkeypatch.setattr(ops.account_manager, "get_client", AsyncMock(return_value=client))
+
+    result = await ops.scrape_members(
+        ops.ScrapeRequest(account_id="account", target="@hidden_members", limit=50)
+    )
+
+    assert result["success"] is True
+    assert result["source"] == "recent_posters"
+    assert result["limited"] is True
+    assert result["member_count"] == 1500
+    assert "non-admin" in result["notice"].lower()
+    assert [member["id"] for member in result["members"]] == [11, 12]
+    assert result["scanned"] == 2
+    assert client.history_limit <= 1000
+
+
+@pytest.mark.asyncio
+async def test_non_admin_scrape_without_visible_senders_still_explains_itself(monkeypatch):
+    entity = types.Channel(id=9, title="Announcements", photo=types.ChatPhotoEmpty(),
+                           date=None)
+    client = NonAdminClient(entity, [], member_count=88)
+    monkeypatch.setattr(ops.account_manager, "get_client", AsyncMock(return_value=client))
+
+    result = await ops.scrape_members(
+        ops.ScrapeRequest(account_id="account", target="@announcements", limit=20)
+    )
+
+    assert result["success"] is True
+    assert result["total"] == 0
+    assert result["limited"] is True
+    assert "88" in result["notice"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["metadata", "sender", "history"])
+async def test_non_admin_fallback_stops_on_flood_wait(monkeypatch, stage):
+    class RateLimitedClient(NonAdminClient):
+        async def __call__(self, request):
+            if stage == "metadata":
+                raise errors.FloodWaitError(request=None, capture=73)
+            return await super().__call__(request)
+
+    async def sender():
+        raise errors.FloodWaitError(request=None, capture=73)
+
+    async def history(entity, limit):
+        raise errors.FloodWaitError(request=None, capture=73)
+        yield
+
+    entity = types.Channel(id=9, title="Hidden", photo=types.ChatPhotoEmpty(), date=None)
+    client = RateLimitedClient(entity, [SimpleNamespace(sender=None, get_sender=sender)])
+    if stage == "history":
+        client.iter_messages = history
+    monkeypatch.setattr(ops.account_manager, "get_client", AsyncMock(return_value=client))
+
+    with pytest.raises(HTTPException) as exc:
+        await ops.scrape_members(ops.ScrapeRequest(account_id="account", target="@hidden_members"))
+    assert exc.value.status_code == 429
+    assert "73s" in exc.value.detail
+    if stage == "metadata":
+        assert client.history_limit is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["metadata", "sender"])
+async def test_non_admin_fallback_does_not_hide_unexpected_failures(monkeypatch, stage):
+    class BrokenClient(NonAdminClient):
+        async def __call__(self, request):
+            if stage == "metadata":
+                raise RuntimeError("credential=private-test-value")
+            return await super().__call__(request)
+
+    async def sender():
+        raise RuntimeError("credential=private-test-value")
+
+    entity = types.Channel(id=9, title="Hidden", photo=types.ChatPhotoEmpty(), date=None)
+    client = BrokenClient(entity, [SimpleNamespace(sender=None, get_sender=sender)])
+    monkeypatch.setattr(ops.account_manager, "get_client", AsyncMock(return_value=client))
+
+    with pytest.raises(HTTPException) as exc:
+        await ops.scrape_members(ops.ScrapeRequest(account_id="account", target="@hidden_members"))
+    assert exc.value.status_code == 500
+    assert "private-test-value" not in exc.value.detail
+
+
+@pytest.mark.asyncio
+async def test_non_admin_sender_lookup_reports_a_revoked_session(monkeypatch):
+    entity = types.Channel(id=9, title="Hidden", photo=types.ChatPhotoEmpty(), date=None)
+    client = NonAdminClient(entity, [SimpleNamespace(
+        sender=None, get_sender=AsyncMock(side_effect=errors.SessionRevokedError(request=None)))])
+    monkeypatch.setattr(ops.account_manager, "get_client", AsyncMock(return_value=client))
+
+    with pytest.raises(HTTPException) as exc:
+        await ops.scrape_members(ops.ScrapeRequest(account_id="account", target="@hidden_members"))
+    assert exc.value.status_code == 400
+    assert "SessionRevokedError" in exc.value.detail
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flood_wait", [False, True])
+async def test_non_admin_scrape_cannot_silently_skip_admin_exclusion(monkeypatch, flood_wait):
+    class AdminLookupDenied(NonAdminClient):
+        async def __call__(self, request):
+            if isinstance(request, functions.channels.GetParticipantsRequest):
+                if flood_wait:
+                    raise errors.FloodWaitError(request=None, capture=73)
+                raise errors.ChatAdminRequiredError(request=None)
+            return await super().__call__(request)
+
+    entity = types.Channel(id=9, title="Hidden", photo=types.ChatPhotoEmpty(), date=None)
+    client = AdminLookupDenied(entity, [SimpleNamespace(sender=types.User(id=11, username="admin"))])
+    monkeypatch.setattr(ops.account_manager, "get_client", AsyncMock(return_value=client))
+
+    with pytest.raises(HTTPException) as exc:
+        await ops.scrape_members(ops.ScrapeRequest(
+            account_id="account", target="@hidden_members", admin_filter="exclude"))
+    assert exc.value.status_code == (429 if flood_wait else 400)
+    assert ("73s" if flood_wait else "Include admins") in exc.value.detail
 
 
 @pytest.mark.asyncio

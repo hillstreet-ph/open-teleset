@@ -3841,7 +3841,7 @@
                     <div class="card-header">
                         <h3>Member scraper</h3>
                     </div>
-                    <p style="color: var(--text-dim); margin-bottom: 20px;">Scrape members from any Telegram channel or group</p>
+                    <p style="color: var(--text-dim); margin-bottom: 20px;">Runs on the server using your connected Telegram account, not a desktop app. Use this dashboard from a browser or cloud phone. Only data visible to the account is available; when Telegram hides the member list, results contain recent posters instead of a full roster.</p>
 
                     <div class="form-group">
                         <label>Account</label>
@@ -3898,11 +3898,13 @@
                         {{ scraper.loading ? 'Scraping…' : 'Scrape members' }}
                     </button>
                     <p v-if="scraper.summary" style="margin-top: 12px;">{{ scraper.summary }}</p>
+                    <p v-if="scraper.notice" class="muted small" data-testid="scraper-notice"
+                       style="margin-top: 8px; color: var(--warning);">{{ scraper.notice }}</p>
 
                     <!-- Results -->
                     <div v-if="scraper.results.length" style="margin-top: 20px;">
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                            <h4 style="margin:0;">Scraped: {{ scraper.results.length }} members</h4>
+                            <h4 style="margin:0;">{{ scraper.source === 'recent_posters' ? 'Recent posters' : 'Scraped' }}: {{ scraper.results.length }}</h4>
                             <button class="btn btn-outline" @click="exportScraperCSV">Export CSV</button>
                             <button class="btn btn-outline" @click="copyScrapedUsernames" style="font-size: 0.85em;">Copy usernames</button>
                         </div>
@@ -6025,6 +6027,8 @@
                         adminFilter: 'include',
                         activityFilter: 'all',
                         summary: '',
+                        notice: '',
+                        source: 'members',
                         loading: false,
                         results: [],
                     },
@@ -6634,6 +6638,8 @@
                     this.scraper.loading = true;
                     this.scraper.results = [];
                     this.scraper.summary = '';
+                    this.scraper.notice = '';
+                    this.scraper.source = 'members';
                     try {
                         const res = await _api.post('/api/scraper/members', {
                             account_id: this.scraper.accountId,
@@ -6643,8 +6649,15 @@
                             admin_filter: this.scraper.adminFilter,
                             activity_filter: this.scraper.activityFilter,
                         }, {timeout: 90000});
-                        this.scraper.results = res.data.members || [];
-                        this.scraper.summary = `Matched ${res.data.total || 0}, scanned ${res.data.scanned || 0}, excluded ${res.data.excluded || 0}.`;
+                        const data = res.data || {};
+                        const limited = data.limited === true;
+                        this.scraper.results = data.members || [];
+                        this.scraper.source = limited ? 'recent_posters' : 'members';
+                        this.scraper.notice = limited
+                            ? (data.notice || 'Telegram hides the full member list from non-admins for this target, so these are recent posters.')
+                            : '';
+                        const noun = limited ? 'recent posters' : 'members';
+                        this.scraper.summary = `Matched ${data.total || 0}, scanned ${data.scanned || 0} ${noun}, excluded ${data.excluded || 0}.`;
                     } catch (e) {
                         const message = e.code === 'ECONNABORTED'
                             ? 'Scrape timed out. Lower the member limit or check the account connection.'
@@ -10861,7 +10874,9 @@
                     if (step.status === 'stopped') return 'stopped'
                     if (detail.error) return 'failed'
                     if (detail.stopped === 'telegram_cooldown') return `Telegram cooldown · wait ${detail.wait_seconds || '?'}s`
-                    if ('scraped' in detail) return `${detail.scraped} members read`
+                    if ('scraped' in detail) return detail.limited
+                        ? `${detail.scraped} recent posters read · partial results`
+                        : `${detail.scraped} members read`
                     if ('joined' in detail) return `${detail.joined} joined · ${detail.skipped || 0} already in · ${detail.failed || 0} failed`
                     if ('waited_seconds' in detail) return `waited ${detail.waited_seconds}s`
                     if ('characters' in detail) return `note sent (${detail.characters} chars)`

@@ -318,6 +318,50 @@ async def _resolve_target_entity(client, target):
         raise
 
 
+RECENT_POSTER_SCAN_MAX = 1000
+
+
+def scrape_member_notice(member_count=None):
+    """Explain a degraded scrape without exposing Telegram internals."""
+    count = f" Telegram reports {member_count:,} members." if member_count else ""
+    return ("Telegram hides the full member list from non-admins for this target, so "
+            "this lists the people who posted recently instead." + count)
+
+
+async def collect_scrape_members(client, entity, limit):
+    """Use visible message authors when Telegram hides the roster from this account."""
+    try:
+        return await client.get_participants(entity, limit=limit), "members", None
+    except errors.ChatAdminRequiredError:
+        pass
+
+    member_count = None
+    try:
+        full = await client(functions.channels.GetFullChannelRequest(entity))
+        member_count = getattr(full.full_chat, "participants_count", None)
+        if not isinstance(member_count, int) or isinstance(member_count, bool):
+            member_count = None
+    except errors.ChatAdminRequiredError:
+        pass
+
+    users, seen = [], set()
+    scan_limit = min(max(limit * 4, 200), RECENT_POSTER_SCAN_MAX)
+    async for message in client.iter_messages(entity, limit=scan_limit):
+        sender = getattr(message, "sender", None)
+        if sender is None:
+            try:
+                sender = await message.get_sender()
+            except ValueError:
+                continue
+        if not isinstance(sender, types.User) or sender.id in seen:
+            continue
+        seen.add(sender.id)
+        users.append(sender)
+        if len(users) >= limit:
+            break
+    return users, "recent_posters", member_count
+
+
 @telegram_ops_router.post("/api/scraper/members")
 async def scrape_members(request: ScrapeRequest):
     """
@@ -343,7 +387,9 @@ async def scrape_members(request: ScrapeRequest):
                        "the selected account can access it.",
             ) from None
 
-        participants = await client.get_participants(entity, limit=request.limit)
+        participants, source, member_count = await collect_scrape_members(
+            client, entity, request.limit)
+        limited = source == "recent_posters"
 
         admin_ids = set()
         if request.admin_filter == "exclude":
@@ -356,8 +402,12 @@ async def scrape_members(request: ScrapeRequest):
                     hash=0,
                 ))
                 admin_ids = {user.id for user in admins.users}
-            except Exception:
-                admin_ids = set()
+            except errors.ChatAdminRequiredError:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Telegram hides the admin list from this account. Select Include admins "
+                           "to continue without admin exclusion.",
+                ) from None
 
         members = []
         now = datetime.now(timezone.utc)
@@ -379,7 +429,10 @@ async def scrape_members(request: ScrapeRequest):
 
         log_manager.add_log(
             "Scraper", request.account_id,
-            f"Scraped {len(members)} members from {request.target}",
+            (f"Scraped {len(members)} recent posters from {request.target} "
+             "(Telegram hides the member list from non-admins)"
+             if limited else
+             f"Scraped {len(members)} members from {request.target}"),
             "success",
         )
 
@@ -390,6 +443,10 @@ async def scrape_members(request: ScrapeRequest):
             "scanned": len(participants),
             "excluded": len(participants) - len(members),
             "activity_filter": request.activity_filter,
+            "source": source,
+            "limited": limited,
+            "member_count": member_count,
+            "notice": scrape_member_notice(member_count) if limited else None,
             "members": members,
         }
 
