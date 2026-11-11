@@ -543,7 +543,7 @@
 </footer>
 
 <script>
-  function showTab(id) {
+  function showTab(id, event) {
     document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
     document.querySelectorAll('.wtab').forEach(b => b.classList.remove('active'));
     document.getElementById('tab-' + id).classList.add('active');

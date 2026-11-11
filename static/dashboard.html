@@ -6659,7 +6659,7 @@
                             }, {timeout: 90000});
                             d = res.data;
                             this.scraper.results = d.members || [];
-                            const modeTag = d.scrape_mode === 'messages_fallback' ? ' (via messages — members hidden)' : '';
+                            const modeTag = d.scrape_mode === 'messages_fallback' ? ' (partial recent posters — members list hidden)' : '';
                             this.scraper.summary = `Matched ${d.total || 0}, scanned ${d.scanned || 0}, excluded ${d.excluded || 0}.${modeTag}`;
                         } else {
                             const res = await _api.post('/api/scraper/members/bulk', {
@@ -6669,11 +6669,13 @@
                                 filter_bots: this.scraper.filterBots,
                                 admin_filter: this.scraper.adminFilter,
                                 activity_filter: this.scraper.activityFilter,
-                            }, {timeout: 90000 * targets.length});
+                            }, {timeout: Math.min(90000 * targets.length, 300000)});
                             d = res.data;
                             this.scraper.results = d.members || [];
-                            const errs = (d.errors || []).length;
-                            this.scraper.summary = `${targets.length} targets: ${d.total || 0} unique members total.${errs ? ' ' + errs + ' target(s) failed.' : ''}`;
+                            const errs = d.errors || [];
+                            const hasF = d.has_fallback ? ' Some results via recent messages (members hidden).' : '';
+                            const errSummary = errs.length ? ' Failed: ' + errs.map(e => e.target).join(', ') + '.' : '';
+                            this.scraper.summary = `${targets.length} targets: ${d.total || 0} unique members total.${hasF}${errSummary}`;
                         }
                     } catch (e) {
                         const message = e.code === 'ECONNABORTED'

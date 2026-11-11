@@ -1,6 +1,5 @@
 # open-teleset.site Cloudflare Pages redirects
-# Redirect root to dashboard (Pretty URLs serves dashboard.html at /dashboard)
-/ /dashboard 302
+# Root serves index.html (the public landing page); /dashboard serves the app
 
 # www redirect
 https://www.open-teleset.site/* https://open-teleset.site/:splat 301

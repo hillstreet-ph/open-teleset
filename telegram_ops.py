@@ -365,7 +365,7 @@ async def scrape_members(request: ScrapeRequest):
         scrape_mode = "participants"
         try:
             participants = await client.get_participants(entity, limit=request.limit)
-        except (errors.ChatAdminRequiredError, errors.ChannelPrivateError):
+        except (errors.ChatAdminRequiredError, errors.ChannelPrivateError, errors.ChatForbiddenError):
             scrape_mode = "messages_fallback"
             seen_ids: set = set()
             participants = []
@@ -463,6 +463,7 @@ async def scrape_members_bulk(request: BulkScrapeRequest):
     """Scrape members from multiple Telegram targets; deduplicates by user ID."""
     all_members: dict[int, dict] = {}
     errors_list = []
+    has_fallback = False
 
     for target_raw in request.targets:
         single_req = ScrapeRequest(
@@ -475,10 +476,14 @@ async def scrape_members_bulk(request: BulkScrapeRequest):
         )
         try:
             result = await scrape_members(single_req)
+            if result.get("scrape_mode") == "messages_fallback":
+                has_fallback = True
             for m in result.get("members", []):
                 all_members[m["id"]] = m
         except HTTPException as e:
             errors_list.append({"target": target_raw, "error": e.detail})
+            if e.status_code == 429:
+                break  # stop bulk processing on Telegram rate limit
         except Exception as e:
             errors_list.append({"target": target_raw, "error": f"{type(e).__name__}: target unavailable"})
 
@@ -489,6 +494,7 @@ async def scrape_members_bulk(request: BulkScrapeRequest):
         "total": len(members),
         "members": members,
         "errors": errors_list,
+        "has_fallback": has_fallback,
     }
 
 
