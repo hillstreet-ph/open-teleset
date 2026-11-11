@@ -107,13 +107,11 @@ test('a negative per-run cap is refused before it reaches the server', async () 
   assert.match(state.autojoin.resultMsg, /0 to join every link/);
 });
 
-test('unrecognised lines are filtered before queuing', async () => {
-  const { state, calls } = harness();
-  state.autojoin.urls = 'https://t.me/chanone\nnot-a-link\nhttps://t.me/chantwo\n\n  ';
-  // autojoinValidLinks should pass-through only valid t.me URLs
+test('unrecognised lines are filtered before queuing', () => {
+  // autojoinValidLinks should pass-through only valid t.me URLs.
   // The harness getter mirrors autojoinLinks (no invalid-link filter) so we
-  // test the HTML regex instead by checking that the dashboard source contains
-  // the validation pattern and that the queue only receives valid links.
+  // test the HTML regex instead, checking that the dashboard source contains
+  // the validation pattern.
   assert.match(html, /autojoinValidLinks/);
   assert.match(html, /t\.me/);
 });

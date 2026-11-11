@@ -480,7 +480,7 @@ async def scrape_members_bulk(request: BulkScrapeRequest):
         except HTTPException as e:
             errors_list.append({"target": target_raw, "error": e.detail})
         except Exception as e:
-            errors_list.append({"target": target_raw, "error": str(e)})
+            errors_list.append({"target": target_raw, "error": f"{type(e).__name__}: target unavailable"})
 
     members = list(all_members.values())
     return {
