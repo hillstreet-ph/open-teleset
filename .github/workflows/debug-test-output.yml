@@ -1,7 +1,9 @@
 name: Debug test output
 
 on:
-  workflow_dispatch:
+  push:
+    branches:
+      - "debug/**"
 
 permissions:
   contents: write
