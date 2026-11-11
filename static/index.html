@@ -420,16 +420,16 @@
   <p class="section-desc">A quick reference for each part of the dashboard.</p>
 
   <div class="walkthrough">
-    <div class="walkthrough-tabs">
-      <button class="wtab active" onclick="showTab('autojoin', event)">Autojoin</button>
-      <button class="wtab" onclick="showTab('scraper', event)">Scraper</button>
-      <button class="wtab" onclick="showTab('bulksend', event)">Bulk Send</button>
-      <button class="wtab" onclick="showTab('accounts', event)">Accounts</button>
-      <button class="wtab" onclick="showTab('scheduler', event)">Scheduler</button>
-      <button class="wtab" onclick="showTab('adder', event)">Member Adder</button>
+    <div class="walkthrough-tabs" role="tablist" aria-label="Dashboard walkthrough">
+      <button class="wtab active" role="tab" id="tab-btn-autojoin" aria-controls="tab-autojoin" aria-selected="true" tabindex="0" onclick="showTab('autojoin', this)">Autojoin</button>
+      <button class="wtab" role="tab" id="tab-btn-scraper" aria-controls="tab-scraper" aria-selected="false" tabindex="-1" onclick="showTab('scraper', this)">Scraper</button>
+      <button class="wtab" role="tab" id="tab-btn-bulksend" aria-controls="tab-bulksend" aria-selected="false" tabindex="-1" onclick="showTab('bulksend', this)">Bulk Send</button>
+      <button class="wtab" role="tab" id="tab-btn-accounts" aria-controls="tab-accounts" aria-selected="false" tabindex="-1" onclick="showTab('accounts', this)">Accounts</button>
+      <button class="wtab" role="tab" id="tab-btn-scheduler" aria-controls="tab-scheduler" aria-selected="false" tabindex="-1" onclick="showTab('scheduler', this)">Scheduler</button>
+      <button class="wtab" role="tab" id="tab-btn-adder" aria-controls="tab-adder" aria-selected="false" tabindex="-1" onclick="showTab('adder', this)">Member Adder</button>
     </div>
 
-    <div id="tab-autojoin" class="tab-panel active">
+    <div id="tab-autojoin" class="tab-panel active" role="tabpanel" aria-labelledby="tab-btn-autojoin" tabindex="0">
       <h3>Autojoin — Mass channel &amp; group joining</h3>
       <p>
         Paste multiple Telegram links (one per line) and join them all across one or many accounts.
@@ -444,7 +444,7 @@
       </ul>
     </div>
 
-    <div id="tab-scraper" class="tab-panel">
+    <div id="tab-scraper" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-scraper" tabindex="0">
       <h3>Scraper — Extract member lists from channels</h3>
       <p>
         Collect the user list from any channel or group you have access to. If the member list is
@@ -459,7 +459,7 @@
       </ul>
     </div>
 
-    <div id="tab-bulksend" class="tab-panel">
+    <div id="tab-bulksend" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-bulksend" tabindex="0">
       <h3>Bulk Send — Send messages to user lists</h3>
       <p>
         Send a message to a list of Telegram user IDs or usernames. Supports account rotation
@@ -474,7 +474,7 @@
       </ul>
     </div>
 
-    <div id="tab-accounts" class="tab-panel">
+    <div id="tab-accounts" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-accounts" tabindex="0">
       <h3>Accounts — Manage connected Telegram accounts</h3>
       <p>
         Add, monitor, and control the Telegram accounts that power all platform operations.
@@ -489,14 +489,14 @@
       </ul>
     </div>
 
-    <div id="tab-scheduler" class="tab-panel">
+    <div id="tab-scheduler" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-scheduler" tabindex="0">
       <h3>Scheduler — Automated recurring tasks</h3>
       <p>
         Create scheduled runs that execute automatically on a cron-like schedule.
         Schedules persist across deployments and server restarts via persistent storage.
       </p>
       <ul class="step-list">
-        <li><div class="step-num">1</div><span>Click <strong>New Schedule</strong> to open the schedule form. Enter a name and configure the target URLs or message content.</span></li>
+        <li><div class="step-num">1</div><span>Click <strong>New Schedule</strong> to open the schedule form. Configure the target URLs or message content for the task.</span></li>
         <li><div class="step-num">2</div><span>Configure the task parameters exactly as you would in the manual tab.</span></li>
         <li><div class="step-num">3</div><span>Set the <strong>Schedule</strong>: once, daily, weekly, or weekdays.</span></li>
         <li><div class="step-num">4</div><span>Toggle <strong>Active</strong> to enable. The scheduler fires the task at the configured interval even if the dashboard is not open.</span></li>
@@ -504,7 +504,7 @@
       </ul>
     </div>
 
-    <div id="tab-adder" class="tab-panel">
+    <div id="tab-adder" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-adder" tabindex="0">
       <h3>Member Adder — Add users to your groups</h3>
       <p>
         Add a list of users to a Telegram group or channel you administrate.
@@ -544,12 +544,35 @@
 </footer>
 
 <script>
-  function showTab(id, event) {
+  function showTab(id, btn) {
     document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
-    document.querySelectorAll('.wtab').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.wtab').forEach(b => {
+      b.classList.remove('active');
+      b.setAttribute('aria-selected', 'false');
+      b.setAttribute('tabindex', '-1');
+    });
     document.getElementById('tab-' + id).classList.add('active');
-    event.currentTarget.classList.add('active');
+    btn.classList.add('active');
+    btn.setAttribute('aria-selected', 'true');
+    btn.setAttribute('tabindex', '0');
+    btn.focus();
   }
+
+  document.querySelector('[role="tablist"]').addEventListener('keydown', function(e) {
+    const tabs = Array.from(this.querySelectorAll('[role="tab"]'));
+    const idx = tabs.indexOf(document.activeElement);
+    if (idx === -1) return;
+    let next = -1;
+    if (e.key === 'ArrowRight') next = (idx + 1) % tabs.length;
+    else if (e.key === 'ArrowLeft') next = (idx - 1 + tabs.length) % tabs.length;
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = tabs.length - 1;
+    if (next !== -1) {
+      e.preventDefault();
+      const panelId = tabs[next].getAttribute('aria-controls').replace('tab-', '');
+      showTab(panelId, tabs[next]);
+    }
+  });
 </script>
 </body>
 </html>
