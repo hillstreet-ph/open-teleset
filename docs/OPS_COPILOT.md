@@ -113,18 +113,19 @@ pacing defaults, and leaves every consent checkbox untouched.
 | --- | --- | --- |
 | Scraper | Member collection limit, default 500 | The scrape itself. |
 | Adder | Delay, never below 35 seconds | The consent tick and **Start Member Adder**. |
-| Auto Join | Limit 24, delay 38 | **Start Auto Join**. |
-| BulkSend | Delay 45, per-account limit 8 | The opt-in list, the consent tick and **Start**. |
+| Auto Join | No per-run cap (every link), delay 38 | **Start Auto Join**. |
+| BulkSend | Delay 45, no per-account cap | The opt-in list, the consent tick and **Start**. |
 | Auto Reply | Interval 90 s, daily limit 20, rules mode | Saving settings and switching the listener on. |
 | Account Factory | Price cap $0.50, OTP attempts 30 | **Run account factory**, and only where you are authorised to buy numbers. |
 | Automation | Nothing | Refreshing status; the factory run itself is yours. |
 | Knowledge | Nothing | **Export ZIP**, in the panel. |
 | Inbox | Nothing | Opting an account in. Only accounts you opt in are watched. |
 
-The bounds are not suggestions. `limit` accepts 1–2000, `delay` 0–300, `perAccountLimit`
-1–50, `maxPrice` $0.02–5, `otpAttempts` 1–120, `poll` 30–900 and `cap` 0–200, and the Adder
-and Auto Join surfaces narrow the delay further (35 s and 30 s floors). The Copilot can only
-tune a field the surface already declares — it cannot invent a parameter.
+The bounds are not suggestions. `limit` accepts 0–2000 (0 queues every link), `delay` 0–300,
+`perAccountLimit` 0–50 (0 means no cap), `maxPrice` $0.02–5, `otpAttempts` 1–120, `poll` 30–900
+and `cap` 0–200, and the Adder and Auto Join surfaces narrow the delay further (35 s and 30 s
+floors); the scraper keeps a 1-member floor. The Copilot can only tune a field the surface
+already declares — it cannot invent a parameter.
 
 The Adder and Auto Join surfaces are reachable from presets only, never from free text. Their
 prose forms stay refused on purpose.

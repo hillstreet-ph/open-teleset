@@ -361,7 +361,16 @@ def test_the_bulksend_preset_keeps_the_consent_gate_closed():
     )
 
     assert draft["action"] == "ops"
-    assert draft["payload"]["fields"] == {"delay": 45, "perAccountLimit": 8}
+    assert draft["payload"]["fields"] == {"delay": 45, "perAccountLimit": 0}
+
+
+def test_the_auto_join_preset_queues_every_link():
+    draft = copilot._preset_draft(
+        {"kind": "ops", "surface": "autojoin", "title": "Join groups",
+         "instruction": "Join the groups I list."}
+    )
+
+    assert draft["payload"]["fields"] == {"limit": 0, "delay": 38}
 
 
 def test_the_adder_and_auto_join_surfaces_stay_unreachable_from_free_text():

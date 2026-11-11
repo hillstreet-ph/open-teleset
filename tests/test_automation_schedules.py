@@ -70,9 +70,9 @@ def test_scrape_requirements_default_the_missing_limit():
 @pytest.mark.parametrize("urls,delay", [
     (["https://t.me/+AbCdEf123456"], 35),
     (["@publicchannel", "durov"], 60),
-    (["t.me/joinchat/XyZ12345"] + [f"@chan{i}" for i in range(9)], 35),
+    (["t.me/joinchat/XyZ12345"] + [f"@chan{i}" for i in range(9999)], 35),
 ])
-def test_join_plan_accepts_up_to_ten_targets(urls, delay):
+def test_join_plan_accepts_up_to_ten_thousand_targets(urls, delay):
     parsed, returned_delay = module.join_plan({"join_urls": urls, "join_delay": delay})
     assert len(parsed) == len(urls)
     assert returned_delay == delay
@@ -80,7 +80,7 @@ def test_join_plan_accepts_up_to_ten_targets(urls, delay):
 
 @pytest.mark.parametrize("schedule", [
     {"join_urls": []},
-    {"join_urls": ["@channel"] * 11},
+    {"join_urls": ["@channel"] * 10001},
     {"join_urls": ["@channel"], "join_delay": 34},
     {"join_urls": ["@channel"], "join_delay": "35"},
     {"join_urls": ["not a link!!"]},
@@ -129,7 +129,7 @@ def test_add_schedule_rejects_invalid_scrape_and_join(store):
     assert not store.add_schedule(
         schedule_id="sched_bad2", name="Bad", cron="0 9 * * *",
         action="auto_join", target=None, account_ids=["acct"],
-        join_urls=["@channel"] * 11, join_delay=35,
+        join_urls=["@channel"] * 10001, join_delay=35,
     )
     assert store.schedules == {}
 
@@ -220,17 +220,38 @@ async def test_auto_join_rotates_to_the_next_account_when_one_is_limited(store, 
     assert record["stopped_reason"] == ""
     assert flooded.call_count == 1
     assert [row["account"] for row in record["targets"]] == ["b", "b"]
-    # The limit stays scoped to joining, so the next schedule can use account a
-    # for a send immediately.
+    # The limit stays scoped to the method that hit it, so the next schedule can
+    # use account a for a send, or for a public-link join, immediately.
     assert module.account_cooldown_remaining("a", "send") == 0
-    assert module.account_cooldown_remaining("a", "join") > 0
+    assert module.account_cooldown_remaining("a", "join_invite") > 0
+    assert module.account_cooldown_remaining("a", "join_public") == 0
+
+
+@pytest.mark.asyncio
+async def test_auto_join_moves_to_the_next_account_on_a_channel_limit(store, monkeypatch):
+    limited = AsyncMock(side_effect=errors.ChannelsTooMuchError(None))
+    healthy = AsyncMock()
+    healthy.get_entity = AsyncMock(side_effect=lambda value: SimpleNamespace(id=7, username=str(value)))
+    clients = {"a": limited, "b": healthy}
+    manager = SimpleNamespace(accounts={"a": {}, "b": {}},
+                              get_client=AsyncMock(side_effect=lambda account: clients[account]))
+    monkeypatch.setattr(module, "account_manager", manager)
+    schedule = join_schedule(accounts=["a", "b"])
+
+    assert await store._execute_schedule(schedule) is True
+    record = schedule["last_join_result"]
+    assert record["joined"] == 2 and record["failed"] == 0
+    assert [row["account"] for row in record["targets"]] == ["b", "b"]
+    # Over the channel ceiling is a block, not a fake 24-hour countdown.
+    assert module.account_block("a", "join") == "channel_limit_reached"
+    assert module.account_cooldown_remaining("a", "join_invite") == 0
 
 
 @pytest.mark.asyncio
 async def test_auto_join_waits_without_calling_telegram_while_every_account_cools(store, client):
     import outreach_policy
 
-    outreach_policy.account_cooldown("acct", 120, "join", "flood_wait")
+    outreach_policy.account_cooldown("acct", 120, "join_invite", "flood_wait")
     schedule = join_schedule()
 
     assert await store._execute_schedule(schedule) is False

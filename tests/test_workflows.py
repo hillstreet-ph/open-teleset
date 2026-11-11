@@ -101,7 +101,7 @@ def test_a_chain_keeps_operator_order(client):
     ([_node("n1", "add_members", {"dest_target": "@x"})], [], "not one of the supported"),
     ([_node("n1", "scrape", {"target": "", "limit": 10})], [], "needs the group"),
     ([_node("n1", "scrape", {"target": "@x", "limit": 5000})], [], "1 to 1000"),
-    ([_node("n1", "join", {"urls": ["@a", "@b", "@c", "@d", "@e", "@f", "@g", "@h", "@i", "@j", "@k"]})], [], "1 and 10"),
+    ([_node("n1", "join", {"urls": ["@a"] * 10001})], [], "1 and 10000"),
     ([_node("n1", "join", {"urls": ["@a"], "delay": 5})], [], "35 or more"),
     ([_node("n1", "wait", {"seconds": 601})], [], "1 to 600"),
     ([_node("n1", "notify", {"text": ""})], [], "between 1 and 1000"),

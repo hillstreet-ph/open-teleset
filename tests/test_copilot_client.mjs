@@ -69,8 +69,8 @@ function harness(draftResponse) {
     },
     scraper: { limit: 500 },
     adder: { delay: 35, consentConfirmed: true },
-    autojoin: { delay: 38, limit: 24 },
-    bulksend: { messages: { stale_user: 'old' }, message: '', targets: '', consentConfirmed: true, delay: 45, perAccountLimit: 8 },
+    autojoin: { delay: 38, limit: 0 },
+    bulksend: { messages: { stale_user: 'old' }, message: '', targets: '', consentConfirmed: true, delay: 45, perAccountLimit: 0 },
     autoReply: { config: { enabled: false, mode: 'rules', poll_seconds: 90, daily_cap: 20 }, pending: null },
     automation: { maxPrice: '', otpAttempts: '' },
     scheduleStep: 3,
@@ -279,14 +279,14 @@ test('BulkSend ops drafts reassert consent and pacing without sending', async ()
   state.bulksend.perAccountLimit = 50;
   state.copilot.draft = {
     action: 'ops', requires_confirmation: true,
-    payload: { surface: 'bulksend', tab: 'bulksend', gate: 'gate-bulksend', fields: { delay: 45, perAccountLimit: 8 } },
+    payload: { surface: 'bulksend', tab: 'bulksend', gate: 'gate-bulksend', fields: { delay: 45, perAccountLimit: 0 } },
   };
   await state.applyCopilotDraft();
   assert.equal(calls.length, 0);
   assert.equal(state.tab, 'bulksend');
   assert.equal(state.bulksend.consentConfirmed, false);
   assert.equal(state.bulksend.delay, 45);
-  assert.equal(state.bulksend.perAccountLimit, 8);
+  assert.equal(state.bulksend.perAccountLimit, 0);
 });
 
 test('Auto Reply ops drafts never enable the listener or save settings', async () => {

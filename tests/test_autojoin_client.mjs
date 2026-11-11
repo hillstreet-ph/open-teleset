@@ -74,3 +74,24 @@ test('scraper and adder expose the detected group pickers', () => {
   assert.match(html, /pickGroup\(\$event, 'adder'\)/);
   assert.match(html, /\/api\/channels\/groups/);
 });
+
+test('auto join has no per-run cap and zero queues every link', async () => {
+  const { state, calls } = harness();
+  state.autojoin.limit = 0;
+  await state.runAutoJoin();
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].body.limit, 0);
+  assert.deepEqual(calls[0].body.urls, ['https://t.me/chanone', 'https://t.me/chantwo']);
+  assert.match(html, /v-model\.number="autojoin\.limit" min="0"/);
+  assert.ok(!/max="2000"/.test(html), 'the per-run ceiling must be gone');
+  assert.ok(!html.includes('from 1 to 50'), 'the old fifty-link cap must be gone');
+  assert.match(html, /limit: 0,/, 'the dashboard must default to no per-run cap');
+});
+
+test('a negative per-run cap is refused before it reaches the server', async () => {
+  const { state, calls } = harness();
+  state.autojoin.limit = -1;
+  await state.runAutoJoin();
+  assert.equal(calls.length, 0);
+  assert.match(state.autojoin.resultMsg, /0 to join every link/);
+});

@@ -1404,11 +1404,14 @@
                                     <p class="muted small" style="margin-top:4px;">Created {{ jobStamp(job.created) }} · Started {{ jobStamp(job.started) }} · Finished {{ jobStamp(job.finished) }}<template v-if="job.started"> · Elapsed {{ outreachDuration(jobElapsed(job)) }}</template></p>
                                     <p v-if="job.next_account_id && ['queued','running','waiting','paused'].includes(job.state)" class="muted small" style="margin-top:4px;">Assigned account: {{ jobAccountLabel(job.next_account_id) }}</p>
                                     <p v-if="job.retry_after > 0 && ['queued','running','waiting'].includes(job.state)" class="small" style="color:var(--warning);margin-top:4px;">Next eligible attempt in {{ outreachDuration(job.retry_after) }}<span v-if="job.retry_at"> · {{ outreachRetryTime(job.retry_at) }}</span>.</p>
+                                    <p v-if="job.accounts && job.accounts.length > 1" class="muted small" style="margin-top:4px;">Accounts: <span v-for="(entry, i) in job.accounts" :key="entry.account_id"><template v-if="i"> · </template>{{ jobAccountLabel(entry.account_id) }} — {{ entry.state === 'ready' ? 'ready' : (entry.state === 'blocked' ? outreachReason(entry.reason) : 'free in ' + outreachDuration(entry.retry_after)) }}</span></p>
+                                    <p v-if="job.reason === 'channel_limit_reached'" class="muted small" style="margin-top:4px;">No countdown applies: Telegram's channel limit is a permanent condition, not a timer. Free a slot on an account or add another, then press Recheck now.</p>
                                     <p v-if="job.reason === 'telegram_cooldown' && job.state === 'running'" class="muted small" style="margin-top:4px;">A selected account hit Telegram's limit for this action. The job switches to the next eligible account automatically; only work pinned to the limited account waits for its cooldown to end. No click is needed.</p>
                                     <p v-if="job.reason === 'telegram_cooldown' && ['queued','waiting'].includes(job.state)" class="muted small" style="margin-top:4px;">No selected account can act yet. The job resumes automatically when the soonest Telegram wait clears; a real wait cannot be shortened by Pause, Resume or a new job, and a stale wait is re-read from the live limit records and released on its own.</p>
                                     <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;">
                                         <button v-if="['queued','running','waiting'].includes(job.state)" class="btn btn-outline btn-sm" @click="controlOutreachJob(job, 'pause')" :disabled="!!outreachJobBusy">Pause</button>
                                         <button v-if="job.state === 'paused'" class="btn btn-primary btn-sm" @click="controlOutreachJob(job, 'resume')" :disabled="!!outreachJobBusy">Resume</button>
+                                        <button v-if="['queued','running','waiting','paused'].includes(job.state)" class="btn btn-outline btn-sm" @click="controlOutreachJob(job, 'recheck')" :disabled="!!outreachJobBusy">Recheck now</button>
                                         <button v-if="['queued','running','waiting','paused'].includes(job.state)" class="btn btn-danger btn-sm" @click="controlOutreachJob(job, 'stop')" :disabled="!!outreachJobBusy">Stop</button>
                                     </div>
                                     <job-history :job="job" :account="jobAccountLabel" :result-state="jobResultState"
@@ -4183,9 +4186,9 @@
                         <small>This records your consent declaration. Existing opt-outs still apply. The run keeps going on its own: recipients who haven't consented, have opted out, or are unreachable are skipped (never messaged), and a spam-limited account rotates out automatically — only pressing Stop halts the job.</small>
                     </div>
                     <div class="form-group">
-                        <label>Maximum recipients per account in this run</label>
+                        <label>Per-account cap (0 = no limit)</label>
                         <input class="form-control" type="number" v-model.number="bulksend.perAccountLimit" min="0" step="1">
-                        <small>0 = unlimited. A positive value sets an optional cap for each account in this run.</small>
+                        <small>0 sends to every recipient in this run. A positive value sets an optional cap for each account.</small>
                     </div>
                     <div style="display: flex; gap: 15px;">
                         <div class="form-group" style="flex:1;">
@@ -4252,7 +4255,7 @@
                         <label>Channel/group links (one per line)</label>
                         <textarea class="form-control" v-model="autojoin.urls" rows="6" aria-describedby="autojoin-summary" placeholder="https://t.me/examplechannel&#10;@examplegroup&#10;https://t.me/+AbCdEf123456"></textarea>
                         <small id="autojoin-summary" role="status" aria-live="polite">
-                            {{ autojoinLinks.length }} valid unique links (max {{ autojoin.limit }} joined per run). Invalid links are skipped automatically; blank lines ignored.
+                            {{ autojoinLinks.length }} valid unique links{{ autojoin.limit ? ' (up to ' + autojoin.limit + ' joined this run)' : ' (every link is queued; no per-run cap)' }}. Invalid links are skipped automatically; blank lines ignored.
                         </small>
                     </div>
                     <div class="form-group">
@@ -4266,8 +4269,8 @@
                             <input class="form-control" type="number" v-model.number="autojoin.delay" min="30" max="3600" step="5">
                         </div>
                         <div class="form-group" style="flex:1;">
-                            <label>Max joins this run</label>
-                            <input class="form-control" type="number" v-model.number="autojoin.limit" min="1" max="50" step="1">
+                            <label>Per-run cap (0 = every link)</label>
+                            <input class="form-control" type="number" v-model.number="autojoin.limit" min="0" step="1">
                         </div>
                     </div>
                     <button id="gate-autojoin" class="btn btn-primary" @click="runAutoJoin" :disabled="autojoin.loading || (autojoin.rotationMode === 'single' ? !autojoin.accountId : !autojoin.accountIds.length) || !autojoinLinks.length">
@@ -4297,12 +4300,15 @@
                         <p class="muted small" style="margin-top:4px;">Created {{ jobStamp(job.created) }} · Started {{ jobStamp(job.started) }} · Finished {{ jobStamp(job.finished) }}<template v-if="job.started"> · Elapsed {{ outreachDuration(jobElapsed(job)) }}</template></p>
                         <p v-if="job.next_account_id && ['queued','running','waiting','paused'].includes(job.state)">Assigned account: {{ jobAccountLabel(job.next_account_id) }}</p>
                         <p v-if="job.retry_after > 0 && ['queued','running','waiting'].includes(job.state)">Next eligible attempt in {{ outreachDuration(job.retry_after) }}<span v-if="job.retry_at"> · {{ outreachRetryTime(job.retry_at) }} (your local time)</span>. Updates every 2 seconds.</p>
+                        <p v-if="job.accounts && job.accounts.length > 1">Accounts: <span v-for="(entry, i) in job.accounts" :key="entry.account_id"><template v-if="i"> · </template>{{ jobAccountLabel(entry.account_id) }} — {{ entry.state === 'ready' ? 'ready' : (entry.state === 'blocked' ? outreachReason(entry.reason) : 'free in ' + outreachDuration(entry.retry_after)) }}</span></p>
+                        <p v-if="job.reason === 'channel_limit_reached'">No countdown applies: Telegram's channel limit is a permanent condition, not a timer. Free a slot on an account or add another, then press Recheck now.</p>
                         <p v-if="job.reason === 'telegram_cooldown' && job.state === 'running'">A selected account hit Telegram's limit for this action. The job switches to the next eligible account automatically; only the limited account's remaining items wait for its cooldown to end. No click is needed.</p>
-                        <p v-if="job.reason === 'telegram_cooldown' && ['queued','waiting'].includes(job.state)">No selected account can act yet. The job resumes automatically when the soonest Telegram wait clears; a real wait cannot be shortened by Pause, Resume or a new job, and a stale wait is re-read from the live limit records and released on its own. Updates every 2 seconds.</p>
+                        <p v-if="job.reason === 'telegram_cooldown' && ['queued','waiting'].includes(job.state)">No selected account can act yet. The job resumes automatically when the soonest Telegram wait clears. A live wait is not shortened by Pause, Resume or a new job; if you have just used the account yourself and it works, press Recheck now to clear a stale wait.</p>
                         <p v-if="job.state === 'paused'">Paused. Resume is required to continue; any remaining Telegram cooldown still applies.</p>
                         <div style="display:flex;flex-wrap:wrap;gap:8px;margin:10px 0;">
                             <button v-if="['queued','running','waiting'].includes(job.state)" class="btn btn-outline" @click="controlOutreachJob(job, 'pause')" :disabled="!!outreachJobBusy">Pause</button>
                             <button v-if="job.state === 'paused'" class="btn btn-primary" @click="controlOutreachJob(job, 'resume')" :disabled="!!outreachJobBusy">Resume</button>
+                            <button v-if="['queued','running','waiting','paused'].includes(job.state)" class="btn btn-outline" @click="controlOutreachJob(job, 'recheck')" :disabled="!!outreachJobBusy">Recheck now</button>
                             <button v-if="['queued','running','waiting','paused'].includes(job.state)" class="btn btn-danger" @click="controlOutreachJob(job, 'stop')" :disabled="!!outreachJobBusy">Stop</button>
                         </div>
                         <p v-if="job.state === 'needs_review'">Delivery is uncertain. Check Telegram before creating another job; automatic retry is disabled.</p>
@@ -6066,7 +6072,7 @@
                         accountIds: [],
                         urls: '',
                         delay: 38,
-                        limit: 24,
+                        limit: 0,
                         loading: false,
                         resultMsg: '',
                     },
@@ -6079,7 +6085,7 @@
                         filterBots: true,
                         messages: {},
                         activityFilter: 'all',
-                        perAccountLimit: 8,
+                        perAccountLimit: 0,
                         consentConfirmed: false,
                         message: '',
                         targets: '',
@@ -6741,7 +6747,7 @@
                         account_banned: 'This account is banned by Telegram — it will not be retried',
                         session_revoked: 'This account was signed out of Telegram — reconnect it first',
                         account_frozen: 'This account is frozen by Telegram — it will not be retried',
-                        channel_limit_reached: 'This account reached Telegram\'s join limit',
+                        channel_limit_reached: 'This account is at Telegram\'s channel limit — free a slot or add another account',
                         account_restricted: 'Telegram restricted this account — it will not be retried',
                         not_attempted: 'Not attempted — the run stopped before this link',
                         invalid_link: 'Not a valid group, channel or invite link — skipped',
@@ -6857,8 +6863,8 @@
                         if (!Number.isFinite(this.autojoin.delay) || this.autojoin.delay < 30 || this.autojoin.delay > 3600) {
                             throw new Error('Delay between joins must be a number from 30 to 3600 seconds.');
                         }
-                        if (!Number.isInteger(this.autojoin.limit) || this.autojoin.limit < 1 || this.autojoin.limit > 50) {
-                            throw new Error('Max joins must be a whole number from 1 to 50.');
+                        if (!Number.isInteger(this.autojoin.limit) || this.autojoin.limit < 0) {
+                            throw new Error('Use 0 to join every link, or a whole number as the per-run cap.');
                         }
                         const rotating = this.autojoin.rotationMode === 'round_robin';
                         if (rotating ? !this.autojoin.accountIds.length : !this.autojoin.accountId) {

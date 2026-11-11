@@ -144,7 +144,7 @@ OPS_SURFACES: dict[str, dict[str, Any]] = {
         "gate_label": "Start Auto Join",
         "summary": "Opens the group joiner prefilled. Nothing is joined until you press the button.",
         "note": "Groups are joined one at a time, with a delay between them.",
-        "fields": {"limit": 24, "delay": 38},
+        "fields": {"limit": 0, "delay": 38},
     },
     "bulksend": {
         "tab": "bulksend",
@@ -153,7 +153,7 @@ OPS_SURFACES: dict[str, dict[str, Any]] = {
         "gate_label": "Start BulkSend",
         "summary": "Opens BulkSend prefilled. Consent stays unchecked and you press Start.",
         "note": "Only people who agreed to be messaged may be on the list.",
-        "fields": {"delay": 45, "perAccountLimit": 8},
+        "fields": {"delay": 45, "perAccountLimit": 0},
     },
     "autoreply": {
         "tab": "autoreply",
@@ -205,18 +205,18 @@ OPS_SURFACES: dict[str, dict[str, Any]] = {
 # The agent may tune a field only inside these bounds, and only a field the
 # surface already declares.
 FIELD_BOUNDS: dict[str, tuple[float, float]] = {
-    "limit": (1, 2000),
+    "limit": (0, 2000),
     "delay": (0, 300),
-    "perAccountLimit": (1, 50),
+    "perAccountLimit": (0, 50),
     "maxPrice": (0.02, 5.0),
     "otpAttempts": (1, 120),
     "poll": (30, 900),
     "cap": (0, 200),
 }
 SURFACE_BOUNDS: dict[tuple[str, str], tuple[float, float]] = {
+    ("scraper", "limit"): (1, 2000),
     ("adder", "delay"): (35, 300),
     ("autojoin", "delay"): (30, 3600),
-    ("autojoin", "limit"): (1, 50),
 }
 
 _FIELD_PATTERNS: dict[str, re.Pattern] = {

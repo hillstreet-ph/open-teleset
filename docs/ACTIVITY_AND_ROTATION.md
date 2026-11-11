@@ -33,9 +33,11 @@ All selected accounts must be available before the first message is attempted.
 Approvals must cover the pool; consent must cover each recipient's assigned
 sender. No alternate sender is tried when permission or delivery fails.
 
-`per_account_limit` is a per-run cap from 1–20, default 20. It does not increase
-the existing maximum of 20 entered recipients across the whole request.
-Requests exceeding pool capacity are rejected before connecting accounts.
+`per_account_limit` sets an optional per-account cap. `0` (the dashboard
+default) sends to every recipient in the run; a positive value assigns at most
+that many recipients to each selected account. The request has no application
+count cap on entered recipients; requests that cannot fit the pool's positive
+cap are rejected before connecting accounts.
 Rotation starts at the first selected account on each run; it is not a daily
 quota or a persistent campaign scheduler. Duplicate entries are normalized,
 and resolved Telegram peer IDs are deduplicated across the whole run.
@@ -90,7 +92,7 @@ Sender CSV headers: `recipient` (or `username`, `target`, `id`) and optional
 `message`. Messages can differ by recipient; missing row messages use the
 message box. A one-row, message-only CSV fills the message box. Import only
 prepares a reviewed batch; it does not send, record consent or create approvals.
-The current 20-recipient limit and all existing policy checks remain. Duplicate
+All existing policy checks remain, and there is no application count cap. Duplicate
 recipients with conflicting messages are rejected. Editing the recipient field
 clears imported individual messages. Adder CSV supports up to 10 recipients.
 

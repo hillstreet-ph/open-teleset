@@ -119,3 +119,23 @@ async def test_limit_caps_joins(monkeypatch):
     res = await ops.join_channels(ops.JoinChannelsRequest(
         account_id="acct", urls=[f"https://t.me/chan{i}" for i in range(10)], limit=3, delay=30))
     assert res["joined"] == 3 and res["total"] == 10
+
+
+def test_request_defaults_to_no_per_run_cap():
+    request = ops.JoinChannelsRequest(
+        account_id="acct", urls=[f"https://t.me/chan{i}" for i in range(120)])
+    assert request.limit == 0
+
+
+@pytest.mark.asyncio
+async def test_zero_limit_joins_every_link(monkeypatch):
+    client = join_client()
+    monkeypatch.setattr(ops.account_manager, "get_client", AsyncMock(return_value=client))
+    res = await ops.join_channels(ops.JoinChannelsRequest(
+        account_id="acct", urls=[f"https://t.me/chan{i}" for i in range(75)], limit=0, delay=30))
+    assert res["joined"] == 75 and res["total"] == 75
+
+
+def test_request_rejects_a_negative_cap():
+    with pytest.raises(Exception):
+        ops.JoinChannelsRequest(account_id="acct", urls=["@chanone"], limit=-1)

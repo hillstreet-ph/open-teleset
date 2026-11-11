@@ -1197,3 +1197,108 @@ def test_resume_uses_the_live_wait_instead_of_an_inflated_timestamp(env):
     assert resumed['state'] == 'waiting'
     assert resumed['reason'] == 'telegram_cooldown'
     assert 100 <= resumed['retry_after'] <= 120
+
+
+def _join_request(**overrides):
+    data = dict(account_id='a', urls=['@synthetic_channel'],
+                request_id='join_request_key_1234')
+    data.update(overrides)
+    return jobs.AutoJoinJobRequest(**data)
+
+
+def _join_client(monkeypatch, env, rpc=None):
+    client = AsyncMock()
+    client.get_me.return_value = types.User(id=999)
+    client.get_entity.return_value = types.Channel(
+        id=555, title='Synthetic', photo=types.ChatPhotoEmpty(), date=None)
+    if rpc is not None:
+        client.side_effect = rpc
+    monkeypatch.setattr(jobs.account_manager, 'get_client', AsyncMock(return_value=client))
+    return client
+
+
+def test_a_zero_cap_queues_every_submitted_link(env):
+    urls = [f'https://t.me/+JoinBulk{index:03d}' for index in range(120)]
+    request = _join_request(urls=urls, limit=0, request_id='join_no_cap_1234')
+    job = env.store.submit('auto_join', 'owner', request, request.urls, ['a'])
+    shown = env.store.snapshot(job, 'owner')
+    assert shown['total'] == 120 and shown['pending'] == 120
+
+
+@pytest.mark.asyncio
+async def test_a_public_join_is_not_blocked_by_an_invite_hash_flood(env, monkeypatch):
+    policy.record_provider_restriction('a', errors.FloodWaitError(None, 3600), 'auto_join_invite')
+    request = _join_request()
+    job = env.store.submit('auto_join', 'owner', request, request.urls, ['a'])
+    client = _join_client(monkeypatch, env)
+    await env.worker.tick()
+    result = env.store.snapshot(job, 'owner')
+    assert result['state'] == 'completed' and result['completed'] == 1
+    assert type(client.call_args.args[0]).__name__ == 'JoinChannelRequest'
+
+
+@pytest.mark.asyncio
+async def test_a_channel_limit_pauses_without_a_countdown_and_a_recheck_retries(env, monkeypatch):
+    request = _join_request(request_id='join_channel_limit_1234')
+    job = env.store.submit('auto_join', 'owner', request, request.urls, ['a'])
+    client = _join_client(monkeypatch, env, rpc=errors.ChannelsTooMuchError(None))
+    await env.worker.tick()
+    result = env.store.snapshot(job, 'owner')
+    assert result['state'] == 'paused' and result['reason'] == 'channel_limit_reached'
+    assert result['retry_after'] == 0
+    assert result['blocked_accounts'] == {'a': 'channel_limit_reached'}
+    assert result['pending'] == 1
+    client.side_effect = None
+    rechecked = env.store.recheck(job, 'owner')
+    assert rechecked['state'] == 'queued' and rechecked['retry_after'] == 0
+    assert rechecked['blocked_accounts'] == {}
+    await env.worker.tick()
+    assert env.store.snapshot(job, 'owner')['state'] == 'completed'
+
+
+@pytest.mark.asyncio
+async def test_a_successful_join_clears_an_earlier_channel_block(env, monkeypatch):
+    policy.block_account('a', 'join', 'channel_limit_reached')
+    request = _join_request(request_id='join_clear_block_1234')
+    job = env.store.submit('auto_join', 'owner', request, request.urls, ['a'])
+    _join_client(monkeypatch, env)
+    await env.worker.tick()
+    assert env.store.snapshot(job, 'owner')['state'] == 'completed'
+    assert policy.account_block('a', 'join') is None
+
+
+def test_snapshot_names_each_account_state_and_rotation(env):
+    request = _join_request(account_id='', rotation_mode='round_robin',
+                            account_ids=['a', 'b'], request_id='join_rotation_state_1234')
+    job = env.store.submit('auto_join', 'owner', request, request.urls, ['a', 'b'])
+    policy.account_cooldown('a', 120, 'join_public', 'flood_wait')
+    policy.block_account('b', 'join', 'channel_limit_reached')
+    shown = env.store.snapshot(job, 'owner')
+    assert shown['rotation'] is True and shown['rotation_mode'] == 'round_robin'
+    assert {row['account_id']: row['state'] for row in shown['accounts']} == {
+        'a': 'waiting', 'b': 'blocked'}
+
+
+def test_recheck_releases_a_legacy_day_long_join_wait(env):
+    request = _join_request(request_id='join_stale_wait_1234')
+    job = env.store.submit('auto_join', 'owner', request, request.urls, ['a'])
+    policy.account_cooldown('a', 86400, 'join_invite', 'flood_wait')
+    with env.store.db() as db:
+        db.execute("UPDATE jobs SET state='waiting',reason='telegram_cooldown',retry_at=? WHERE id=?",
+                   (env.clock[0] + 86000, job))
+    shown = env.store.recheck(job, 'owner')
+    assert shown['state'] == 'queued' and shown['retry_after'] == 0
+    assert policy.account_cooldown_remaining('a', 'join_invite') == 0
+
+
+def test_recheck_is_rate_limited_and_owner_scoped(env):
+    job = env.submit()
+    env.store.recheck(job, 'owner')
+    with pytest.raises(HTTPException) as error:
+        env.store.recheck(job, 'owner')
+    assert error.value.status_code == 429
+    with pytest.raises(HTTPException) as missing:
+        env.store.recheck(job, 'other')
+    assert missing.value.status_code == 404
+    env.clock[0] += 61
+    assert env.store.recheck(job, 'owner')['state'] == 'queued'

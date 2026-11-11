@@ -88,7 +88,7 @@ test('ban and revocation reasons are explained instead of shown as class names',
   assert.match(outreachReason('account_banned'), /banned by Telegram/);
   assert.match(outreachReason('session_revoked'), /signed out/);
   assert.match(outreachReason('account_frozen'), /frozen/);
-  assert.match(outreachReason('channel_limit_reached'), /join limit/);
+  assert.match(outreachReason('channel_limit_reached'), /channel limit/);
   assert.match(outreachReason('not_attempted'), /Not attempted/);
   assert.match(outreachReason('invalid_link'), /not a valid/i);
   assert.match(outreachReason('already_member'), /Already a member/);

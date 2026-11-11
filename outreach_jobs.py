@@ -28,8 +28,11 @@ from open_teleset.crypto.cipher import SessionCipher
 from open_teleset.security import _load_profile
 from outreach_policy import (
     OutreachDenied,
+    account_block,
     account_cooldown_remaining,
     account_pacing_remaining,
+    clear_account_block,
+    clear_account_cooldowns,
     cooldown_scope,
     dispatch_guard,
     dispatch_outreach,
@@ -110,6 +113,15 @@ def owner(request):
     if not user or not user.id:
         raise HTTPException(403, "Authenticated operator required")
     return user.id
+
+
+def _clear_join_restriction(account_id, scope):
+    """A completed join proves the account is usable for this method right now."""
+    try:
+        clear_account_cooldowns(account_id, scope)
+        clear_account_block(account_id, "join")
+    except OutreachDenied as exc:
+        log.warning("Could not clear join restriction for %s: %s", account_id, exc)
 
 
 class JobStore:
@@ -237,7 +249,7 @@ class JobStore:
                            (job, owner_hash, request.request_id, fingerprint, kind,
                             self.pack(payload), "queued", time.time()))
                 seen = set()
-                for seq, raw in enumerate(targets[:request.limit]):
+                for seq, raw in enumerate(targets[:request.limit] if request.limit else targets):
                     duplicate = raw in seen
                     seen.add(raw)
                     if _parse_join_target(raw) is None:
@@ -323,12 +335,37 @@ class JobStore:
         return list(dict.fromkeys(self.unpack(row[0])["account"] for row in rows))
 
     @staticmethod
-    def wait_remaining(accounts, kind):
+    def wait_remaining(accounts, kind, scope=None):
         """The soonest any of these accounts could act, from the live rate store."""
         if not accounts:
             return 0
-        scope = cooldown_scope(kind)
+        scope = scope or cooldown_scope(kind)
         return min(account_cooldown_remaining(account, scope) for account in accounts)
+
+    def pending_join_scope(self, db, job):
+        """The RPC the next pending link needs; Telegram floods each one separately."""
+        row = db.execute("SELECT payload FROM items WHERE job=? AND state IN ('pending','sending') "
+                         "ORDER BY seq LIMIT 1", (job,)).fetchone()
+        if not row:
+            return "join"
+        parsed = _parse_join_target(self.unpack(row[0])["target"])
+        return "join_invite" if parsed and parsed[0] == "invite" else "join_public" if parsed else "join"
+
+    def account_states(self, accounts, kind, scope=None):
+        """Per-account eligibility so a rotation never hides why it is parked."""
+        states = []
+        for account in accounts:
+            try:
+                block = account_block(account, "join") if kind == "auto_join" else None
+                remaining = 0 if block else account_cooldown_remaining(
+                    account, scope if kind == "auto_join" else cooldown_scope(kind))
+            except OutreachDenied:
+                continue
+            state = "blocked" if block else "waiting" if remaining > 0 else "ready"
+            states.append({"account_id": account, "state": state,
+                           "reason": block or ("telegram_cooldown" if remaining > 0 else ""),
+                           "retry_after": max(0, remaining)})
+        return states
 
     def snapshot(self, job, operator):
         release = False
@@ -350,10 +387,13 @@ class JobStore:
                                 "updated": item["updated"]})
             config = self.unpack(row["payload"])
             retry_at = row["retry_at"]
+            scope = self.pending_join_scope(db, job) if row["kind"] == "auto_join" else None
+            relevant = self.relevant_accounts(db, row, config)
+            states = self.account_states(relevant, row["kind"], scope)
+            blocked = {s["account_id"]: s["reason"] for s in states if s["state"] == "blocked"}
             if row["state"] in ("waiting", "paused") and row["reason"] == "telegram_cooldown":
                 try:
-                    live = self.wait_remaining(
-                        self.relevant_accounts(db, row, config), row["kind"])
+                    live = self.wait_remaining(relevant, row["kind"], scope)
                 except OutreachDenied:
                     live = None
                 if live is not None and retry_at > time.time():
@@ -371,6 +411,10 @@ class JobStore:
                         "completed": counts.get("completed", 0), "skipped": counts.get("skipped", 0),
                         "failed": counts.get("failed", 0), "uncertain": counts.get("uncertain", 0),
                         "pending": counts.get("pending", 0), "in_flight": counts.get("sending", 0),
+                        "rotation": (config.get("rotation_mode") == "round_robin"
+                                     or bool(config.get("rotate_any_account"))),
+                        "rotation_mode": config.get("rotation_mode", "single"),
+                        "accounts": states, "blocked_accounts": blocked,
                         "restricted_accounts": config.get("restricted_accounts") or {},
                         "results": list(reversed(results)), "created": row["created"],
                         "started": row["started"], "finished": row["finished"]}
@@ -388,8 +432,9 @@ class JobStore:
                               (now + 60,)).fetchall()
             for job in jobs:
                 config = self.unpack(job["payload"])
+                scope = self.pending_join_scope(db, job["id"]) if job["kind"] == "auto_join" else None
                 try:
-                    live = self.wait_remaining(self.relevant_accounts(db, job, config), job["kind"])
+                    live = self.wait_remaining(self.relevant_accounts(db, job, config), job["kind"], scope)
                 except OutreachDenied:
                     continue
                 if live <= 0:
@@ -420,8 +465,10 @@ class JobStore:
                                   "ORDER BY seq LIMIT 1", (job,)).fetchone()
                 if item:
                     config = self.unpack(row["payload"])
+                    scope = (self.pending_join_scope(db, job)
+                             if row["kind"] == "auto_join" else None)
                     remaining = self.wait_remaining(
-                        self.relevant_accounts(db, row, config), row["kind"])
+                        self.relevant_accounts(db, row, config), row["kind"], scope)
                     if remaining:
                         # The live record is authoritative at this instant; a
                         # stored timestamp from an older build may be inflated.
@@ -447,6 +494,52 @@ class JobStore:
                            (state, reason, time.time(), job))
             else:
                 db.execute("UPDATE jobs SET state=?,reason=? WHERE id=?", (state, reason, job))
+        return self.snapshot(job, operator)
+
+    def recheck(self, job, operator):
+        """Let the operator disprove a wait after using the account themselves.
+
+        A live manual join or send is better evidence than a stored timer from an
+        older build. Clearing is explicit, owner-scoped and rate-limited so it
+        cannot become a way to hammer Telegram.
+        """
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT * FROM jobs WHERE id=? AND owner=?",
+                             (job, hash_identifier(operator))).fetchone()
+            if not row:
+                raise HTTPException(404, "Job not found")
+            if row["state"] in TERMINAL:
+                raise HTTPException(409, "Job is already finished")
+            if row["state"] == "running":
+                raise HTTPException(409, "Wait for the current attempt to finish")
+            if row["state"] == "paused" and row["reason"] == "operator_pause":
+                raise HTTPException(409, "Job is paused by the operator; resume it instead")
+            now = time.time()
+            config = self.unpack(row["payload"])
+            if now - (config.get("rechecked_at") or 0) < 60:
+                raise HTTPException(429, "Recheck was used in the last minute")
+            accounts = self.relevant_accounts(db, row, config)
+            try:
+                for account in accounts:
+                    if row["kind"] == "auto_join":
+                        clear_account_cooldowns(account, "join")
+                        clear_account_block(account, "join")
+                    else:
+                        action_scope = cooldown_scope(row["kind"])
+                        # Short waits are still current; only long stored ones are
+                        # stale enough for the operator to override.
+                        if account_cooldown_remaining(account, action_scope) > 900:
+                            clear_account_cooldowns(account, action_scope)
+            except OutreachDenied:
+                raise HTTPException(503, "Rate store unavailable") from None
+            restricted = dict(config.get("restricted_accounts") or {})
+            cleaned = {a: r for a, r in restricted.items() if r != "channel_limit_reached"}
+            if cleaned != restricted:
+                config["restricted_accounts"] = cleaned
+            config["rechecked_at"] = now
+            db.execute("UPDATE jobs SET payload=?,state='queued',reason='',retry_at=0 WHERE id=?",
+                       (self.pack(config), job))
         return self.snapshot(job, operator)
 
     def recover(self):
@@ -974,8 +1067,13 @@ class JobWorker:
         parsed = _parse_join_target(raw)
         if parsed is None:
             self.store.outcome(job_id, seq, "skipped", "invalid_link")
+            self._finish_join_if_done(job_id, operator)
             return
         kind, value = parsed
+        # Invite hashes and public usernames are different RPCs, and Telegram
+        # floods them independently; a limit on one must not park the other.
+        join_action = "auto_join_invite" if kind == "invite" else "auto_join_public"
+        join_scope = cooldown_scope(join_action)
         rotation = (config.get("rotation_mode") == "round_robin"
                     and len(config.get("account_ids") or []) > 1)
         accounts = [a for a in (config.get("account_ids") if rotation else [config.get("account_id")]) if a]
@@ -988,10 +1086,16 @@ class JobWorker:
         if not candidates:
             self.store.outcome(job_id, seq, "pending", "all_accounts_restricted", job_state="paused")
             return
-        chosen, soonest = None, None
+        chosen, soonest, blocked = None, None, False
         for account in candidates:
             try:
-                remaining = account_cooldown_remaining(account, "join")
+                # Rotation skips a channel-blocked account so it never pins the
+                # run. A single selected account is still attempted once: the
+                # operator may have freed a slot, and a success clears the block.
+                if rotation and account_block(account, "join"):
+                    blocked = True
+                    continue
+                remaining = account_cooldown_remaining(account, join_scope)
             except OutreachDenied as exc:
                 self.store.outcome(job_id, seq, "pending", "rate_store_unavailable", job_state="paused")
                 log.warning("Join job %s paused: %s", job_id, exc)
@@ -1001,7 +1105,12 @@ class JobWorker:
                 break
             soonest = remaining if soonest is None else min(soonest, remaining)
         if chosen is None:
-            self.store.waiting(job_id, "telegram_cooldown", max(1, soonest or 30))
+            if soonest is None and blocked:
+                # Every selected account is over Telegram's channel ceiling. There
+                # is no countdown to show; the operator must free a slot.
+                self.store.outcome(job_id, seq, "pending", "channel_limit_reached", job_state="paused")
+            else:
+                self.store.waiting(job_id, "telegram_cooldown", max(1, soonest or 30))
             return
         self.store.mark_running(job_id)
         delay = config.get("delay", 45)
@@ -1030,6 +1139,7 @@ class JobWorker:
             if kind == "invite":
                 await asyncio.wait_for(
                     client(functions.messages.ImportChatInviteRequest(value)), TELEGRAM_SEND_TIMEOUT)
+                _clear_join_restriction(chosen, join_scope)
                 self.store.outcome(job_id, seq, "completed", delay=delay)
             else:
                 try:
@@ -1037,25 +1147,35 @@ class JobWorker:
                         _resolve_target_entity(client, "@" + value), TELEGRAM_READ_TIMEOUT)
                 except (ValueError, KeyError):
                     self.store.outcome(job_id, seq, "skipped", "target_unresolvable", delay=delay)
+                    self._finish_join_if_done(job_id, operator)
                     return
                 await asyncio.wait_for(
                     client(functions.channels.JoinChannelRequest(entity)), TELEGRAM_SEND_TIMEOUT)
+                _clear_join_restriction(chosen, join_scope)
                 self.store.outcome(job_id, seq, "completed", delay=delay)
         except errors.UserAlreadyParticipantError:
+            # Membership proves the account can join right now, whatever wait an
+            # earlier attempt recorded for this method.
+            _clear_join_restriction(chosen, join_scope)
             self.store.outcome(job_id, seq, "skipped", "already_member", delay=delay)
         except errors.FloodWaitError as exc:
-            # The wait is scoped to joining, so the very next tick can hand this
-            # link to another account instead of idling the whole job.
-            record_provider_restriction(chosen, exc, "auto_join")
+            # Telegram floods each join RPC independently and the wait is scoped to
+            # it, so the very next tick can hand this link to another account.
+            record_provider_restriction(chosen, exc, join_action)
             self.store.outcome(job_id, seq, "pending", "telegram_cooldown")
             if not rotation:
                 self.store.waiting(job_id, "telegram_cooldown", max(1, exc.seconds))
-        except (errors.ChannelsTooMuchError, errors.UserDeactivatedBanError,
+        except errors.ChannelsTooMuchError as exc:
+            # A permanent account ceiling, not a timer: the account must leave a
+            # channel before it can join another. Block it and try the next one.
+            record_provider_restriction(chosen, exc, join_action)
+            self.store.outcome(job_id, seq, "pending", "channel_limit_reached",
+                               job_state=None if rotation else "paused")
+        except (errors.UserDeactivatedBanError,
                 errors.AuthKeyUnregisteredError, errors.FrozenMethodInvalidError) as exc:
-            # The account itself is banned, signed out, frozen or over Telegram's
-            # channel limit — retrying cannot help until a human acts, so name the
-            # account and never loop on it.
-            record_provider_restriction(chosen, exc, "auto_join")
+            # The account itself is banned, signed out or frozen — retrying cannot
+            # help until a human acts, so name the account and never loop on it.
+            record_provider_restriction(chosen, exc, join_action)
             reason = ACCOUNT_RESTRICTIONS.get(type(exc), "account_restricted")
             self.store.restrict_account(job_id, chosen, reason)
             self.store.outcome(job_id, seq, "pending", reason,
@@ -1077,6 +1197,21 @@ class JobWorker:
         except (OSError, RuntimeError, TypeError) as exc:
             self.store.outcome(job_id, seq, "pending", type(exc).__name__,
                                job_state="paused")
+        self._finish_join_if_done(job_id, operator)
+
+    def _finish_join_if_done(self, job_id, operator):
+        """Close the job as soon as its last link reaches a terminal state."""
+        with self.store.db() as db:
+            left = db.execute(
+                "SELECT COUNT(*) FROM items WHERE job=? AND state IN ('pending','sending')",
+                (job_id,)).fetchone()[0]
+            if left:
+                return
+            db.execute("UPDATE jobs SET state='completed',reason='',"
+                       "finished=COALESCE(NULLIF(finished,0),?) WHERE id=? "
+                       "AND state IN ('queued','running','waiting')", (time.time(), job_id))
+            db.commit()
+        self._emit_terminal(job_id, "auto_join", operator)
 
 
 worker = JobWorker(store)
@@ -1143,6 +1278,12 @@ async def list_jobs(request: Request, kind: Optional[Literal["personal_send", "m
 @router.get("/api/outreach/jobs/{job_id}")
 async def get_job(job_id: str, request: Request):
     return store.snapshot(job_id, owner(request))
+
+
+@router.post("/api/outreach/jobs/{job_id}/recheck", status_code=202)
+async def recheck_job(job_id: str, request: Request):
+    """Operator assertion that the account is usable again; clears stale waits."""
+    return store.recheck(job_id, owner(request))
 
 
 @router.post("/api/outreach/jobs/{job_id}/{action}")

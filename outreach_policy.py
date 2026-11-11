@@ -441,13 +441,20 @@ def _rate_path():
 # Telegram limits messages, joins and invites separately; only a ban, a signed
 # out session or a frozen account applies to every action at once. Keeping the
 # scopes apart stops a message limit from blocking joins and the other way round.
+# Invite-hash and public-username joins are different RPCs, so Telegram floods
+# them independently; sharing one "join" scope made a hash flood hide a username
+# join the account could still make.
 _ACTION_SCOPES = {
     "personal_send": "send",
     "scheduled_send": "send",
     "auto_reply": "send",
     "member_add": "invite",
     "auto_join": "join",
+    "auto_join_invite": "join_invite",
+    "auto_join_public": "join_public",
 }
+_ALL_SCOPES = ("send", "invite", "join_invite", "join_public")
+_FAMILY_SCOPES = {"join": ("join_invite", "join_public")}
 _SOFT_REASONS = ("", "legacy", "flood_wait", "peer_flood")
 
 
@@ -463,23 +470,83 @@ def _scope_key(account_id, scope):
 def _remaining_keys(account_id, scope):
     base = hash_identifier(account_id)
     if scope is None:
-        return [base] + [_scope_key(account_id, name) for name in ("send", "invite", "join")]
+        return [base] + [_scope_key(account_id, name) for name in _ALL_SCOPES]
     if scope == "account":
         return [base]
+    if scope in _FAMILY_SCOPES:
+        return [base] + [_scope_key(account_id, name) for name in _FAMILY_SCOPES[scope]]
     return [base, _scope_key(account_id, scope)]
 
 
 def _ensure_cooldowns(db):
     db.execute("CREATE TABLE IF NOT EXISTS cooldowns "
                "(account TEXT PRIMARY KEY, until REAL NOT NULL, reason TEXT NOT NULL DEFAULT '')")
-    if "reason" in {row[1] for row in db.execute("PRAGMA table_info(cooldowns)")}:
+    if "reason" not in {row[1] for row in db.execute("PRAGMA table_info(cooldowns)")}:
+        db.execute("ALTER TABLE cooldowns ADD COLUMN reason TEXT NOT NULL DEFAULT ''")
+        # Rows written before scoping carry no reason; they were all soft waits from
+        # the old one-day PeerFlood rule. Cap them so a stale lock cannot hide a
+        # usable account for a day. A real limit is re-recorded on the next attempt.
+        limit = time.time() + 900
+        db.execute("UPDATE cooldowns SET until=MIN(until, ?), reason='legacy' WHERE until>?", (limit, limit))
+    # Older builds stored one shared join wait and a fake one-day timer for the
+    # channel ceiling. Neither survives the split into per-method scopes; leftover
+    # rows would keep hiding accounts that can join right now.
+    db.execute("DELETE FROM cooldowns WHERE account LIKE '%|join'")
+    db.execute("DELETE FROM cooldowns WHERE reason='channel_limit_reached'")
+
+
+def _ensure_blocks(db):
+    db.execute("CREATE TABLE IF NOT EXISTS blocks "
+               "(account TEXT NOT NULL, scope TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '', "
+               "created REAL NOT NULL, PRIMARY KEY(account, scope))")
+
+
+def block_account(account_id, scope, reason):
+    """Record a permanent account condition; unlike a cooldown it has no timer."""
+    path = _rate_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(path, timeout=1) as db:
+            _ensure_blocks(db)
+            db.execute("INSERT INTO blocks(account,scope,reason,created) VALUES (?,?,?,?) "
+                       "ON CONFLICT(account,scope) DO UPDATE SET "
+                       "reason=excluded.reason, created=excluded.created",
+                       (hash_identifier(account_id), scope, reason, time.time()))
+    except (OSError, sqlite3.Error):
+        raise OutreachDenied("rate_store_unavailable") from None
+
+
+def account_block(account_id, scope="join"):
+    """The reason an account cannot attempt this action at all, or None."""
+    path = _rate_path()
+    if not path.exists():
+        return None
+    try:
+        with sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=1) as db:
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='blocks'").fetchone():
+                return None
+            row = db.execute("SELECT reason FROM blocks WHERE account=? AND scope=?",
+                             (hash_identifier(account_id), scope)).fetchone()
+        return row[0] if row else None
+    except (OSError, sqlite3.Error):
+        raise OutreachDenied("rate_store_unavailable") from None
+
+
+def clear_account_block(account_id, scope=None):
+    path = _rate_path()
+    if not path.exists():
         return
-    db.execute("ALTER TABLE cooldowns ADD COLUMN reason TEXT NOT NULL DEFAULT ''")
-    # Rows written before scoping carry no reason; they were all soft waits from
-    # the old one-day PeerFlood rule. Cap them so a stale lock cannot hide a
-    # usable account for a day. A real limit is re-recorded on the next attempt.
-    limit = time.time() + 900
-    db.execute("UPDATE cooldowns SET until=MIN(until, ?), reason='legacy' WHERE until>?", (limit, limit))
+    try:
+        with sqlite3.connect(path, timeout=1) as db:
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='blocks'").fetchone():
+                return
+            if scope is None:
+                db.execute("DELETE FROM blocks WHERE account=?", (hash_identifier(account_id),))
+            else:
+                db.execute("DELETE FROM blocks WHERE account=? AND scope=?",
+                           (hash_identifier(account_id), scope))
+    except (OSError, sqlite3.Error):
+        raise OutreachDenied("rate_store_unavailable") from None
 
 
 def prepare_rate_store():
@@ -559,10 +626,13 @@ def clear_account_cooldowns(account_id, scope="account"):
             if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='cooldowns'").fetchone():
                 return
             if scope is None:
-                keys = [base] + [_scope_key(account_id, name) for name in ("send", "invite", "join")]
+                keys = [base] + [_scope_key(account_id, name) for name in _ALL_SCOPES]
                 db.execute(f"DELETE FROM cooldowns WHERE account IN ({','.join('?' * len(keys))})", keys)
             elif scope == "account":
                 db.execute("DELETE FROM cooldowns WHERE account=?", (base,))
+            elif scope in _FAMILY_SCOPES:
+                keys = [base] + [_scope_key(account_id, name) for name in _FAMILY_SCOPES[scope]]
+                db.execute(f"DELETE FROM cooldowns WHERE account IN ({','.join('?' * len(keys))})", keys)
             else:
                 db.execute(f"DELETE FROM cooldowns WHERE account=? OR (account=? AND reason IN "
                            f"({','.join('?' * len(_SOFT_REASONS))}))",
@@ -597,7 +667,9 @@ def record_provider_restriction(account_id, exc, action=None):
         # a day, and only affects the action that triggered it.
         account_cooldown(account_id, 900, scope, "peer_flood")
     elif isinstance(exc, errors.ChannelsTooMuchError):
-        account_cooldown(account_id, 86400, "join", "channel_limit_reached")
+        # A permanent account condition: the account must leave a channel before
+        # it can join another one. There is no Telegram countdown to show.
+        block_account(account_id, "join", "channel_limit_reached")
     elif isinstance(exc, errors.UserDeactivatedBanError):
         account_cooldown(account_id, 86400, "account", "account_banned")
     elif isinstance(exc, errors.AuthKeyUnregisteredError):

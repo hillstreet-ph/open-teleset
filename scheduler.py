@@ -18,9 +18,12 @@ from template_manager import template_manager
 from log_manager import log_manager
 from outreach_policy import (
     OutreachDenied,
+    account_block,
     account_cooldown_remaining,
     account_pacing_remaining,
+    clear_account_block,
     clear_account_cooldowns,
+    cooldown_scope,
     dispatch_outreach,
     outreach_policy,
     record_provider_restriction,
@@ -34,14 +37,14 @@ ACCOUNTS_DIR = "./accounts"
 SCHEDULE_FILE = os.path.join(ACCOUNTS_DIR, "schedules.json")
 
 SCRAPE_LIMIT_MAX = 1000
-JOIN_LIMIT = 10
+# Joining is a self-action; the only real ceiling is a payload sanity bound.
+JOIN_LIMIT = 10000
 JOIN_MIN_DELAY = 35
 # Account-level refusals a retry cannot fix; recorded with a plain reason.
 _ACCOUNT_RESTRICTIONS = (
     (errors.UserDeactivatedBanError, "account_banned"),
     (errors.AuthKeyUnregisteredError, "session_revoked"),
     (errors.FrozenMethodInvalidError, "account_frozen"),
-    (errors.ChannelsTooMuchError, "channel_limit_reached"),
 )
 
 
@@ -454,10 +457,14 @@ class TaskScheduler:
                     used_accounts = []
                     for idx, (kind, value) in enumerate(targets):
                         raw = raw_urls[idx] if idx < len(raw_urls) else value
+                        # Invite hashes and public usernames are separate RPCs and
+                        # Telegram floods them independently.
+                        join_action = "auto_join_invite" if kind == "invite" else "auto_join_public"
+                        join_scope = cooldown_scope(join_action)
                         attempted, last_failure = set(), None
                         state, reason, stop, account_used = "", "", "", ""
                         while True:
-                            chosen, soonest = None, None
+                            chosen, soonest, blocked = None, None, False
                             # Rotation order moves forward for every link, so a
                             # cooled-down or refused account never pins the run.
                             for offset in range(len(join_accounts)):
@@ -465,7 +472,11 @@ class TaskScheduler:
                                 if candidate in attempted:
                                     continue
                                 try:
-                                    hold = max(account_cooldown_remaining(candidate, "join"),
+                                    if account_block(candidate, "join"):
+                                        # A permanent channel ceiling, not a timer.
+                                        blocked = True
+                                        continue
+                                    hold = max(account_cooldown_remaining(candidate, join_scope),
                                                account_pacing_remaining(candidate))
                                 except OutreachDenied:
                                     hold = 0
@@ -482,6 +493,10 @@ class TaskScheduler:
                                     state, reason = "failed", "telegram_cooldown"
                                     stopped_reason = "telegram_cooldown"
                                     stop = f"a Telegram cooldown of {int(soonest) + 1}s"
+                                elif blocked:
+                                    state, reason = "failed", "channel_limit_reached"
+                                    stopped_reason = "channel_limit_reached"
+                                    stop = "every selected account is over Telegram's channel limit"
                                 else:
                                     state, reason = "failed", "account_unavailable"
                                     stopped_reason = "account_unavailable"
@@ -504,18 +519,29 @@ class TaskScheduler:
                                     await join_client(tl_functions.channels.JoinChannelRequest(entity))
                             except errors.UserAlreadyParticipantError:
                                 state, reason = "skipped", "already_member"
+                                try:
+                                    clear_account_cooldowns(chosen, join_scope)
+                                    clear_account_block(chosen, "join")
+                                except OutreachDenied:
+                                    pass
                             except errors.FloodWaitError as exc:
-                                # The limit is scoped to joining this account; the
-                                # next account may still join the same link.
-                                record_provider_restriction(chosen, exc, "auto_join")
+                                # The limit is scoped to this join method; the next
+                                # account may still join the same link.
+                                record_provider_restriction(chosen, exc, join_action)
                                 last_failure = ("failed", "telegram_cooldown",
                                                 f"a Telegram cooldown of {exc.seconds}s")
                                 continue
+                            except errors.ChannelsTooMuchError as exc:
+                                # A permanent channel ceiling, not a timer.
+                                record_provider_restriction(chosen, exc, join_action)
+                                last_failure = ("failed", "channel_limit_reached",
+                                                "this account reached Telegram's channel limit")
+                                continue
                             except (errors.UserDeactivatedBanError, errors.AuthKeyUnregisteredError,
-                                    errors.FrozenMethodInvalidError, errors.ChannelsTooMuchError) as exc:
+                                    errors.FrozenMethodInvalidError) as exc:
                                 # Retrying this account cannot help; name it and let
                                 # the other selected accounts continue.
-                                record_provider_restriction(chosen, exc, "auto_join")
+                                record_provider_restriction(chosen, exc, join_action)
                                 reason = type(exc).__name__
                                 for error_type, key in _ACCOUNT_RESTRICTIONS:
                                     if isinstance(exc, error_type):
@@ -525,7 +551,6 @@ class TaskScheduler:
                                     "account_banned": "this account is banned",
                                     "session_revoked": "this account was signed out of Telegram",
                                     "account_frozen": "this account is frozen",
-                                    "channel_limit_reached": "this account reached Telegram's join limit",
                                 }.get(reason, "this account cannot join"))
                                 continue
                             except Exception as exc:
@@ -534,7 +559,8 @@ class TaskScheduler:
                                 state, reason = "joined", ""
                                 joined += 1
                                 try:
-                                    clear_account_cooldowns(chosen, "join")
+                                    clear_account_cooldowns(chosen, join_scope)
+                                    clear_account_block(chosen, "join")
                                 except OutreachDenied:
                                     pass
                             break

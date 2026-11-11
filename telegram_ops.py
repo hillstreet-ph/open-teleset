@@ -22,7 +22,15 @@ from open_teleset.app_settings import get_setting
 
 from account_manager import account_manager
 from log_manager import log_manager
-from outreach_policy import OutreachDenied, outreach_policy, dispatch_outreach, record_provider_restriction
+from outreach_policy import (
+    OutreachDenied,
+    clear_account_block,
+    clear_account_cooldowns,
+    cooldown_scope,
+    dispatch_outreach,
+    outreach_policy,
+    record_provider_restriction,
+)
 from stats_tracker import stats_tracker
 
 
@@ -215,7 +223,7 @@ class JoinChannelsRequest(BaseModel):
     account_id: str = ""
     urls: List[str] = Field(min_length=1)   # channel/group links or usernames
     delay: float = Field(default=38.0, ge=30, le=3600, allow_inf_nan=False)  # seconds between joins
-    limit: int = Field(default=24, ge=1, le=50)  # max joins per run
+    limit: int = Field(default=0, ge=0, strict=True)  # 0 joins every link provided
     rotation_mode: Literal["single", "round_robin"] = "single"
     account_ids: List[str] = Field(default_factory=list)
 
@@ -1119,10 +1127,11 @@ async def join_channels(request: JoinChannelsRequest):
                 reason = account_manager.connection_errors.get(account_id, "Check the connection from Accounts.")
                 raise HTTPException(status_code=400, detail=f"Selected account unavailable; no joins performed. {reason}")
 
-        links = request.urls[:request.limit]
-        account_limit_errors = (errors.FloodWaitError, errors.ChannelsTooMuchError,
-                                errors.UserDeactivatedBanError, errors.AuthKeyUnregisteredError,
-                                errors.FrozenMethodInvalidError)
+        links = request.urls[:request.limit] if request.limit else request.urls
+        # Invite hashes and public usernames are separate RPCs; Telegram floods
+        # them independently, so each link records against its own scope.
+        account_limit_errors = (errors.FloodWaitError, errors.UserDeactivatedBanError,
+                                errors.AuthKeyUnregisteredError, errors.FrozenMethodInvalidError)
         # Already-joined / invalid-link errors are per-link, never account-wide.
         invalid_link_errors = (errors.InviteHashExpiredError, errors.InviteHashInvalidError,
                                errors.InviteRequestSentError, errors.UsernameInvalidError,
@@ -1134,6 +1143,14 @@ async def join_channels(request: JoinChannelsRequest):
             else:
                 entity = await client.get_entity(value)
                 await client(functions.channels.JoinChannelRequest(entity))
+
+        def _clear(account_id, scope):
+            """A completed join proves the account is usable for this method now."""
+            try:
+                clear_account_cooldowns(account_id, scope)
+                clear_account_block(account_id, "join")
+            except OutreachDenied:
+                pass
 
         results = []
         joined = failed = skipped = 0
@@ -1147,6 +1164,8 @@ async def join_channels(request: JoinChannelsRequest):
                 skipped += 1
                 continue
             kind, value = parsed
+            join_action = "auto_join_invite" if kind == "invite" else "auto_join_public"
+            join_scope = cooldown_scope(join_action)
 
             if rotate:
                 ordered = [account_ids[(i + k) % len(account_ids)] for k in range(len(account_ids))]
@@ -1162,13 +1181,23 @@ async def join_channels(request: JoinChannelsRequest):
                 client = clients[account_id]
                 try:
                     await _attempt(client, kind, value)
+                    _clear(account_id, join_scope)
                     outcome = ("joined", "", account_id)
                     break
                 except errors.UserAlreadyParticipantError:
+                    _clear(account_id, join_scope)
                     outcome = ("already", "", account_id)
                     break
+                except errors.ChannelsTooMuchError as exc:
+                    # A permanent account ceiling, not a timer.
+                    record_provider_restriction(account_id, exc, join_action)
+                    if rotate:
+                        limited.add(account_id)
+                        continue
+                    outcome = ("stop", "channel_limit_reached", account_id)
+                    break
                 except account_limit_errors as exc:
-                    record_provider_restriction(account_id, exc, "auto_join")
+                    record_provider_restriction(account_id, exc, join_action)
                     if rotate:
                         limited.add(account_id)
                         continue
@@ -1178,7 +1207,7 @@ async def join_channels(request: JoinChannelsRequest):
                     outcome = ("failed", type(exc).__name__, account_id)
                     break
                 except Exception as exc:
-                    record_provider_restriction(account_id, exc, "auto_join")
+                    record_provider_restriction(account_id, exc, join_action)
                     outcome = ("failed", type(exc).__name__, account_id)
                     break
 
