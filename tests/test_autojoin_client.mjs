@@ -107,11 +107,22 @@ test('a negative per-run cap is refused before it reaches the server', async () 
   assert.match(state.autojoin.resultMsg, /0 to join every link/);
 });
 
-test('unrecognised lines are filtered before queuing', () => {
-  // autojoinValidLinks should pass-through only valid t.me URLs.
-  // The harness getter mirrors autojoinLinks (no invalid-link filter) so we
-  // test the HTML regex instead, checking that the dashboard source contains
-  // the validation pattern.
-  assert.match(html, /autojoinValidLinks/);
-  assert.match(html, /t\.me/);
+test('unrecognised lines are filtered before queuing', async () => {
+  const { state, calls } = harness();
+  // Mix of valid t.me links, bare handles, and invalid lines that must be dropped.
+  state.autojoin.urls = [
+    'https://t.me/chanone',      // valid public URL
+    'https://t.me/+ABCdef123456', // valid invite hash
+    'not a link at all',          // invalid — no t.me domain
+    'http://example.com/chat',    // invalid — wrong domain
+    '@chantwo',                   // valid bare handle
+    'https://t.me/share',         // invalid — RESERVED slug
+  ].join('\n');
+  await state.runAutoJoin();
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].body.urls, [
+    'https://t.me/chanone',
+    'https://t.me/+ABCdef123456',
+    '@chantwo',
+  ]);
 });

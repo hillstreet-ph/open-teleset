@@ -464,6 +464,7 @@ async def scrape_members_bulk(request: BulkScrapeRequest):
     all_members: dict[int, dict] = {}
     errors_list = []
     has_fallback = False
+    target_modes: dict[str, str] = {}
     attempted: set[str] = set()
 
     for target_raw in request.targets:
@@ -478,7 +479,9 @@ async def scrape_members_bulk(request: BulkScrapeRequest):
         )
         try:
             result = await scrape_members(single_req)
-            if result.get("scrape_mode") == "messages_fallback":
+            mode = result.get("scrape_mode", "participants")
+            target_modes[target_raw] = mode
+            if mode == "messages_fallback":
                 has_fallback = True
             for m in result.get("members", []):
                 all_members[m["id"]] = m
@@ -501,6 +504,7 @@ async def scrape_members_bulk(request: BulkScrapeRequest):
         "members": members,
         "errors": errors_list,
         "has_fallback": has_fallback,
+        "target_modes": target_modes,
     }
 
 
