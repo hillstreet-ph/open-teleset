@@ -103,3 +103,33 @@ async def test_web_fallback_drops_previews_that_miss_the_budget(monkeypatch):
 
     assert elapsed < 0.18, f"fallback waited {elapsed:.2f} s past its budget"
     assert [item["username"] for item in result["results"]] == ["quick_channel"]
+
+
+def test_keyword_list_is_not_capped_at_twenty_and_dedupes_case_insensitively():
+    keywords = [f"term {index}" for index in range(30)] + ["TERM 1"]
+
+    request = ops.ChannelScrapeRequest(keywords=keywords, limit=5000)
+
+    assert len(request.keywords) == 30
+    assert request.keywords[1] == "term 1"
+    assert request.limit == 5000
+
+
+@pytest.mark.asyncio
+async def test_keyword_budget_returns_partial_results_instead_of_failing(monkeypatch):
+    monkeypatch.setattr(ops.aiohttp, "ClientSession", FakeSession)
+    monkeypatch.setattr(ops.log_manager, "add_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ops, "KEYWORD_SEARCH_BUDGET", 0.02)
+
+    async def search(session, token, keyword, peer_type, country_code, limit):
+        await asyncio.sleep(0.05)
+        return [hit(f"{keyword}_channel")]
+
+    monkeypatch.setattr(ops, "_tgstat_search", search)
+    request = ops.ChannelScrapeRequest(keywords=[f"kw{index}" for index in range(20)])
+
+    result = await ops._scrape_channels_tgstat(request, "token")
+
+    assert result["partial"] is True
+    assert 0 < len(result["results"]) < 20
+

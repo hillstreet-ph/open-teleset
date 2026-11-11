@@ -370,6 +370,42 @@ def test_the_table_node_without_an_operator_fails_closed():
     assert run["steps"][1]["detail"] == {"error": "step_failed"}
 
 
+# ---------------- scrape action ----------------
+
+
+@pytest.mark.asyncio
+async def test_a_scrape_node_degrades_to_recent_posters_without_admin_rights(monkeypatch):
+    from telethon import errors, functions, types
+
+    class NonAdminClient:
+        async def get_entity(self, target):
+            return types.Channel(id=9, title="Hidden Members", photo=types.ChatPhotoEmpty(),
+                                 date=None, megagroup=False, broadcast=False)
+
+        async def get_participants(self, entity, limit):
+            raise errors.ChatAdminRequiredError(request=None)
+
+        async def __call__(self, request):
+            assert isinstance(request, functions.channels.GetFullChannelRequest)
+            return SimpleNamespace(full_chat=SimpleNamespace(participants_count=1500))
+
+        def iter_messages(self, entity, limit):
+            async def history():
+                yield SimpleNamespace(sender=types.User(id=31, first_name="Recent", username="recent_wf"))
+
+            return history()
+
+    monkeypatch.setattr(workflows, "_client", AsyncMock(return_value=NonAdminClient()))
+    context = {}
+    result = await workflows._scrape_members(
+        {"target": "@hidden_members", "limit": 25, "filter_bots": True}, context, "acc")
+
+    assert result["source"] == "recent_posters"
+    assert result["limited"] is True
+    assert result["member_count"] == 1500
+    assert context["members"] == ["@recent_wf"]
+
+
 # ---------------- multiple accounts ----------------
 
 

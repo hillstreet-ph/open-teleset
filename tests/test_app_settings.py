@@ -39,6 +39,20 @@ async def test_reads_stored_value_when_env_absent(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_unusable_supabase_url_degrades_to_empty(monkeypatch):
+    app_settings._cache.clear()
+    monkeypatch.delenv("MISSING", raising=False)
+    monkeypatch.setattr(app_settings, "_settings",
+                        lambda: {"SUPABASE_URL": "https://[bad:1]", "SUPABASE_SERVICE_ROLE_KEY": "svc"})
+
+    def bad_client(*_a, **_k):
+        raise app_settings.httpx.InvalidURL("Invalid port: ':1]'")
+
+    monkeypatch.setattr(app_settings.httpx, "AsyncClient", bad_client)
+    assert await app_settings.get_setting("missing_key", "MISSING") == ""
+
+
+@pytest.mark.asyncio
 async def test_missing_config_returns_empty(monkeypatch):
     app_settings._cache.clear()
     monkeypatch.delenv("MISSING", raising=False)

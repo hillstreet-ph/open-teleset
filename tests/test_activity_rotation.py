@@ -64,10 +64,15 @@ def test_invalid_rotation_input(kwargs):
         ops.BulkSendRequest(**{"account_id": "account", "message": "synthetic", "targets": ["111"], **kwargs})
 
 
-@pytest.mark.parametrize("limit", [0, -1, 10001, True])
+@pytest.mark.parametrize("limit", [-1, 1_000_001, True])
 def test_scraper_scan_bounds(limit):
     with pytest.raises(ValidationError):
         ops.ScrapeRequest(account_id="account", target="group", limit=limit)
+
+
+def test_scraper_limit_zero_means_every_enumerable_member():
+    request = ops.ScrapeRequest(account_id="account", target="group", limit=0)
+    assert request.limit == 0
 
 
 @pytest.mark.asyncio
@@ -92,7 +97,7 @@ def fake_chat(**kw):
 
 
 @pytest.mark.parametrize("values", [{"keywords": []}, {"keywords": ["   "]},
-    {"keywords": ["x"], "limit": 0}, {"keywords": ["x"], "limit": 501},
+    {"keywords": ["x"], "limit": 0}, {"keywords": ["x"], "limit": 10001},
     {"keywords": ["x"], "group_type": "supergroup"}])
 def test_channel_scraper_invalid_input(values):
     with pytest.raises(ValidationError):

@@ -40,6 +40,7 @@ from cloud_browser import router as cloud_browser_router
 from auto_reply import router as auto_reply_router, worker as auto_reply_worker
 from inbox import detach_all as inbox_detach_all, router as inbox_router
 from knowledge import router as knowledge_router
+from notes import router as notes_router
 from patterns import router as patterns_router
 from tables import router as tables_router
 from workflows import router as workflows_router
@@ -139,6 +140,7 @@ app.include_router(cloud_browser_router)
 app.include_router(auto_reply_router)
 app.include_router(inbox_router)
 app.include_router(knowledge_router)
+app.include_router(notes_router)
 app.include_router(patterns_router)
 app.include_router(tables_router)
 app.include_router(workflows_router)

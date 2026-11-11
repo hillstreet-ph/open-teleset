@@ -3315,6 +3315,58 @@
                 </div>
             </div>
 
+            <!-- Notes: a private scratchpad for text to reuse later -->
+            <div v-show="tab === 'notes'" data-testid="notes-view">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>Notes</h3>
+                        <span class="muted small">{{ notes.capacity.used }} / {{ notes.capacity.limit }} notes</span>
+                    </div>
+                    <p class="muted small" style="margin-bottom:16px;">A place to keep a message or a piece of text for later: a draft you want to reuse, a reminder, an answer to paste somewhere. Stored encrypted and scoped to you. Nothing here is sent anywhere or read by the Copilot; anything that looks like a key, session string, phone number or password is masked when it is saved.</p>
+                    <p v-if="notes.loading" class="muted small">Loading notes…</p>
+                    <template v-else>
+                        <div class="form-group">
+                            <label for="note-title">Title <span class="muted small">(optional)</span></label>
+                            <input id="note-title" class="form-control" v-model="notes.form.title" maxlength="120" placeholder="Follow-up wording">
+                        </div>
+                        <div class="form-group">
+                            <label for="note-text">Text</label>
+                            <textarea id="note-text" class="form-control" rows="6" v-model="notes.form.text" maxlength="20000" placeholder="Hi — following up on the delivery window we discussed…"></textarea>
+                        </div>
+                        <div style="display:flex;gap:10px;flex-wrap:wrap;">
+                            <button data-testid="note-save" class="btn btn-primary" @click="saveNote" :disabled="!!notes.busy || !notes.form.text.trim()">{{ notes.editing ? 'Update note' : 'Save note' }}</button>
+                            <button v-if="notes.editing" class="btn btn-outline" @click="cancelNoteEdit">Cancel</button>
+                        </div>
+                        <p v-if="notes.error" role="alert" style="color:var(--danger);margin-top:12px;">{{ notes.error }}</p>
+                    </template>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h3>Saved notes</h3>
+                        <div class="form-group" style="margin:0;flex:0 0 260px;">
+                            <input class="form-control" v-model="notes.query" placeholder="Search notes" aria-label="Search notes">
+                        </div>
+                    </div>
+                    <div v-if="!notes.list.length" class="empty-state"><p>No notes yet. Write something above and save it for later.</p></div>
+                    <div v-else-if="!filteredNotes.length" class="empty-state"><p>No note matches that search.</p></div>
+                    <div v-else data-testid="notes-list">
+                        <div v-for="note in filteredNotes" :key="note.id" class="proxy-item" style="align-items:flex-start;" data-testid="note-row">
+                            <div class="proxy-info" style="flex:1;">
+                                <h4>{{ note.title }} <span v-if="note.masked" class="badge badge-warning">credential masked</span></h4>
+                                <p style="white-space:pre-wrap;">{{ note.preview }}<span v-if="note.characters > note.preview.length">…</span></p>
+                                <p class="muted small">{{ note.characters }} characters · {{ note.updated || note.created }}</p>
+                            </div>
+                            <div class="proxy-actions">
+                                <button class="btn btn-sm btn-outline" @click="copyNote(note)" :disabled="!!notes.busy">Copy</button>
+                                <button class="btn btn-sm btn-outline" @click="startNoteEdit(note)" :disabled="!!notes.busy">Edit</button>
+                                <button class="btn btn-sm btn-danger" @click="deleteNote(note)" :disabled="!!notes.busy">Delete</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Data tables -->
             <div v-show="tab === 'tables'">
                 <div class="card">
@@ -3841,7 +3893,7 @@
                     <div class="card-header">
                         <h3>Member scraper</h3>
                     </div>
-                    <p style="color: var(--text-dim); margin-bottom: 20px;">Scrape members from any Telegram channel or group</p>
+                    <p style="color: var(--text-dim); margin-bottom: 20px;">Runs on the server using your connected Telegram account, not a desktop app. Use this dashboard from a browser or cloud phone. Only data visible to the account is available; when Telegram hides the member list, results contain recent posters instead of a full roster.</p>
 
                     <div class="form-group">
                         <label>Account</label>
@@ -3867,10 +3919,17 @@
                         <small v-else-if="groups.scraper.accountId">Detected {{ groups.scraper.list.length }} groups and channels for this account. Picking one fills the target; private groups use their numeric ID. Links like <code>t.me/name</code>, <code>@name</code> and post links also work.</small>
                         <small v-else>Select an account to detect the groups and channels it belongs to.</small>
                     </div>
+                    <div class="form-group">
+                        <label for="scraper-bulk-targets">Bulk targets (optional — one per line)</label>
+                        <textarea id="scraper-bulk-targets" class="form-control" rows="3" v-model="scraper.bulkTargets"
+                                  placeholder="https://t.me/firstchannel&#10;@secondgroup&#10;-1001234567890"></textarea>
+                        <small>Scrape several channels or groups in turn. When this has entries it replaces the single target above; each target runs separately, failures are reported per target, and a member found in more than one is listed once.</small>
+                    </div>
                     <div style="display: flex; gap: 15px;">
                         <div class="form-group" style="flex:1;">
                             <label>Max Members</label>
-                            <input class="form-control" type="number" v-model.number="scraper.limit" min="1" max="10000">
+                            <input class="form-control" type="number" v-model.number="scraper.limit" min="0">
+                            <small>0 = every member the account can enumerate. A number caps the result.</small>
                         </div>
                         <div class="form-group" style="flex:1;">
                             <label>Admins</label>
@@ -3894,15 +3953,54 @@
                         </select>
                         <small>Uses Telegram's visible last-seen status. Unknown activity is excluded when filtering; an approximate month does not qualify for 15 days.</small>
                     </div>
-                    <button id="gate-scraper" class="btn btn-primary" @click="runScraper" :disabled="scraper.loading || !scraper.accountId || !scraper.target">
-                        {{ scraper.loading ? 'Scraping…' : 'Scrape members' }}
-                    </button>
+                    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+                        <button id="gate-scraper" class="btn btn-primary" @click="runScraper" :disabled="scraper.loading || !scraper.accountId || !scraperTargets.length">
+                            {{ scraper.loading ? (scraper.batch ? `Scraping ${scraper.batch.done}/${scraper.batch.total}…` : 'Scraping…') : (scraperTargets.length > 1 ? `Scrape ${scraperTargets.length} targets` : 'Scrape members') }}
+                        </button>
+                        <button v-if="scraper.loading && scraper.batch" class="btn btn-outline" @click="scraper.cancelRequested = true" :disabled="scraper.cancelRequested">
+                            {{ scraper.cancelRequested ? 'Stopping after this target…' : 'Stop after this target' }}
+                        </button>
+                    </div>
                     <p v-if="scraper.summary" style="margin-top: 12px;">{{ scraper.summary }}</p>
+                    <p v-if="scraper.notice" class="muted small" data-testid="scraper-notice"
+                       style="margin-top: 8px; color: var(--warning);">{{ scraper.notice }}</p>
+
+                    <div v-if="scraper.batch" class="card" data-testid="scraper-batch" style="margin-top:16px;background:rgba(0,0,0,0.2);">
+                        <div class="card-header">
+                            <h3>Targets</h3>
+                            <span class="muted small">{{ scraper.batch.done }} / {{ scraper.batch.total }} done<template v-if="scraper.batch.failures"> · {{ scraper.batch.failures }} failed</template></span>
+                        </div>
+                        <div style="max-height:260px;overflow-y:auto;">
+                            <table style="width:100%;border-collapse:collapse;">
+                                <thead>
+                                    <tr style="background:rgba(255,255,255,0.05);position:sticky;top:0;">
+                                        <th style="padding:6px 10px;text-align:left;">Target</th>
+                                        <th style="padding:6px 10px;text-align:left;">Result</th>
+                                        <th style="padding:6px 10px;text-align:left;">Members</th>
+                                        <th style="padding:6px 10px;text-align:left;">Note</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr v-for="(row, index) in scraper.batch.rows" :key="index" data-testid="scraper-batch-row" style="border-top:1px solid rgba(255,255,255,0.05);">
+                                        <td style="padding:6px 10px;word-break:break-all;">{{ row.target }}</td>
+                                        <td style="padding:6px 10px;">
+                                            <span v-if="row.status === 'running'" class="badge badge-info">Scraping</span>
+                                            <span v-else-if="row.status === 'done' && row.limited" class="badge badge-warning">Recent posters</span>
+                                            <span v-else-if="row.status === 'done'" class="badge badge-success">Scraped</span>
+                                            <span v-else class="badge badge-danger">Failed</span>
+                                        </td>
+                                        <td style="padding:6px 10px;">{{ row.status === 'done' ? row.total : '—' }}</td>
+                                        <td style="padding:6px 10px;" class="muted small">{{ row.error || row.note || '' }}</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
 
                     <!-- Results -->
                     <div v-if="scraper.results.length" style="margin-top: 20px;">
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                            <h4 style="margin:0;">Scraped: {{ scraper.results.length }} members</h4>
+                            <h4 style="margin:0;">{{ scraper.source === 'recent_posters' ? 'Recent posters' : 'Scraped' }}: {{ scraper.results.length }}</h4>
                             <button class="btn btn-outline" @click="exportScraperCSV">Export CSV</button>
                             <button class="btn btn-outline" @click="copyScrapedUsernames" style="font-size: 0.85em;">Copy usernames</button>
                         </div>
@@ -3914,15 +4012,17 @@
                                         <th style="padding: 8px 12px; text-align: left;">ID</th>
                                         <th style="padding: 8px 12px; text-align: left;">Username</th>
                                         <th style="padding: 8px 12px; text-align: left;">Name</th>
+                                        <th v-if="scraper.batch" style="padding: 8px 12px; text-align: left;">Target</th>
                                         <th style="padding: 8px 12px; text-align: left;">Activity</th>
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    <tr v-for="(m, idx) in scraperRows" :key="m.id" style="border-top: 1px solid rgba(255,255,255,0.05);">
+                                    <tr v-for="(m, idx) in scraperRows" :key="(m.target || '') + ':' + m.id" style="border-top: 1px solid rgba(255,255,255,0.05);">
                                         <td style="padding: 6px 12px; color: var(--text-dim);">{{ idx + 1 }}</td>
                                         <td style="padding: 6px 12px;">{{ m.id }}</td>
                                         <td style="padding: 6px 12px; color: var(--accent);">{{ m.username || '—' }}</td>
                                         <td style="padding: 6px 12px;">{{ m.first_name }} {{ m.last_name }}</td>
+                                        <td v-if="scraper.batch" style="padding: 6px 12px; word-break:break-all;">{{ m.target || '—' }}</td>
                                         <td style="padding: 6px 12px;">{{ m.last_seen || m.activity }}</td>
                                     </tr>
                                 </tbody>
@@ -3936,20 +4036,10 @@
                     <div class="card-header">
                         <h3>Channel and group finder</h3>
                     </div>
-                    <p style="color: var(--text-dim); margin-bottom: 20px;">Discover public Telegram channels and groups by keyword and export their t.me URLs. <strong>No Telegram account required</strong> — leave the account blank. Account-free search uses the TGStat directory (matches channel names <em>and</em> descriptions, with a country filter) when a <code>TGSTAT_TOKEN</code> is configured; without it, it falls back to public web discovery, which a server is often rate-limited out of (may return 0 — ask an admin to set the free token). A connected account instead uses Telegram's own search. Read-only: no messages are sent and nothing is joined.</p>
+                    <p style="color: var(--text-dim); margin-bottom: 20px;">Discover public Telegram channels and groups by keyword and export their t.me URLs. <strong>No Telegram account is used.</strong> Search runs on the server through the TGStat directory (matches channel names <em>and</em> descriptions, with a country filter) when a <code>TGSTAT_TOKEN</code> is configured; without it, it falls back to public web discovery, which a server is often rate-limited out of (may return 0 — ask an admin to set the free token). Read-only: no messages are sent and nothing is joined.</p>
 
                     <div class="form-group">
-                        <label>Account (optional)</label>
-                        <select class="form-control" v-model="channelScraper.accountId">
-                            <option value="">-- None · search without a Telegram account --</option>
-                            <option v-for="acc in accounts" :key="acc.account_id" :value="acc.account_id">
-                                {{ acc.phone || acc.account_id }} {{ acc.username ? '(@' + acc.username + ')' : '' }}
-                            </option>
-                        </select>
-                        <small>Blank uses public web discovery. A connected account uses Telegram's own search (adds member counts and verified badges).</small>
-                    </div>
-                    <div class="form-group">
-                        <label>Keywords (one per line or comma-separated)</label>
+                        <label>Keywords (one per line or comma-separated — no count limit)</label>
                         <textarea class="form-control" rows="3" v-model="channelScraper.keywords" placeholder="casino&#10;crypto trading&#10;forex signals"></textarea>
                     </div>
                     <div style="display: flex; gap: 15px; flex-wrap: wrap;">
@@ -3967,13 +4057,15 @@
                         </div>
                         <div class="form-group" style="flex: 1; min-width: 100px;">
                             <label>Limit</label>
-                            <input class="form-control" type="number" v-model.number="channelScraper.limit" min="1" max="500">
+                            <input class="form-control" type="number" v-model.number="channelScraper.limit" min="1" max="10000">
+                            <small>Results across all keywords.</small>
                         </div>
                     </div>
                     <button class="btn btn-primary" @click="runChannelScraper" :disabled="channelScraper.loading || !channelScraper.keywords.trim()">
                         {{ channelScraper.loading ? 'Searching…' : 'Find channels and groups' }}
                     </button>
                     <p v-if="channelScraper.summary" style="margin-top: 12px;">{{ channelScraper.summary }}</p>
+                    <p v-if="channelScraper.partial" class="muted small" style="margin-top: 8px; color: var(--warning);">The search deadline was reached, so some keywords were skipped. These results are partial — run the remaining keywords again.</p>
 
                     <div v-if="channelScraper.results.length" style="margin-top: 20px;">
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; gap: 10px; flex-wrap: wrap;">
@@ -5414,6 +5506,7 @@
             reply: '<path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 6 6v4"/>',
             inbox: '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
             book: '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>',
+            note: '<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h8l6-6V5a2 2 0 0 0-2-2z"/><path d="M14 3v6h6"/><path d="M8 13h6M8 17h4"/>',
             table: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/>',
             image: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/>',
             close: '<path d="M18 6L6 18M6 6l12 12"/>',
@@ -5638,6 +5731,7 @@
                                 { tab: 'schedule', label: 'Schedule', icon: 'calendar' },
                                 { tab: 'templates', label: 'Templates', icon: 'message' },
                                 { tab: 'knowledge', label: 'Knowledge', icon: 'book' },
+                                { tab: 'notes', label: 'Notes', icon: 'note' },
                                 { tab: 'tables', label: 'Data Tables', icon: 'table' }
                             ]
                         },
@@ -5943,6 +6037,12 @@
                         form: { title: '', text: '', tags: '' }, editing: '', query: '', matches: null,
                     },
 
+                    // Private scratchpad - saved text the operator keeps for later
+                    notes: {
+                        loading: false, busy: '', error: '', list: [], capacity: { used: 0, limit: 0 },
+                        form: { title: '', text: '' }, editing: '', query: '',
+                    },
+
                     // Repeated-pattern suggestions detected from that knowledge
                     patterns: { loading: false, busy: '', error: '', suggestions: [], corpus: 0, detected_at: '', empty_detail: '' },
 
@@ -6020,21 +6120,26 @@
                     scraper: {
                         accountId: '',
                         target: '',
+                        bulkTargets: '',
                         limit: 500,
                         filterBots: true,
                         adminFilter: 'include',
                         activityFilter: 'all',
                         summary: '',
+                        notice: '',
+                        source: 'members',
                         loading: false,
                         results: [],
+                        batch: null,
+                        cancelRequested: false,
                     },
                     channelScraper: {
-                        accountId: '',
                         keywords: '',
                         country: 'Philippines',
                         groupType: 'all',
                         limit: 300,
                         summary: '',
+                        partial: false,
                         loading: false,
                         results: [],
                     },
@@ -6272,6 +6377,11 @@
                     return 'ok'
                 },
                 adderRecipients() { return this.parseAdderRecipients(); },
+                scraperTargets() {
+                    const bulk = this.scraper.bulkTargets.split('\n').map(t => t.trim()).filter(Boolean)
+                    const list = bulk.length ? bulk : [this.scraper.target.trim()].filter(Boolean)
+                    return [...new Set(list)]
+                },
                 scraperRows() { return this.scraper.results.slice(0, 200) },
                 channelRows() { return this.channelScraper.results.slice(0, 200) },
                 autojoinLinks() {
@@ -6351,6 +6461,11 @@
                     const tpl = this.templates.find(t => (t.template_id || t.id) === this.newSchedule.templateId)
                     return tpl ? tpl.content : ''
                 },
+                filteredNotes() {
+                    const search = this.notes.query.trim().toLowerCase()
+                    if (!search) return this.notes.list
+                    return this.notes.list.filter(n => `${n.title} ${n.preview}`.toLowerCase().includes(search))
+                },
                 // Account pages
                 pagedAccounts() {
                     const start = (this.accountPage - 1) * this.accountPageSize
@@ -6411,6 +6526,7 @@
                     if (tab === 'copilot') { this.loadCopilot(); this.loadCopilotHistory(); this.loadCopilotSuggestions(); this.loadCopilotAttachments() }
                     if (tab === 'autoreply') this.loadAutoReply()
                     if (tab === 'knowledge') { this.loadKnowledge(); this.loadPatterns() }
+                    if (tab === 'notes') this.loadNotes()
                     if (tab === 'tables') this.loadTables()
                     if (tab === 'workflows') this.loadWorkflows()
                     if (tab === 'tasks') this.loadOutreachJobs()
@@ -6447,6 +6563,7 @@
                     if (this.tab === 'autoreply') this.loadAutoReply()
                     if (this.tab === 'inbox') this.loadMailbox()
                     if (this.tab === 'knowledge') { this.loadKnowledge(); this.loadPatterns() }
+                    if (this.tab === 'notes') this.loadNotes()
                     if (this.tab === 'tables') this.loadTables()
                     if (this.tab === 'workflows') this.loadWorkflows()
                     if (this.tab === 'copilot') this.loadCopilotHistory()
@@ -6487,23 +6604,26 @@
                 },
                 exportScraperCSV() {
                     const fields = ['username', 'id', 'first_name', 'last_name', 'is_bot', 'activity', 'last_seen'];
-                    this.downloadCSV('telegram-members.csv', [fields, ...this.scraper.results.map(member => fields.map(field => member[field]))]);
+                    const header = this.scraper.batch ? ['target', ...fields] : fields;
+                    this.downloadCSV('telegram-members.csv', [header, ...this.scraper.results.map(member => header.map(field => member[field]))]);
                 },
                 async runChannelScraper() {
                     this.channelScraper.loading = true;
                     this.channelScraper.results = [];
                     this.channelScraper.summary = '';
+                    this.channelScraper.partial = false;
                     try {
                         const keywords = this.channelScraper.keywords.split(/[\n,]/).map(k => k.trim()).filter(Boolean);
                         const res = await _api.post('/api/scraper/channels', {
-                            account_id: this.channelScraper.accountId,
+                            account_id: '',
                             keywords,
                             country: this.channelScraper.country,
                             group_type: this.channelScraper.groupType,
                             limit: this.channelScraper.limit,
                         }, {timeout: 120000});
                         this.channelScraper.results = res.data.results || [];
-                        this.channelScraper.summary = `Found ${res.data.total || 0} public channels/groups.`;
+                        this.channelScraper.partial = res.data.partial === true;
+                        this.channelScraper.summary = `Found ${res.data.total || 0} public channels/groups from ${keywords.length} keyword${keywords.length === 1 ? '' : 's'}.`;
                     } catch (e) {
                         const message = e.code === 'ECONNABORTED'
                             ? 'Search timed out. Try fewer keywords or a narrower country filter.'
@@ -6631,20 +6751,89 @@
                 },
                 // ---- Scraper ----
                 async runScraper() {
+                    const targets = this.scraperTargets
+                    if (!this.scraper.accountId || !targets.length) return
                     this.scraper.loading = true;
+                    this.scraper.cancelRequested = false;
                     this.scraper.results = [];
                     this.scraper.summary = '';
+                    this.scraper.notice = '';
+                    this.scraper.source = 'members';
+                    const bulk = targets.length > 1 || this.scraper.bulkTargets.trim().length > 0
+                    const batch = bulk ? { rows: [], done: 0, total: targets.length, failures: 0 } : null
+                    this.scraper.batch = batch
+                    const seen = new Set()
+                    const notices = []
+                    let memberTargets = 0, posterTargets = 0
                     try {
-                        const res = await _api.post('/api/scraper/members', {
-                            account_id: this.scraper.accountId,
-                            target: this.scraper.target,
-                            limit: this.scraper.limit,
-                            filter_bots: this.scraper.filterBots,
-                            admin_filter: this.scraper.adminFilter,
-                            activity_filter: this.scraper.activityFilter,
-                        }, {timeout: 90000});
-                        this.scraper.results = res.data.members || [];
-                        this.scraper.summary = `Matched ${res.data.total || 0}, scanned ${res.data.scanned || 0}, excluded ${res.data.excluded || 0}.`;
+                        if (bulk) {
+                            for (const target of targets) {
+                                if (this.scraper.cancelRequested) break
+                                const row = { target, status: 'running', total: 0, limited: false, note: '', error: '' }
+                                batch.rows.push(row)
+                                try {
+                                    const data = (await _api.post('/api/scraper/members', {
+                                        account_id: this.scraper.accountId,
+                                        target,
+                                        limit: this.scraper.limit,
+                                        filter_bots: this.scraper.filterBots,
+                                        admin_filter: this.scraper.adminFilter,
+                                        activity_filter: this.scraper.activityFilter,
+                                    }, {timeout: 90000})).data || {}
+                                    const limited = data.limited === true
+                                    let added = 0
+                                    for (const member of (data.members || [])) {
+                                        if (seen.has(member.id)) continue
+                                        seen.add(member.id)
+                                        this.scraper.results.push({ ...member, target })
+                                        added += 1
+                                    }
+                                    row.status = 'done'; row.total = added
+                                    row.limited = limited
+                                    if (limited) {
+                                        posterTargets += 1
+                                        row.note = data.notice || 'Telegram shows recent posters for this target.'
+                                        notices.push(row.note)
+                                    } else {
+                                        memberTargets += 1
+                                    }
+                                } catch (e) {
+                                    row.status = 'failed'
+                                    row.error = e.code === 'ECONNABORTED'
+                                        ? 'Timed out — lower the member limit or check the account.'
+                                        : (e.response?.data?.detail || 'Failed. Check the target and account connection.')
+                                    batch.failures += 1
+                                } finally {
+                                    batch.done += 1
+                                }
+                            }
+                            const succeeded = batch.total - batch.failures
+                            const stopped = this.scraper.cancelRequested && batch.done < batch.total
+                            this.scraper.source = posterTargets && !memberTargets ? 'recent_posters' : 'members'
+                            this.scraper.notice = [...new Set(notices)].join(' ')
+                            this.scraper.summary = `Scraped ${this.scraper.results.length} ${posterTargets && !memberTargets ? 'recent posters' : 'members'} from ${succeeded} of ${batch.total} targets`
+                                + (batch.failures ? `; ${batch.failures} failed` : '')
+                                + (stopped ? `; stopped after ${batch.done} of ${batch.total}` : '')
+                                + '. Members found in more than one target are listed once.'
+                            if (batch.failures) this.showToast(`${batch.failures} target(s) failed. See the Targets table for the reason.`, true)
+                        } else {
+                            const data = (await _api.post('/api/scraper/members', {
+                                account_id: this.scraper.accountId,
+                                target: targets[0],
+                                limit: this.scraper.limit,
+                                filter_bots: this.scraper.filterBots,
+                                admin_filter: this.scraper.adminFilter,
+                                activity_filter: this.scraper.activityFilter,
+                            }, {timeout: 90000})).data || {}
+                            const limited = data.limited === true
+                            this.scraper.results = data.members || []
+                            this.scraper.source = limited ? 'recent_posters' : 'members'
+                            this.scraper.notice = limited
+                                ? (data.notice || 'Telegram hides the full member list from non-admins for this target, so these are recent posters.')
+                                : ''
+                            const noun = limited ? 'recent posters' : 'members'
+                            this.scraper.summary = `Matched ${data.total || 0}, scanned ${data.scanned || 0} ${noun}, excluded ${data.excluded || 0}.`
+                        }
                     } catch (e) {
                         const message = e.code === 'ECONNABORTED'
                             ? 'Scrape timed out. Lower the member limit or check the account connection.'
@@ -6652,6 +6841,7 @@
                         this.showToast(message, true);
                     } finally {
                         this.scraper.loading = false;
+                        this.scraper.cancelRequested = false;
                     }
                 },
                 copyScrapedUsernames() {
@@ -10687,8 +10877,102 @@
                     }
                 },
 
-                pickKnowledgeImport() {
-                    document.getElementById('kb-import')?.click()
+                // ---- Notes (private scratchpad) ----
+                async loadNotes() {
+                    this.notes.loading = true
+                    try {
+                        const { data } = await _api.get('/api/notes')
+                        this.notes.list = data.notes || []
+                        this.notes.capacity = data.capacity || { used: 0, limit: 0 }
+                        this.notes.error = ''
+                    } catch (e) {
+                        this.notes.error = e.response?.data?.detail || 'Could not load your notes.'
+                    } finally {
+                        this.notes.loading = false
+                    }
+                },
+
+                async saveNote() {
+                    const body = { title: this.notes.form.title.trim(), text: this.notes.form.text }
+                    this.notes.busy = 'save'
+                    try {
+                        if (this.notes.editing) await _api.put(`/api/notes/${this.notes.editing}`, body)
+                        else await _api.post('/api/notes', body)
+                        this.showToast(this.notes.editing ? 'Note updated.' : 'Note saved.')
+                        this.cancelNoteEdit()
+                        await this.loadNotes()
+                    } catch (e) {
+                        this.notes.error = e.response?.data?.detail || 'Could not save that note.'
+                    } finally {
+                        this.notes.busy = ''
+                    }
+                },
+
+                async startNoteEdit(note) {
+                    this.notes.busy = note.id
+                    try {
+                        const { data } = await _api.get(`/api/notes/${note.id}`)
+                        this.notes.editing = note.id
+                        this.notes.form = { title: data.note.title === 'Untitled' ? '' : (data.note.title || ''), text: data.note.text || '' }
+                        if (typeof window !== 'undefined') window.scrollTo({ top: 0, behavior: 'smooth' })
+                    } catch (e) {
+                        this.notes.error = e.response?.data?.detail || 'Could not open that note.'
+                    } finally {
+                        this.notes.busy = ''
+                    }
+                },
+
+                cancelNoteEdit() {
+                    this.notes.editing = ''
+                    this.notes.form = { title: '', text: '' }
+                },
+
+                async deleteNote(note) {
+                    if (!window.confirm(`Delete the note “${note.title}”?`)) return
+                    this.notes.busy = note.id
+                    try {
+                        await _api.delete(`/api/notes/${note.id}`)
+                        if (this.notes.editing === note.id) this.cancelNoteEdit()
+                        await this.loadNotes()
+                        this.showToast('Note deleted.')
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not delete that note.', true)
+                    } finally {
+                        this.notes.busy = ''
+                    }
+                },
+
+                async copyNote(note) {
+                    this.notes.busy = note.id
+                    try {
+                        const { data } = await _api.get(`/api/notes/${note.id}`)
+                        await this.copyNoteText(data.note?.text || '')
+                        this.showToast('Note copied.')
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not copy that note.', true)
+                    } finally {
+                        this.notes.busy = ''
+                    }
+                },
+
+                async copyNoteText(text) {
+                    if (navigator.clipboard && window.isSecureContext) {
+                        await navigator.clipboard.writeText(text)
+                        return
+                    }
+                    const field = document.createElement('textarea')
+                    field.value = text
+                    field.setAttribute('readonly', '')
+                    field.style.position = 'fixed'
+                    field.style.opacity = '0'
+                    document.body.appendChild(field)
+                    field.select()
+                    const copied = document.execCommand('copy')
+                    document.body.removeChild(field)
+                    if (!copied) throw new Error('copy refused')
+                },
+
+                pickKnowledgeImport() {                    document.getElementById('kb-import')?.click()
                 },
 
                 async importKnowledgeFiles(event) {
@@ -10861,7 +11145,9 @@
                     if (step.status === 'stopped') return 'stopped'
                     if (detail.error) return 'failed'
                     if (detail.stopped === 'telegram_cooldown') return `Telegram cooldown · wait ${detail.wait_seconds || '?'}s`
-                    if ('scraped' in detail) return `${detail.scraped} members read`
+                    if ('scraped' in detail) return detail.limited
+                        ? `${detail.scraped} recent posters read · partial results`
+                        : `${detail.scraped} members read`
                     if ('joined' in detail) return `${detail.joined} joined · ${detail.skipped || 0} already in · ${detail.failed || 0} failed`
                     if ('waited_seconds' in detail) return `waited ${detail.waited_seconds}s`
                     if ('characters' in detail) return `note sent (${detail.characters} chars)`

@@ -62,7 +62,7 @@ async def get_setting(key: str, env_var: str | None = None) -> str:
             rows = response.json()
             if rows:
                 value = str(rows[0].get("value") or "").strip()
-    except (httpx.HTTPError, KeyError, ValueError, TypeError):
+    except (httpx.HTTPError, httpx.InvalidURL, KeyError, ValueError, TypeError):
         # No service config, DB unreachable, or malformed response: keep the
         # last known value if we have one, otherwise treat it as unset.
         return _cache.get(key, (0.0, ""))[1]

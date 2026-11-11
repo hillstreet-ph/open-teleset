@@ -414,8 +414,12 @@ class TaskScheduler:
                         log_manager.add_log("定时任务", account_id, "scrape_members: no target specified", "error")
                         return False
                     try:
+                        from telegram_ops import collect_scrape_members, scrape_member_notice
+
                         entity = await client.get_entity(scrape_target)
-                        participants = await client.get_participants(entity, limit=scrape_limit)
+                        participants, source, member_count = await collect_scrape_members(
+                            client, entity, scrape_limit)
+                        limited = source == "recent_posters"
                         members = []
                         for p in participants:
                             if filter_bots and p.bot:
@@ -430,11 +434,19 @@ class TaskScheduler:
                             "target": scrape_target,
                             "total": len(members),
                             "members": members,
+                            "source": source,
+                            "limited": limited,
+                            "member_count": member_count,
+                            "notice": scrape_member_notice(member_count) if limited else None,
                             "scraped_at": datetime.now().isoformat(),
                         }
                         log_manager.add_log("定时任务", account_id,
-                            f"Scraped {len(members)} members from {scrape_target}", "success")
-                        results.append({"account": account_id, "success": True, "scraped": len(members)})
+                            (f"Scraped {len(members)} recent posters from {scrape_target} "
+                             "(Telegram hides the member list from non-admins)"
+                             if limited else
+                             f"Scraped {len(members)} members from {scrape_target}"), "success")
+                        results.append({"account": account_id, "success": True, "scraped": len(members),
+                                        "source": source, "limited": limited})
                     except Exception as e:
                         log_manager.add_log("定时任务", account_id,
                             f"Scrape failed for {scrape_target}: {type(e).__name__}", "error")

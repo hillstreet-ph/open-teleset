@@ -421,14 +421,19 @@ async def _client(account_id: str):
 
 
 async def _scrape_members(config: dict, context: dict, account_id: str) -> dict:
+    from telegram_ops import collect_scrape_members
+
     client = await _client(account_id)
     entity = await client.get_entity(config["target"])
-    participants = await client.get_participants(entity, limit=config["limit"])
+    participants, source, member_count = await collect_scrape_members(
+        client, entity, config["limit"])
     members = [p for p in participants if not (config["filter_bots"] and getattr(p, "bot", False))]
     usernames = [f"@{person.username}" for person in members if getattr(person, "username", None)]
     context["scraped"] = len(members)
     context["members"] = usernames
-    return {"scraped": len(members), "members_with_username": len(usernames)}
+    return {"scraped": len(members), "members_with_username": len(usernames),
+            "source": source, "limited": source == "recent_posters",
+            "member_count": member_count}
 
 
 async def _append_table(config: dict, context: dict, account_id: str) -> dict:
