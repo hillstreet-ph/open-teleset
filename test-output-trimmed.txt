@@ -1,0 +1,281 @@
+✔ connection check uses the existing non-sending health endpoint and releases button (4.896276ms)
+✔ timestamps are interpreted as UTC across browser timezones and invalid dates stay empty (3.362754ms)
+✔ QR polling displays terminal persistence errors and stops polling (2.606763ms)
+✖ auto join queues a durable job instead of the synchronous join endpoint (9.849327ms)
+✔ progress tracker renders dates, counts and collapsible job cards (0.731555ms)
+✔ scraper and adder expose the detected group pickers (0.849349ms)
+✖ auto join has no per-run cap and zero queues every link (3.545835ms)
+✖ unrecognised lines are filtered before queuing (3.678422ms)
+✔ a negative per-run cap is refused before it reaches the server (3.160113ms)
+✔ a goal is asked as a plan, and no step is run with it (6.211125ms)
+✔ an empty goal asks for nothing (1.335048ms)
+✔ a page with no page selected asks for nothing (1.388147ms)
+✔ the first step waiting is the only one that can run (1.308108ms)
+✔ a finished plan has nothing left to press (1.340387ms)
+✔ an empty plan is not finished (1.296992ms)
+✔ the text of a type step is sent once and then forgotten (1.639239ms)
+✔ a key step sends no text at all (1.498291ms)
+✔ a step that did not run leaves the plan where it was (1.591989ms)
+✔ a provider that refuses is said in the card, not as a toast (1.696023ms)
+✔ discarding takes the plan away but keeps the goal (1.63963ms)
+✔ each action says what it will do before it is approved (1.402479ms)
+✔ the card keeps the operator in the loop (0.449005ms)
+✔ wait status explains a multi-hour cooldown and does not promise paused jobs will resume (4.267324ms)
+✔ unreachable, opted-out and non-consenting recipients are labelled as skips (0.348457ms)
+✔ form submits over 20 recipients with zero delay and no approval (2.809534ms)
+✔ optional cap and negative delay still fail before network (2.291636ms)
+✔ CSV without recipient cap supports more than old row limit (34.995832ms)
+✔ uncertain HTTP response reuses submission key on retry (2.592482ms)
+✔ late response after logout cannot expose previous job (1.360867ms)
+✔ edited payload conflict refreshes original job without automatic resubmission (0.982175ms)
+✔ Member Adder submits without a manual approval reference (2.673242ms)
+✔ Member Adder counts and sends unique recipients without modifying pasted text (2.304124ms)
+✔ Member Adder explains the actual invalid field and never submits invalid input (17.070117ms)
+✔ Member Adder retains invalid rows for skipped history while queuing valid recipients (3.303897ms)
+✔ Member Adder allows a valid upper delay boundary (2.494727ms)
+✔ dashboard requests the content-versioned CSV script, bypassing a cached old API (0.859473ms)
+✔ Member Adder queues all 250 unique recipients without a manual cap (2.91524ms)
+✔ oversized pasted recipient list is rejected before network (1.970671ms)
+✔ Member Adder requires explicit consent and never infers it from a pasted list (2.063648ms)
+✔ Member Adder preserves malformed repeated-at usernames for backend skip (2.060374ms)
+✔ copilot navigation and page metadata are wired (2.545392ms)
+✔ the Ask/Work switch sits on the left of the composer and marks writes (1.058539ms)
+✔ a draft can be dismissed and a finished run leaves no dead apply button (0.46554ms)
+✔ copilot apply paths never call a send, schedule or outreach endpoint (0.501553ms)
+✔ draftCopilot posts the instruction and stores draft plus presets (3.274803ms)
+✔ loadCopilot fetches presets once and caches them (1.45074ms)
+✔ runCopilotPreset drafts by id instead of re-parsing blocked prose (1.471671ms)
+✔ a custom internal preset is added and an existing preset is edited (2.340869ms)
+✔ preset validation happens before any request (1.783403ms)
+✔ template draft saves through /api/templates and nothing else (1.865885ms)
+✔ template draft without content is refused before any request (1.30213ms)
+✔ schedule draft prefills the approval-gated form without creating it (1.592369ms)
+✔ task draft prefills BulkSend with consent unchecked and sends nothing (1.39729ms)
+✔ ops drafts only prefill declared fields and focus the operator gate (2.049688ms)
+✔ BulkSend ops drafts reassert consent and pacing without sending (5.543305ms)
+✔ Auto Reply ops drafts never enable the listener or save settings (1.060601ms)
+✔ help and unsupported drafts apply nothing (0.986372ms)
+✔ the superpower catalogue loads grouped tools and a write flag (1.130005ms)
+✔ clicking a superpower prefills its example and drafts it in the current mode (1.089715ms)
+✔ a pending run is executed by Run now in Work and the mode is restored (1.319355ms)
+✔ a pending run gets a Run now label instead of Apply draft (1.068063ms)
+✔ CSV supports BOM, CRLF, commas, escaped quotes and multiline messages (2.784256ms)
+✔ scraper export imports username with numeric ID fallback (0.466702ms)
+✔ reject malformed, oversized, invalid and conflicting CSV without partial imports (0.616704ms)
+✔ deduplication, numeric IDs and message-only files preserve contents (0.286565ms)
+✔ CSV export neutralizes spreadsheet formulas and escapes quotes (0.206426ms)
+✔ member CSV can retain malformed usernames for skipped history without relaxing sender imports (0.348987ms)
+✔ member CSV retains repeated-at invalid usernames without making them valid (0.31056ms)
+✔ email and configured username use the same Supabase password identity (5.306314ms)
+✔ unknown and inherited usernames cannot select an identity (2.991273ms)
+✔ password SDK failure and duplicate submissions release or retain the guard (1.079309ms)
+✔ disabled provider stays on dashboard with actionable error (1.812466ms)
+✔ Google returns to the canonical dashboard from the secondary host (2.750846ms)
+✔ GitHub requests email identity without repository access (1.285916ms)
+✔ username does not become a Google email hint (1.137345ms)
+✔ network and SDK failures release the button for retry (3.075898ms)
+✔ duplicate submission and unknown providers never start OAuth (1.090436ms)
+✔ password recovery returns to the canonical dashboard (1.77448ms)
+✔ rotation forms initialise rotationMode and accountIds (20.869147ms)
+✔ every <form>.accountIds referenced in the template exists in data() (8.673393ms)
+✔ opening the Add account dialog does not throw (3.07707ms)
+✔ every Copilot ops destination exposes its declared gate (1.609104ms)
+✔ knowledge export downloads the authenticated zip response (2.675806ms)
+✔ table lists start bounded and only expand on an operator click (0.26998ms)
+✔ expandedRows is initialised so toggles stay reactive (3.950154ms)
+✔ every long record list declares a bound (1.275721ms)
+(node:2562) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ anonymous send rejected (240.308505ms)
+✔ missing runtime is not a fake queue (12.30115ms)
+✔ forward approved request to runtime and preserve denial (11.553762ms)
+✔ missing approval never forwarded (3.045373ms)
+✔ uncertain send timeout never invites blind retry (5.83032ms)
+✔ legacy edge scheduler cannot mutate or claim execution (5.760076ms)
+✔ Worker health uses compatible cache bypass options and verifies fresh origin health (8.312138ms)
+✔ Worker CORS permits known dashboard origins and rejects arbitrary origins (7.102155ms)
+✔ Worker cannot report healthy without an origin (1.449418ms)
+✔ Worker preserves the upstream WebSocket response object (2.590359ms)
+✔ the inbox is reachable from the sidebar and renders its own panel (5.556114ms)
+✔ the icon registry carries an inbox glyph instead of falling back (7.589237ms)
+✔ leaving the tab closes the inbox stream (3.09058ms)
+✔ a reply says only what the operator typed is sent (1.860988ms)
+✔ the chats wall is a bounded list, not an endless scroll (2.273875ms)
+✔ every inbox method the panel calls exists (4.780274ms)
+✔ the inbox methods reach only inbox endpoints (3.045994ms)
+✔ the live stream is read with a bearer header, not EventSource (0.356057ms)
+✔ loadMailbox reads the config and then the filtered wall (4.692724ms)
+✔ a refused inbox shows the server sentence instead of an empty wall (2.102646ms)
+✔ opting an account in sends the flag and reloads the config it returns (2.390532ms)
+✔ an account id with a slash cannot escape its path segment (2.211497ms)
+✔ refresh tells the operator how many chats were left out (2.674914ms)
+✔ opening a chat reads oldest first and clears the unread count (2.200031ms)
+✔ the reply box sends only trimmed text and appends what went out (2.114964ms)
+✔ a refused send keeps the text on screen for the operator (2.125099ms)
+✔ clearing the wall empties the screen and leaves the opt-ins alone (1.95656ms)
+✔ a stream frame updates the wall without a round trip (2.037029ms)
+✔ the ready frame replaces the config the panel started with (1.65985ms)
+✔ the dashboard application script still parses (9.172834ms)
+✔ both progress trackers and the schedule card render the table component (1.8215ms)
+✔ the table names every column the operator asked for (0.239374ms)
+✔ rows are newest first and honest about the noun and the account (1.082374ms)
+✔ a restricted account is named with a plain-language reason (0.45877ms)
+✔ result badges separate joined, failed and unfinished rows (0.179757ms)
+✔ ban and revocation reasons are explained instead of shown as class names (2.174032ms)
+✔ API validation arrays are flattened instead of showing [object Object] (1.731736ms)
+✔ a scheduled Auto Join record becomes the same table shape (2.920117ms)
+✔ a rotated Auto Join record names the account behind every row (2.286298ms)
+✔ default, direct and selected produce unambiguous connection payloads (3.241463ms)
+✔ phone accepts full international number without duplicating country code and suppresses repeated clicks (2.497341ms)
+✔ hex import clears credential after successful verification (2.373677ms)
+✔ overlapping QR refresh clicks share one cancellation and retain generated account ID (2.246029ms)
+✔ app credentials are optional and sent only as a complete valid pair (1.449378ms)
+✔ hex import forwards the app credentials with the key (2.339007ms)
+✔ export dialog adds the hex backup with its data center and app ID (2.537921ms)
+✔ missing hex backup leaves the string export usable (2.028446ms)
+✔ a code in the address bar is taken out of it before anything else runs (9.351769ms)
+✔ a return without a code is ignored rather than reported as a failure (2.206781ms)
+✔ the panel spends the code once and lands on the server list (2.625491ms)
+✔ a refused exchange tells the operator in the server list (2.496409ms)
+✔ signing in hands the browser the address the server chose (2.251026ms)
+✔ a server that fails to start a sign-in says so and stays usable (2.136817ms)
+✔ an OAuth server is saved with its sign-in fields and no empty secret (2.188613ms)
+✔ editing keeps the server id and never re-sends a blank token (2.076888ms)
+✔ the badge says what the operator has left to do (2.288792ms)
+✔ the server list carries the callback address the operator must whitelist (2.444833ms)
+✔ jobAccountLabel resolves a loaded account to its display name (3.140975ms)
+✔ jobAccountLabel falls back to a short id for an unknown account (0.251713ms)
+✔ jobResultState uses a kind-aware verb for completed work (0.26338ms)
+✔ jobResultState labels every non-terminal and failure state (0.372883ms)
+✔ both durable job cards render account → target receipts (1.208231ms)
+✔ the Tasks outreach panel explains rotation and a whole-job Telegram cooldown (0.286515ms)
+✔ recheck posts to the dedicated route and swaps in the new snapshot (3.48848ms)
+✔ both job cards offer Recheck now alongside pause, resume and stop (2.301621ms)
+✔ the channel-limit copy names a permanent condition, not a countdown (0.510586ms)
+✔ job cards name each account state when the job rotates (0.784993ms)
+✔ Back waits for cancellation before allowing another code request (2.016799ms)
+✔ failed cancellation retains the code step and reports the error (1.844954ms)
+✔ Back cannot cancel while code verification is already running (0.740137ms)
+✔ Back recovers when the previous session is already absent (1.158567ms)
+✔ member scrape allows Telegram more than the default 15s request budget (4.498817ms)
+✔ channel search allows directory lookups more than the default 15s request budget (1.339615ms)
+✔ member scrape shows the server reason in a toast instead of a blocking alert (1.330031ms)
+✔ request timeout becomes a clear message rather than axios internals (1.534223ms)
+✔ scraper tables render at most 200 rows while keeping every result for export (2.341169ms)
+✔ data() initialises the data-table panel (11.466573ms)
+✔ the sidebar, tab panel, gate and sheet are wired into the dashboard (2.871015ms)
+✔ creating a table posts the trimmed name and preset, then selects it (3.532955ms)
+✔ opening a table loads its full sheet and clears a previous error (2.684217ms)
+✔ editing a cell patches only that row and column (3.192731ms)
+✔ a rejected cell shows the server detail and reverts the sheet (2.628835ms)
+✔ adding a column posts its name and type, then resets the form (2.848331ms)
+✔ adding and deleting rows calls the row routes (2.864865ms)
+✔ renaming and deleting a table are confirmed and reflected in the panel (3.939758ms)
+✔ cancelling the delete confirmation leaves the table alone (2.593183ms)
+✔ choosing an import file loads its text and detects the format (2.578901ms)
+✔ importing rows posts the format and mode, then resets the import panel (2.687723ms)
+✔ blank import content never reaches the API (1.880937ms)
+✔ exporting downloads the server file with its filename (2.114844ms)
+✔ filtering and select-all operate on visible rows only (2.052783ms)
+✔ sending selected rows prefills BulkSend and keeps consent unchecked (2.485333ms)
+✔ sending respects the chosen contact column and refuses empty values (1.942248ms)
+✔ deleting selected rows confirms and calls the row route per id (2.092782ms)
+✔ editing a column header patches its name and type (2.117148ms)
+✔ webhook create button stays enabled while idle (0.905432ms)
+✔ webhook panel surfaces one-time secrets, delivery health and all actions (0.299885ms)
+✔ webhook client methods use owner-scoped endpoints and refresh health (1.561514ms)
+✔ data() initialises the workflow panel (11.472272ms)
+✔ the sidebar, tab panel, canvas and controls are wired into the dashboard (3.13086ms)
+✔ loading workflows stores the list, capacity, catalog, presets and schedules (2.802644ms)
+✔ adding nodes uses per-type defaults and auto-connects a single tail (2.515638ms)
+✔ adding past the node cap is refused with a visible error (2.108985ms)
+✔ connecting replaces the source edge and keeps one way in (2.12546ms)
+✔ removing a node or a line prunes its edges (2.09195ms)
+✔ dragging a node moves it and clamps it to the canvas (2.109566ms)
+✔ a drag starting on a node button is ignored (2.791637ms)
+✔ saving posts a new workflow and puts the server copy in the editor (2.528527ms)
+✔ a save refusal keeps the error visible and clears the busy flag (2.021876ms)
+✔ running needs a saved workflow and accounts, then polls the run (2.035296ms)
+✔ stopping calls the stop route (1.852646ms)
+✔ deleting is confirmed, removes its schedules and resets the panel (2.247931ms)
+✔ cancelling the delete confirmation leaves the workflow alone (1.674301ms)
+✔ opening a workflow clones it and restores its last run (2.025672ms)
+✔ step summaries cover run states and counters (1.758496ms)
+✔ node summaries reflect the configured values (1.804524ms)
+✔ the account picker enforces the run cap and frees slots (2.263785ms)
+✔ a preset opens as an unsaved draft with cloned nodes (1.777384ms)
+✔ scheduling requires accounts and posts the repeat plan (1.896341ms)
+✔ deleting a schedule confirms and calls the schedule route (1.740189ms)
+✔ schedule labels describe each repeat mode (1.598058ms)
+✔ the save-to-table node picks a table and offers only text columns (14.621758ms)
+✔ run steps group by account for the log (1.876171ms)
+ℹ tests 209
+ℹ suites 0
+ℹ pass 206
+ℹ fail 3
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 955.475618
+
+✖ failing tests:
+
+test at tests/test_autojoin_client.mjs:47:1
+✖ auto join queues a durable job instead of the synchronous join endpoint (9.849327ms)
+  AssertionError [ERR_ASSERTION]: Values have same structure but are not reference-equal:
+  
+  [
+    'https://t.me/chanone',
+    'https://t.me/chantwo'
+  ]
+  
+      at TestContext.<anonymous> (file:///home/runner/work/open-teleset/open-teleset/tests/test_autojoin_client.mjs:54:10)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: [ 'https://t.me/chanone', 'https://t.me/chantwo' ],
+    expected: [ 'https://t.me/chanone', 'https://t.me/chantwo' ],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at tests/test_autojoin_client.mjs:80:1
+✖ auto join has no per-run cap and zero queues every link (3.545835ms)
+  AssertionError [ERR_ASSERTION]: Values have same structure but are not reference-equal:
+  
+  [
+    'https://t.me/chanone',
+    'https://t.me/chantwo'
+  ]
+  
+      at TestContext.<anonymous> (file:///home/runner/work/open-teleset/open-teleset/tests/test_autojoin_client.mjs:86:10)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: [ 'https://t.me/chanone', 'https://t.me/chantwo' ],
+    expected: [ 'https://t.me/chanone', 'https://t.me/chantwo' ],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at tests/test_autojoin_client.mjs:93:1
+✖ unrecognised lines are filtered before queuing (3.678422ms)
+  AssertionError [ERR_ASSERTION]: Values have same structure but are not reference-equal:
+  
+  [
+    'https://t.me/chanone',
+    'https://t.me/chantwo'
+  ]
+  
+      at TestContext.<anonymous> (file:///home/runner/work/open-teleset/open-teleset/tests/test_autojoin_client.mjs:99:10)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: [ 'https://t.me/chanone', 'https://t.me/chantwo' ],
+    expected: [ 'https://t.me/chanone', 'https://t.me/chantwo' ],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
