@@ -6673,7 +6673,9 @@
                             d = res.data;
                             this.scraper.results = d.members || [];
                             const errs = d.errors || [];
-                            const hasF = d.has_fallback ? ' Some results via recent messages (members hidden).' : '';
+                            const modes = d.target_modes || {};
+                            const fallbackTargets = Object.keys(modes).filter(k => modes[k] === 'messages_fallback');
+                            const hasF = fallbackTargets.length ? ` Partial recent posters (members hidden) for: ${fallbackTargets.join(', ')}.` : '';
                             const errSummary = errs.length ? ' Failed: ' + errs.map(e => `${e.target}: ${e.error}`).join(', ') + '.' : '';
                             this.scraper.summary = `${targets.length} targets: ${d.total || 0} unique members total.${hasF}${errSummary}`;
                         }
