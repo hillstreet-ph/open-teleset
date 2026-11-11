@@ -327,3 +327,30 @@ async def test_connect_without_a_saved_session_reports_an_actionable_error():
 
     assert await manager._connect_saved_account("broken") is None
     assert "no saved Telegram session" in manager.connection_errors["broken"]
+
+
+@pytest.mark.asyncio
+async def test_zero_member_limit_asks_telegram_for_every_visible_member(monkeypatch):
+    entity = SimpleNamespace()
+    client = fake_client(entity=entity, participants=[types.User(id=1, first_name="Ana")])
+    monkeypatch.setattr(ops.account_manager, "get_client", AsyncMock(return_value=client))
+
+    result = await ops.scrape_members(
+        ops.ScrapeRequest(account_id="account", target="@everyone", limit=0))
+
+    assert result["success"] is True
+    client.get_participants.assert_awaited_once_with(entity, limit=None)
+
+
+@pytest.mark.asyncio
+async def test_large_member_limit_raises_the_recent_poster_scan_ceiling(monkeypatch):
+    entity = types.Channel(id=9, title="Hidden", photo=types.ChatPhotoEmpty(), date=None)
+    client = NonAdminClient(entity, [SimpleNamespace(sender=types.User(id=11, first_name="Ana"))])
+    monkeypatch.setattr(ops.account_manager, "get_client", AsyncMock(return_value=client))
+
+    await ops.scrape_members(
+        ops.ScrapeRequest(account_id="account", target="@hidden_members", limit=50000))
+
+    assert client.history_limit == ops.RECENT_POSTER_SCAN_MAX
+    assert ops.RECENT_POSTER_SCAN_MAX > 1000
+

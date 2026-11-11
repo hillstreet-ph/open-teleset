@@ -27,8 +27,9 @@ function harness(source, post) {
     console,
   };
   const state = {
-    scraper: { accountId: 'acct_1', target: '@channel', limit: 200, filterBots: true, activityFilter: 'all', loading: false, results: [], summary: '' },
-    channelScraper: { accountId: '', keywords: 'casino', country: '', groupType: 'all', limit: 100, loading: false, results: [], summary: '' },
+    scraper: { accountId: 'acct_1', target: '@channel', bulkTargets: '', limit: 200, filterBots: true, activityFilter: 'all', loading: false, results: [], summary: '' },
+    scraperTargets: ['@channel'],
+    channelScraper: { keywords: 'casino', country: '', groupType: 'all', limit: 100, loading: false, results: [], summary: '', partial: false },
     showToast: (message, error) => toasts.push({ message, error }),
   };
   const methods = vm.runInNewContext(`({${source}})`, context);
@@ -89,6 +90,37 @@ test('channel search allows directory lookups more than the default 15s request 
   assert.equal(calls.length, 1);
   assert.equal(calls[0].url, '/api/scraper/channels');
   assert.ok((calls[0].config?.timeout || 0) >= 60000, `timeout was ${calls[0].config?.timeout}`);
+});
+
+test('channel search is account-free and never sends a Telegram account', async () => {
+  const { state, calls } = harness(channelMethods, async () => ({ data: { results: [], total: 0 } }));
+  state.channelScraper.keywords = 'alpha\nbravo\nalpha';
+  await state.runChannelScraper();
+  assert.equal(calls[0].body.account_id, '');
+  assert.deepEqual([...calls[0].body.keywords], ['alpha', 'bravo', 'alpha']);
+  assert.match(state.channelScraper.summary, /from 3 keywords/);
+  assert.equal(state.channelScraper.partial, false);
+});
+
+test('a partial channel search says keywords were skipped', async () => {
+  const { state } = harness(channelMethods, async () => ({
+    data: { results: [{ id: 'casino', username: 'casino' }], total: 1, partial: true },
+  }));
+  await state.runChannelScraper();
+  assert.equal(state.channelScraper.partial, true);
+  assert.equal(state.channelScraper.results.length, 1);
+  assert.match(html, /channelScraper\.partial/);
+  assert.match(html, /results are partial/i);
+});
+
+test('the channel finder no longer offers a Telegram account selector', () => {
+  const start = html.indexOf('Channel and group finder');
+  const end = html.indexOf('<!-- ============ Adder Tab', start);
+  const finder = html.slice(start, end);
+  assert.doesNotMatch(finder, /Account \(optional\)/);
+  assert.doesNotMatch(finder, /channelScraper\.accountId/);
+  assert.match(finder, /No Telegram account is used/);
+  assert.match(finder, /max="10000"/);
 });
 
 test('member scrape shows the server reason in a toast instead of a blocking alert', async () => {

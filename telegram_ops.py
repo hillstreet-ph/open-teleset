@@ -9,6 +9,7 @@ FastAPI APIRouter providing REST endpoints for:
 """
 import asyncio
 import re as _re
+import time
 from datetime import datetime, timedelta, timezone
 from html import unescape
 from typing import List, Optional, Literal
@@ -83,7 +84,7 @@ def matches_activity(user, selected: ActivityFilter, now=None):
 class ScrapeRequest(BaseModel):
     account_id: str
     target: str              # channel/group username or ID
-    limit: int = Field(default=500, ge=1, le=10000, strict=True)  # scan cap before filtering
+    limit: int = Field(default=500, ge=0, le=1_000_000, strict=True)  # 0 = every member the account can enumerate
     filter_bots: bool = True # exclude bots
     activity_filter: ActivityFilter = "all"
     admin_filter: Literal["include", "exclude"] = "include"
@@ -94,22 +95,25 @@ class ChannelScrapeRequest(BaseModel):
     keywords: List[str] = Field(default_factory=list)      # directory search terms
     country: str = Field(default="", max_length=64)        # optional title/username filter
     group_type: Literal["all", "group", "channel"] = "all"
-    limit: int = Field(default=300, ge=1, le=500, strict=True)  # max results after filtering
+    limit: int = Field(default=300, ge=1, le=10000, strict=True)  # result ceiling across all keywords
 
     @model_validator(mode="after")
     def _normalise(self):
         cleaned = []
+        seen = set()
         for raw in self.keywords:
             term = raw.strip()
             if not term:
                 continue
             if len(term) > 64:
                 raise ValueError("Each keyword must be at most 64 characters")
+            key = term.lower()
+            if key in seen:
+                continue
+            seen.add(key)
             cleaned.append(term)
         if not cleaned:
             raise ValueError("Provide at least one search keyword")
-        if len(cleaned) > 20:
-            raise ValueError("Provide at most 20 keywords")
         self.keywords = cleaned
         self.country = self.country.strip()
         return self
@@ -318,7 +322,7 @@ async def _resolve_target_entity(client, target):
         raise
 
 
-RECENT_POSTER_SCAN_MAX = 1000
+RECENT_POSTER_SCAN_MAX = 5000
 
 
 def scrape_member_notice(member_count=None):
@@ -329,9 +333,13 @@ def scrape_member_notice(member_count=None):
 
 
 async def collect_scrape_members(client, entity, limit):
-    """Use visible message authors when Telegram hides the roster from this account."""
+    """Use visible message authors when Telegram hides the roster from this account.
+
+    ``limit=0`` means every member the account can enumerate, so the roster call
+    omits Telethon's limit (None lets the client page through the whole list).
+    """
     try:
-        return await client.get_participants(entity, limit=limit), "members", None
+        return await client.get_participants(entity, limit=limit or None), "members", None
     except errors.ChatAdminRequiredError:
         pass
 
@@ -345,7 +353,8 @@ async def collect_scrape_members(client, entity, limit):
         pass
 
     users, seen = [], set()
-    scan_limit = min(max(limit * 4, 200), RECENT_POSTER_SCAN_MAX)
+    scan_limit = RECENT_POSTER_SCAN_MAX if not limit else min(
+        max(limit * 4, 200), RECENT_POSTER_SCAN_MAX)
     async for message in client.iter_messages(entity, limit=scan_limit):
         sender = getattr(message, "sender", None)
         if sender is None:
@@ -357,7 +366,7 @@ async def collect_scrape_members(client, entity, limit):
             continue
         seen.add(sender.id)
         users.append(sender)
-        if len(users) >= limit:
+        if limit and len(users) >= limit:
             break
     return users, "recent_posters", member_count
 
@@ -649,6 +658,29 @@ async def _tgstat_search(session, token, keyword, peer_type, country_code, limit
     return [info for info in (_parse_tgstat_item(it, peer_type) for it in items) if info]
 
 
+KEYWORD_SEARCH_BUDGET = 90.0  # seconds; queued keywords past this are reported as partial
+
+
+async def _gather_keywords(keywords, worker, budget):
+    """Look every keyword up concurrently, dropping work queued past the budget.
+
+    A lookup already talking to the upstream service is allowed to finish so the
+    results stay truthful; keywords that never started are reported as skipped.
+    """
+    deadline = time.monotonic() + budget
+    semaphore = asyncio.Semaphore(5)
+    skipped: list = []
+
+    async def run(keyword):
+        async with semaphore:
+            if time.monotonic() >= deadline:
+                skipped.append(keyword)
+                return keyword, None
+            return keyword, await worker(keyword)
+
+    return await asyncio.gather(*(run(keyword) for keyword in keywords)), skipped
+
+
 async def _scrape_channels_tgstat(request: ChannelScrapeRequest, token):
     """Account-free discovery via the TGStat directory API.
 
@@ -663,20 +695,17 @@ async def _scrape_channels_tgstat(request: ChannelScrapeRequest, token):
     seen: set = set()
     results: list = []
     async with aiohttp.ClientSession(headers=_BROWSER_HEADERS) as session:
-        # Search every keyword concurrently; a slow query must not push the
-        # whole request past the dashboard's 120 s timeout (20 keywords x 15 s
-        # serially would).
-        semaphore = asyncio.Semaphore(5)
-
+        # Search every keyword concurrently; a runaway keyword list must not
+        # push the whole request past the dashboard's 120 s timeout.
         async def search(keyword):
-            async with semaphore:
-                return await _tgstat_search(
-                    session, token, keyword, peer_type, country_code, request.limit)
+            return await _tgstat_search(
+                session, token, keyword, peer_type, country_code, request.limit)
 
-        per_keyword = await asyncio.gather(*(search(k) for k in request.keywords))
-        for keyword, infos in zip(request.keywords, per_keyword):
-            if len(results) >= request.limit:
-                break
+        per_keyword, skipped = await _gather_keywords(
+            request.keywords, search, KEYWORD_SEARCH_BUDGET)
+        for keyword, infos in per_keyword:
+            if infos is None:
+                continue
             for info in infos:
                 key = info["username"].lower()
                 if key in seen:
@@ -692,11 +721,17 @@ async def _scrape_channels_tgstat(request: ChannelScrapeRequest, token):
                 results.append(info)
                 if len(results) >= request.limit:
                     break
+            if len(results) >= request.limit:
+                break
+    partial = bool(skipped)
     log_manager.add_log(
         "ChannelScraper", "tgstat",
-        f"Found {len(results)} channels/groups (TGStat) for {len(request.keywords)} keyword(s)", "success",
+        f"Found {len(results)} channels/groups (TGStat) for {len(request.keywords)} keyword(s)"
+        + (f"; {len(skipped)} skipped at the search deadline" if partial else ""),
+        "success",
     )
-    return {"success": True, "total": len(results), "results": results, "mode": "tgstat"}
+    return {"success": True, "total": len(results), "results": results,
+            "mode": "tgstat", "partial": partial}
 
 
 async def _scrape_channels_public(request: ChannelScrapeRequest):
@@ -711,6 +746,7 @@ async def _scrape_channels_public(request: ChannelScrapeRequest):
 
 
 _PUBLIC_PREVIEW_BUDGET = 45.0  # seconds; keeps the fallback inside the client timeout
+_PUBLIC_CANDIDATE_MAX = 600   # preview pages fetched at most, regardless of the result ceiling
 
 
 async def _scrape_channels_web(request: ChannelScrapeRequest):
@@ -722,20 +758,18 @@ async def _scrape_channels_web(request: ChannelScrapeRequest):
     """
     preview_budget = _PUBLIC_PREVIEW_BUDGET
     country = request.country.lower()
-    want_candidates = min(request.limit * 3, 180)
+    want_candidates = min(request.limit * 3, _PUBLIC_CANDIDATE_MAX)
     seen: set = set()
     candidates: list = []
     async with aiohttp.ClientSession(headers=_BROWSER_HEADERS) as session:
-        discover_semaphore = asyncio.Semaphore(4)
-
         async def discover(keyword):
-            async with discover_semaphore:
-                return await _ddg_usernames(session, keyword, want_candidates)
+            return await _ddg_usernames(session, keyword, want_candidates)
 
-        discovered = await asyncio.gather(*(discover(k) for k in request.keywords))
-        for keyword, usernames in zip(request.keywords, discovered):
-            if len(candidates) >= want_candidates:
-                break
+        per_keyword, skipped = await _gather_keywords(
+            request.keywords, discover, KEYWORD_SEARCH_BUDGET)
+        for keyword, usernames in per_keyword:
+            if not usernames:
+                continue
             for username in usernames:
                 key = username.lower()
                 if key in seen:
@@ -744,6 +778,8 @@ async def _scrape_channels_web(request: ChannelScrapeRequest):
                 candidates.append((username, keyword))
                 if len(candidates) >= want_candidates:
                     break
+            if len(candidates) >= want_candidates:
+                break
         semaphore = asyncio.Semaphore(8)
 
         async def enrich(username, keyword):
@@ -790,11 +826,15 @@ async def _scrape_channels_web(request: ChannelScrapeRequest):
         if len(results) >= request.limit:
             break
 
+    partial = bool(skipped or pending)
     log_manager.add_log(
         "ChannelScraper", "public",
-        f"Found {len(results)} channels/groups (account-free) for {len(request.keywords)} keyword(s)", "success",
+        f"Found {len(results)} channels/groups (account-free) for {len(request.keywords)} keyword(s)"
+        + ("; results are partial because previews ran out of time" if partial else ""),
+        "success",
     )
-    return {"success": True, "total": len(results), "results": results, "mode": "public"}
+    return {"success": True, "total": len(results), "results": results,
+            "mode": "public", "partial": partial}
 
 
 @telegram_ops_router.post("/api/scraper/channels")
@@ -819,8 +859,13 @@ async def scrape_channels(request: ChannelScrapeRequest):
     country = request.country.lower()
     seen: set = set()
     results: list = []
+    deadline = time.monotonic() + KEYWORD_SEARCH_BUDGET
+    partial = False
     for keyword in request.keywords:
         if len(results) >= request.limit:
+            break
+        if time.monotonic() >= deadline:
+            partial = True
             break
         try:
             found = await client(functions.contacts.SearchRequest(q=keyword, limit=min(request.limit, 100)))
@@ -862,9 +907,12 @@ async def scrape_channels(request: ChannelScrapeRequest):
 
     log_manager.add_log(
         "ChannelScraper", account_id,
-        f"Found {len(results)} channels/groups for {len(request.keywords)} keyword(s)", "success",
+        f"Found {len(results)} channels/groups for {len(request.keywords)} keyword(s)"
+        + ("; stopped at the search deadline" if partial else ""),
+        "success",
     )
-    return {"success": True, "total": len(results), "results": results, "mode": "account"}
+    return {"success": True, "total": len(results), "results": results,
+            "mode": "account", "partial": partial}
 
 
 # ============ 2. Member Adder ============
