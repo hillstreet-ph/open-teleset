@@ -22,8 +22,8 @@ function harness() {
     } },
     crypto: { randomUUID: () => 'request-key-1234567890' },
   };
-  const methods = vm.runInNewContext(`({${methodSource('async runAutoJoin() {', '// ---- BulkSend ----')}})`, context);
-  const computed = vm.runInNewContext(`({${methodSource('autojoinLinks() {', 'progressJobs() {')}}})`, {});
+  const methods = vm.runInNewContext(`({${methodSource('async runAutoJoin() {', '// ---- BulkSend ----')})`, context);
+  const computed = vm.runInNewContext(`({${methodSource('autojoinLinks() {', 'progressJobs() {')})`, {});
   const state = {
     apiErrorText: (error, fallback) => error?.message || fallback,
     accessReady: true,
