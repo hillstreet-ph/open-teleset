@@ -865,6 +865,16 @@
         .copilot-footnote { margin: 8px 0 0; font-size: 10.5px; color: var(--text-dim); }
         .copilot-enhanced { margin-bottom: 8px; padding: 8px 10px; border-radius: 9px; background: var(--accent-soft); }
         .copilot-enhanced ul { margin: 0 0 0 14px; padding: 0; font-size: 11.5px; color: var(--text-secondary); }
+        .copilot-engine { flex: none; display: inline-flex; padding: 2px; gap: 2px; border: 1px solid var(--border); border-radius: 9px; }
+        .copilot-engine button { border: 0; border-radius: 7px; background: transparent; color: var(--text-dim); font: inherit; font-size: 11px; font-weight: 700; padding: 5px 8px; cursor: pointer; }
+        .copilot-engine button:hover { color: var(--text); }
+        .copilot-engine button.on { background: var(--accent-soft); color: var(--accent); }
+        .copilot-engine button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+        .copilot-agent-reply { padding: 10px 12px; border-radius: 12px; background: var(--accent-soft); }
+        .copilot-agent-reply .copilot-label { display: flex; align-items: center; gap: 6px; }
+        .copilot-steps { margin: 8px 0 0 18px; padding: 0; font-size: 11.5px; color: var(--text-secondary); }
+        .copilot-steps li { margin-bottom: 5px; display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+        .copilot-steps .badge { font-size: 9px; padding: 1px 5px; }
         @media (max-width: 640px) {
             .copilot-fab { right: 14px; bottom: 14px; }
             .copilot-panel { right: 8px; left: 8px; width: auto; bottom: 84px; max-height: calc(100dvh - 108px); }
@@ -4633,14 +4643,38 @@
                     <span class="copilot-mark"><app-icon name="copilot" :size="16"></app-icon></span>
                     <div>
                         <strong>Copilot</strong>
-                        <small>{{ copilot.mode === 'work' ? 'Work · auto-runs safe steps, stops at every gate' : 'Ask · drafts and reads, never sends' }}</small>
+                        <small>{{ copilot.engine === 'agent' ? 'Agent · picks tools, stops at every gate' : (copilot.mode === 'work' ? 'Work · auto-runs safe steps, stops at every gate' : 'Ask · drafts and reads, never sends') }}</small>
                     </div>
+                </div>
+                <div class="copilot-engine" role="tablist" aria-label="Copilot engine">
+                    <button type="button" role="tab" :aria-selected="copilot.engine === 'draft' ? 'true' : 'false'"
+                            :class="{ on: copilot.engine === 'draft' }" title="Draft from your words with the built-in rules or your AI provider"
+                            @click="setCopilotEngine('draft')">Draft</button>
+                    <button type="button" role="tab" :aria-selected="copilot.engine === 'agent' ? 'true' : 'false'"
+                            :class="{ on: copilot.engine === 'agent' }" title="Let the model choose tools, skills and connectors — writes stop for approval"
+                            @click="setCopilotEngine('agent')">Agent</button>
                 </div>
                 <button class="icon-btn" @click="toggleCopilot" aria-label="Close Copilot"><app-icon name="close" :size="16"></app-icon></button>
             </header>
 
             <div class="copilot-body" id="copilot-body">
                 <p v-if="copilot.error" class="copilot-error" role="alert">{{ copilot.error }}</p>
+
+                <div v-if="copilot.engine === 'agent' && copilot.agent.reply" class="copilot-agent-reply">
+                    <p class="copilot-label">
+                        {{ copilot.agent.engine === 'guard' ? 'Refused' : copilot.agent.engine === 'model' ? 'Agent' : 'Built-in drafter' }}
+                        <span v-if="copilot.agent.model" class="copilot-muted">{{ copilot.agent.model }}</span>
+                        <span v-if="copilot.agent.stepsUsed" class="copilot-muted">· {{ copilot.agent.stepsUsed }} step(s)</span>
+                    </p>
+                    <p style="margin:0; white-space:pre-wrap; font-size:12.5px;">{{ copilot.agent.reply }}</p>
+                    <ol v-if="copilot.agent.steps.length" class="copilot-steps">
+                        <li v-for="step in copilot.agent.steps" :key="step.index">
+                            <strong style="color:var(--text);">{{ step.tool }}</strong>
+                            <span class="badge" :class="step.status === 'ok' ? 'badge-success' : step.status === 'pending' ? 'badge-info' : 'badge-danger'">{{ step.status }}</span>
+                            <span>{{ step.summary }}</span>
+                        </li>
+                    </ol>
+                </div>
 
                 <template v-if="!copilot.draft">
                     <div v-if="copilot.suggestions.length" class="copilot-suggest">
@@ -4660,7 +4694,10 @@
                             </div>
                         </div>
                     </div>
-                    <div class="copilot-intro">
+                    <div v-if="copilot.engine === 'agent'" class="copilot-intro">
+                        <p><strong>Agent</strong> lets the model choose from {{ copilot.capabilities.tools.length }} workspace tools, {{ copilot.capabilities.skills.length }} skills and {{ copilot.capabilities.connectors.length }} connectors. Reads run inline; a write, skill or connector step comes back as a draft you approve. Account creation, number purchase, auto join and cold outreach stay refused.</p>
+                    </div>
+                    <div v-else class="copilot-intro">
                         <p><strong>Ask</strong> answers from your accounts, automations, connectors and encrypted knowledge, and drafts anything that changes state. <strong>Work</strong> also runs the safe writes — creating or pausing an automation — and still stops at every operator gate. Nothing is sent, bought or joined from here.</p>
                     </div>
                 </template>
@@ -4775,9 +4812,9 @@
                             title="Make this prompt more precise" aria-label="Enhance prompt"><app-icon name="sparkles" :size="17"></app-icon></button>
                     <textarea id="copilot-panel-input" class="copilot-input" rows="2" maxlength="2000"
                               v-model="copilot.instruction" @keydown.ctrl.enter.prevent="submitCopilot"
-                              :placeholder="copilot.mode === 'work' ? 'Describe the job — Work applies what is safe.' : 'Ask for a template, a schedule or an opt-in send…'"></textarea>
+                              :placeholder="copilot.engine === 'agent' ? 'Tell the agent what you want — it picks the tools and stops at every gate.' : (copilot.mode === 'work' ? 'Describe the job — Work applies what is safe.' : 'Ask for a template, a schedule or an opt-in send…')"></textarea>
                     <button type="button" class="btn btn-primary btn-sm" @click="submitCopilot"
-                            :disabled="copilot.loading || !copilot.instruction.trim()">{{ copilot.loading ? '…' : (copilot.mode === 'work' ? 'Work' : 'Ask') }}</button>
+                            :disabled="copilot.loading || !copilot.instruction.trim()">{{ copilot.loading ? '…' : (copilot.engine === 'agent' ? 'Run agent' : (copilot.mode === 'work' ? 'Work' : 'Ask')) }}</button>
                 </div>
                 <input id="copilot-files" type="file" multiple hidden @change="uploadCopilotFiles">
                 <p class="copilot-footnote">Any file can be attached — PDF, Word, PowerPoint, spreadsheets and zips are read as text. Attachments stay in memory for this session. Nothing is sent, bought or joined.</p>
@@ -6132,8 +6169,10 @@
                     // Copilot (draft-only: never sends)
                     copilot: { instruction: '', loading: false, draft: null, presets: [], error: '', turnId: '', history: [],
                                editing: '', saving: false, formError: '',
-                               open: false, mode: 'ask', suggestions: [], attachments: [], uploading: false,
+                               open: false, mode: 'ask', engine: 'draft', suggestions: [], attachments: [], uploading: false,
                                enhancing: false, enhanced: [], tools: [], toolCount: 0,
+                               agent: { reply: '', steps: [], model: '', engine: '', status: '', stepsUsed: 0 },
+                               capabilities: { tools: [], skills: [], connectors: [] },
                                form: { group: '', title: '', description: '', instruction: '', command: '' } },
 
                     // Auto Reply (inbound; answers only private chats that spoke first)
@@ -10505,6 +10544,7 @@
                     this.loadCopilotAttachments()
                     this.loadCopilotPresets()
                     this.loadCopilotTools()
+                    if (this.copilot.engine === 'agent') this.loadCopilotCapabilities()
                 },
 
                 async loadCopilotTools() {
@@ -10522,6 +10562,25 @@
                 setCopilotMode(mode) {
                     this.copilot.mode = mode === 'work' ? 'work' : 'ask'
                     try { localStorage.setItem('ot_copilot_mode', this.copilot.mode) } catch (e) {}
+                },
+
+                setCopilotEngine(engine) {
+                    this.copilot.engine = engine === 'agent' ? 'agent' : 'draft'
+                    if (this.copilot.engine === 'agent') this.loadCopilotCapabilities()
+                    try { localStorage.setItem('ot_copilot_engine', this.copilot.engine) } catch (e) {}
+                },
+
+                async loadCopilotCapabilities() {
+                    try {
+                        const { data } = await _api.get('/api/copilot/agent/capabilities')
+                        this.copilot.capabilities = {
+                            tools: data.tools || [],
+                            skills: data.skills || [],
+                            connectors: data.connectors || [],
+                        }
+                    } catch (e) {
+                        this.copilot.capabilities = { tools: [], skills: [], connectors: [] }
+                    }
                 },
 
                 async loadCopilotSuggestions() {
@@ -10596,7 +10655,37 @@
                 },
 
                 submitCopilot() {
-                    return this.draftCopilot()
+                    return this.copilot.engine === 'agent' ? this.runCopilotAgent() : this.draftCopilot()
+                },
+
+                async runCopilotAgent() {
+                    const prompt = this.copilot.instruction.trim()
+                    if (!prompt || this.copilot.loading) return
+                    this.copilot.loading = true
+                    this.copilot.error = ''
+                    this.copilot.draft = null
+                    this.copilot.agent = { reply: '', steps: [], model: '', engine: '', status: '', stepsUsed: 0 }
+                    try {
+                        const { data } = await _api.post('/api/copilot/agent', {
+                            prompt,
+                            mode: this.copilot.mode,
+                        }, { timeout: 120000 })
+                        this.copilot.agent = {
+                            reply: data.reply || '',
+                            steps: data.steps || [],
+                            model: data.model || '',
+                            engine: data.engine || '',
+                            status: data.status || '',
+                            stepsUsed: data.steps_used || 0,
+                        }
+                        this.copilot.draft = data.draft || null
+                        this.copilot.turnId = data.turn_id || ''
+                        this.loadCopilotHistory()
+                    } catch (e) {
+                        this.copilot.error = e.response?.data?.detail || 'The agent could not finish that request.'
+                    } finally {
+                        this.copilot.loading = false
+                    }
                 },
 
                 useCopilotSuggestion(instruction) {
@@ -10797,6 +10886,7 @@
                     this.copilot.draft = null
                     this.copilot.error = ''
                     this.copilot.enhanced = []
+                    this.copilot.agent = { reply: '', steps: [], model: '', engine: '', status: '', stepsUsed: 0 }
                 },
 
                 async applyCopilotDraft() {
@@ -12667,6 +12757,7 @@
                     if (savedWidth >= 196 && savedWidth <= 420) this.sidebarWidth = savedWidth
                     this.inboxLastRead = localStorage.getItem('ot_inbox_read') || ''
                     if (localStorage.getItem('ot_copilot_mode') === 'work') this.copilot.mode = 'work'
+                    if (localStorage.getItem('ot_copilot_engine') === 'agent') this.copilot.engine = 'agent'
                 } catch (e) {}
                 this.captureOAuthReturn()
                 this.initAuth()

@@ -36,6 +36,7 @@ from automation import router as automation_router
 from outreach_jobs import router as outreach_jobs_router, worker as outreach_worker
 from webhooks import router as webhooks_router
 from copilot import router as copilot_router
+from copilot_agent import router as copilot_agent_router
 from dashboard_features import router as dashboard_features_router
 from cloud_browser import router as cloud_browser_router
 from auto_reply import router as auto_reply_router, worker as auto_reply_worker
@@ -137,6 +138,7 @@ app.include_router(automation_router)
 app.include_router(outreach_jobs_router)
 app.include_router(webhooks_router)
 app.include_router(copilot_router)
+app.include_router(copilot_agent_router)
 app.include_router(dashboard_features_router)
 app.include_router(cloud_browser_router)
 app.include_router(auto_reply_router)
