@@ -369,7 +369,10 @@ async def scrape_members(request: ScrapeRequest):
             scrape_mode = "messages_fallback"
             seen_ids: set = set()
             participants = []
+            _deadline = asyncio.get_running_loop().time() + 75.0
             async for msg in client.iter_messages(entity, limit=request.limit):
+                if asyncio.get_running_loop().time() > _deadline:
+                    break
                 sender = getattr(msg, "sender", None)
                 if sender is None or not isinstance(sender, types.User):
                     continue
