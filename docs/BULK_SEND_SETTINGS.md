@@ -18,6 +18,30 @@ For recipients who have consented, select **I confirm these recipients consented
 
 CSV has no recipient count cap for BulkSend. The 2 MB file-size safeguard and Telegram's 4,096-character message validation remain. Large synchronous batches can still encounter infrastructure request timeouts; inspect results/logs before retrying, since a disconnected browser does not prove a send failed.
 
+## Attachments
+
+The message box accepts files the same way a chat does: choose them or drop
+them on the dashed zone. Each file is uploaded once to the operator store under
+`media/` and referenced by an opaque id; the dashboard never sends a filesystem
+path. The send route — job or direct — resolves those ids server-side and scopes
+them to the operator who uploaded them, so another administrator can neither
+list, download nor reference them.
+
+Up to 10 files per send, 100 MB each. Allowed types are the ones Telegram shows
+naturally: JPEG, PNG, WebP, GIF, MP4, MOV, WebM, MP3, OGG, M4A, WAV, PDF, ZIP,
+TXT and Office documents. HTML, SVG, shell and unknown binaries are refused, and
+the first bytes must match the declared type, so a renamed file never reaches a
+recipient under a trusted content type. Downloads are served with
+`X-Content-Type-Options: nosniff`; images, video and audio inline, documents as
+an attachment.
+
+With a file attached, Telegram treats the text as a caption: 1,024 characters,
+not 4,096. A message may be empty when a file is attached. The form shows a
+combined preview — the selected files rendered with the caption beneath, as one
+bubble — above the Start button before submission. The job payload freezes the
+resolved paths at submission; removing the chip afterwards does not change an
+already-queued job.
+
 Free global proxy discovery is enabled by default. It tries the hourly checked, response-time-sorted public SOCKS5 list at https://github.com/monosans/proxy-list, falling back to the existing Proxifly source when unavailable. Candidates must pass both Telegram TCP reachability and a verified TLS request before being saved. Existing manual and per-account proxies take priority. Removing the global proxy disables discovery; use **Find free global proxy** to enable it again. A free proxy's future availability is not guaranteed.
 
 Other workflows (Adder, Scheduler, legacy batch tools) retain their own approval and pacing policies. No database schema, project permissions, or credentials change in this update. Rollback is the preceding immutable commit/image; retain the accounts volume and consent/opt-out records.

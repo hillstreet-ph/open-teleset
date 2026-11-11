@@ -350,6 +350,23 @@ def append_to_table(operator: str, table_id: str, column_id: str, values: list[s
         return {"appended": added, "skipped": skipped, "total": len(table["rows"])}
 
 
+def read_column(operator: str, table_id: str, column_id: str) -> dict:
+    """Read one text column in row order. Used by the workflow table read node."""
+    with _LOCK:
+        record = _record(operator)
+        table = _find(record, table_id)
+        column = _find_column(table, column_id)
+        if column.get("type") != "text":
+            raise HTTPException(400, "The workflow column must be a text column.")
+        values = []
+        for row in table["rows"]:
+            value = (row.get("cells") or {}).get(column_id)
+            if isinstance(value, str) and value.strip():
+                values.append(value.strip())
+        return {"values": values, "rows": len(table["rows"]),
+                "table": table.get("name") or "Untitled", "column": column.get("name") or "Column"}
+
+
 # ============ endpoints ============
 
 

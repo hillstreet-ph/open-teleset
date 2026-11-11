@@ -10,10 +10,12 @@ platform and it cannot contact people on its own.
 | Node | What it does | Bounds |
 | --- | --- | --- |
 | **Scrape members** | Reads the member list of one group or channel with the signed-in account. The usernames feed a later **Save to a table** node; the run log keeps counts only. | Target ≤256 characters, limit 1–1000, bots skipped by default. |
-| **Wait** | Pauses the run. | 1–600 seconds per node, 1800 seconds in total across the chain. |
-| **Join groups** | Joins the links you list, one at a time. Invite links and public `@usernames` are accepted. | 1–10 links per node and at least 35 seconds between joins. |
-| **Note yourself** | Sends one message to your own Saved Messages. `{scraped}` and `{joined}` are replaced with the counts from earlier nodes. | Text ≤1000 characters. |
+| **Inspect a group** | Reads a group's title, kind and member count without touching its member list. Useful as a first node to confirm the target. | Target ≤256 characters. The member count is best effort; a hidden count shows as "member count hidden". |
+| **Read a table** | Loads one text column from a Data Table for later nodes. A following **Join groups** node with *Take the links from the last Read a table node* joins that list. | Real `t_…` table and `c_…` text column ids; the table must belong to you. |
 | **Save to a table** | Adds the usernames read by an earlier Scrape node to one text column of a Data Table, once each (case-insensitive dedupe). | Needs a Scrape node before it in the chain; the table must belong to you; stops at the table's row cap. |
+| **Join groups** | Joins the links you list, one at a time, or the links loaded by a **Read a table** node. Invite links and public `@usernames` are accepted. | 1–10000 links per node (or the table's values) and at least 35 seconds between joins. A table-sourced join needs a Read a table node earlier in the chain. |
+| **Wait** | Pauses the run. | 1–600 seconds per node, 1800 seconds in total across the chain. |
+| **Note yourself** | Sends one message to your own Saved Messages. `{scraped}`, `{table}` and `{joined}` are replaced with the counts from earlier nodes. | Text ≤1000 characters. |
 
 Actions that contact other people are deliberately absent: creating accounts,
 buying numbers, registering or logging in accounts, adding strangers, outreach,
@@ -23,11 +25,14 @@ all. There is no connector node that reaches external services.
 
 ## Presets
 
-**Start from a preset** offers four drafts: *Member sweep to a table*, *Member sweep
-digest*, *Sweep, save and digest* and *Slow join rollout*. A preset opens on the
-canvas with its required fields (group target, table, column, join links) left
-empty on purpose — fill them in before saving or running, so a preset never runs
-against a guessed target.
+**Start from a preset** offers five drafts: *Member sweep to a table*, *Member
+sweep digest*, *Sweep, save and digest*, *Slow join rollout* and *Join from a
+table*. A preset opens on the canvas with its required fields (group target,
+table, column, join links) left empty on purpose — fill them in before saving or
+running, so a preset never runs against a guessed target. *Join from a table*
+ships a **Read a table** node wired into a **Join groups** node with *Take the
+links from the last Read a table node* already checked; pick the table and the
+text column that holds the links.
 
 ## Building a chain
 
@@ -66,16 +71,31 @@ schedule) and runs only the accounts that are still signed in.
 ## Watching a run
 
 The run log under the editor lists every node per account with its status and a
-short result: members read, rows appended/skipped, seconds waited,
-joined/skipped/failed counts, note length, or the Telegram cooldown in seconds.
-The log polls `/api/workflows/{id}/runs`; the newest run is also shown as
-**last run** in the list. History keeps the last 10 runs per workflow and is held
-in memory only — nothing about a run is written to disk.
+short result: members read, group title and member count, values read from a
+table, rows appended/skipped, seconds waited, joined/skipped/failed counts with
+the failure reasons, note length, or the Telegram cooldown in seconds. The log
+polls `/api/workflows/{id}/runs`; the newest run is also shown as **last run** in
+the list. History keeps the last 10 runs per workflow and is held in memory only
+— nothing about a run is written to disk.
 
 A failing step stops the chain and marks the run failed. A Telegram flood wait
 stops the chain and reports the cooldown instead of retrying, so nothing is
-bypassed. Errors are logged by type only; no exception text, peer data or
-credential is written to the log.
+bypassed. A join node that reads an empty table stops with `table_empty` rather
+than running against nothing. Failures are reported by a fixed short code, and
+the dashboard spells it out in plain words:
+
+| Code | Meaning |
+| --- | --- |
+| `account_not_connected` | The account is no longer signed in. |
+| `operator_required` | The step needs a signed-in operator and had none. |
+| `timed_out` | The step ran past its time budget. |
+| `network` | A connection error ended the step. |
+| `invalid_link` | A join target was neither an invite link nor a public username. |
+| `telegram_…` | Telegram refused the action (for example `telegram_peer_flood`); the name comes from the error class, not its message. |
+| `step_failed` | Anything else, with no further detail. |
+
+Only these codes are logged. No exception text, peer data or credential is
+written to the log.
 
 ## Storage and API
 
@@ -105,6 +125,10 @@ Anonymous requests receive `403`, and another operator's workflow id returns
 `tests/test_workflows.py` covers graph validation, the table node (real encrypted
 store, dedupe, fail-closed without an operator), sequential multi-account runs,
 the run cap, presets served as copies, and schedule validation and persistence.
+`tests/test_workflow_nodes.py` covers the completed catalog: inspect, read a
+table, table-sourced joins (including an empty table), the honest join counts and
+failure reasons, the safe failure codes, the `{table}` note token, and the graph
+rule that ties a table-sourced join to an earlier **Read a table** node.
 `tests/test_automation_schedules.py` covers the scheduler side: bounds, stored
 fields, starting a run for the owning operator, self-disabling on a missing
 workflow, and the signed-in account filter. `tests/test_workflows_ui.mjs` drives

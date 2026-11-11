@@ -46,7 +46,7 @@ STEP_TIMEOUT_SECONDS = 650.0
 RUN_HISTORY = 10
 SCHEDULE_REPEATS = ("once", "daily", "weekly", "workday")
 
-NODE_TYPES = ("scrape", "wait", "join", "notify", "table_append")
+NODE_TYPES = ("scrape", "group_info", "table_read", "table_append", "join", "wait", "notify")
 _NODE_ID = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
 _TABLE_ID = re.compile(r"^t_[A-Za-z0-9]{1,24}$")
 _COLUMN_ID = re.compile(r"^c_[A-Za-z0-9]{1,24}$")
@@ -63,28 +63,20 @@ CATALOG = [
         ],
     },
     {
-        "type": "wait",
-        "label": "Wait",
-        "hint": "Pauses between actions so the cycle stays conservative.",
+        "type": "group_info",
+        "label": "Inspect a group",
+        "hint": "Reads a group's title, kind and member count without touching its member list.",
         "fields": [
-            {"key": "seconds", "label": "Seconds", "kind": "number", "min": 1, "max": MAX_WAIT_STEP},
+            {"key": "target", "label": "Group or @username", "kind": "text", "placeholder": "@group"},
         ],
     },
     {
-        "type": "join",
-        "label": "Join groups",
-        "hint": "Joins public groups or invite links as this account. Bounded and spaced out.",
+        "type": "table_read",
+        "label": "Read a table",
+        "hint": "Loads one text column from a Data Table so later nodes can use it.",
         "fields": [
-            {"key": "urls", "label": "One link or @username per line", "kind": "lines"},
-            {"key": "delay", "label": "Seconds between joins", "kind": "number", "min": JOIN_MIN_DELAY, "max": 3600},
-        ],
-    },
-    {
-        "type": "notify",
-        "label": "Note yourself",
-        "hint": "Sends a note to this account's own Saved Messages. Never to other people.",
-        "fields": [
-            {"key": "text", "label": "Text ({scraped} and {joined} are filled in)", "kind": "textarea"},
+            {"key": "table_id", "label": "Data table", "kind": "table"},
+            {"key": "column_id", "label": "Column to read", "kind": "column"},
         ],
     },
     {
@@ -94,6 +86,33 @@ CATALOG = [
         "fields": [
             {"key": "table_id", "label": "Data table", "kind": "table"},
             {"key": "column_id", "label": "Column that receives usernames", "kind": "column"},
+        ],
+    },
+    {
+        "type": "join",
+        "label": "Join groups",
+        "hint": "Joins public groups or invite links as this account. Bounded and spaced out.",
+        "fields": [
+            {"key": "urls", "label": "One link or @username per line", "kind": "lines"},
+            {"key": "from_table", "label": "Take the links from the last Read a table node",
+             "kind": "checkbox"},
+            {"key": "delay", "label": "Seconds between joins", "kind": "number", "min": JOIN_MIN_DELAY, "max": 3600},
+        ],
+    },
+    {
+        "type": "wait",
+        "label": "Wait",
+        "hint": "Pauses between actions so the cycle stays conservative.",
+        "fields": [
+            {"key": "seconds", "label": "Seconds", "kind": "number", "min": 1, "max": MAX_WAIT_STEP},
+        ],
+    },
+    {
+        "type": "notify",
+        "label": "Note yourself",
+        "hint": "Sends a note to this account's own Saved Messages. Never to other people.",
+        "fields": [
+            {"key": "text", "label": "Text ({scraped}, {table} and {joined} are filled in)", "kind": "textarea"},
         ],
     },
 ]
@@ -148,10 +167,24 @@ TEMPLATES = [
         "description": "Wait, then join a short list of groups with the documented spacing.",
         "nodes": [
             {"id": "n_wait", "type": "wait", "config": {"seconds": 30}, "x": 40, "y": 60},
-            {"id": "n_join", "type": "join", "config": {"urls": [], "delay": JOIN_MIN_DELAY},
+            {"id": "n_join", "type": "join", "config": {"urls": [], "delay": JOIN_MIN_DELAY,
+                                                        "from_table": False},
              "x": 290, "y": 60},
         ],
         "edges": [{"from": "n_wait", "to": "n_join"}],
+    },
+    {
+        "id": "table_rollout",
+        "name": "Join from a table",
+        "description": "Read a table of group links, then join them one by one with the documented spacing.",
+        "nodes": [
+            {"id": "n_read", "type": "table_read", "config": {"table_id": "", "column_id": ""},
+             "x": 40, "y": 60},
+            {"id": "n_join", "type": "join", "config": {"urls": [], "delay": JOIN_MIN_DELAY,
+                                                        "from_table": True},
+             "x": 290, "y": 60},
+        ],
+        "edges": [{"from": "n_read", "to": "n_join"}],
     },
 ]
 
@@ -218,9 +251,10 @@ def _as_int(value, low: int, high: int, message: str) -> int:
     return value
 
 
-def _join_targets(raw_urls):
-    if not isinstance(raw_urls, list) or not 1 <= len(raw_urls) <= JOIN_LIMIT:
-        raise ValueError(f"Join needs between 1 and {JOIN_LIMIT} links.")
+def _join_targets(raw_urls, allow_empty: bool = False):
+    low = 0 if allow_empty else 1
+    if not isinstance(raw_urls, list) or not low <= len(raw_urls) <= JOIN_LIMIT:
+        raise ValueError(f"Join needs between {max(low, 1)} and {JOIN_LIMIT} links.")
     targets = []
     for raw in raw_urls:
         if not isinstance(raw, str) or len(raw) > 256:
@@ -243,16 +277,30 @@ def _clean_config(node_type: str, raw) -> dict:
         if not isinstance(filter_bots, bool):
             raise ValueError("Skip bots is either on or off.")
         return {"target": target, "limit": limit, "filter_bots": filter_bots}
+    if node_type == "group_info":
+        target = str(config.get("target") or "").strip()
+        if not target or len(target) > 256:
+            raise ValueError("An inspect node needs the group it should look at.")
+        return {"target": target}
+    if node_type == "table_read":
+        table_id = str(config.get("table_id") or "").strip()
+        column_id = str(config.get("column_id") or "").strip()
+        if not _TABLE_ID.match(table_id) or not _COLUMN_ID.match(column_id):
+            raise ValueError("Choose the data table and the text column the later nodes should read.")
+        return {"table_id": table_id, "column_id": column_id}
     if node_type == "wait":
         seconds = _as_int(config.get("seconds", 30), 1, MAX_WAIT_STEP, "Wait must be 1 to 600 seconds.")
         return {"seconds": seconds}
     if node_type == "join":
-        urls = _join_targets(config.get("urls"))
+        from_table = config.get("from_table", False)
+        if not isinstance(from_table, bool):
+            raise ValueError("Take the links from a table is either on or off.")
+        urls = _join_targets(config.get("urls") or [], allow_empty=from_table)
         delay = config.get("delay", 35)
         if type(delay) not in (int, float) or isinstance(delay, bool) \
                 or not math.isfinite(delay) or not JOIN_MIN_DELAY <= delay <= 3600:
             raise ValueError("Seconds between joins must be 35 or more.")
-        return {"urls": urls, "delay": delay}
+        return {"urls": urls, "delay": delay, "from_table": from_table}
     if node_type == "notify":
         text = str(config.get("text") or "").strip()
         if not text or len(text) > 1000:
@@ -350,11 +398,17 @@ def validate_workflow(payload: dict) -> dict:
         raise ValueError("Every node must be part of the chain, not floating on its own.")
     by_id = {node["id"]: node for node in nodes}
     seen_scrape = False
+    seen_table_read = False
     for node_id in visited:
-        if by_id[node_id]["type"] == "scrape":
+        node = by_id[node_id]
+        if node["type"] == "scrape":
             seen_scrape = True
-        elif by_id[node_id]["type"] == "table_append" and not seen_scrape:
+        elif node["type"] == "table_read":
+            seen_table_read = True
+        elif node["type"] == "table_append" and not seen_scrape:
             raise ValueError("Put a Scrape members node before the table node so there is something to save.")
+        elif node["type"] == "join" and node["config"].get("from_table") and not seen_table_read:
+            raise ValueError("Put a Read a table node before this join so it has links to use.")
 
     return {"name": name, "nodes": nodes, "edges": edges}
 
@@ -448,35 +502,84 @@ async def _append_table(config: dict, context: dict, account_id: str) -> dict:
             "total": result["total"]}
 
 
+async def _group_info(config: dict, context: dict, account_id: str) -> dict:
+    from telethon import functions
+
+    client = await _client(account_id)
+    entity = await client.get_entity(config["target"])
+    kind = "channel" if getattr(entity, "broadcast", False) else (
+        "group" if getattr(entity, "megagroup", False) else "chat")
+    members = getattr(entity, "participants_count", None)
+    try:
+        if kind == "chat":
+            full = await client(functions.messages.GetFullChatRequest(entity.id))
+        else:
+            full = await client(functions.channels.GetFullChannelRequest(entity))
+        members = getattr(full.full_chat, "participants_count", members)
+    except Exception:
+        # The count is best effort; a missing right must not fail the inspection.
+        pass
+    title = getattr(entity, "title", None) or getattr(entity, "username", None) \
+        or str(config["target"])
+    detail = {"title": title, "members": members, "kind": kind}
+    context["group"] = detail
+    return detail
+
+
+async def _read_table(config: dict, context: dict, account_id: str) -> dict:
+    from tables import read_column
+
+    operator = context.get("_operator")
+    if not operator:
+        raise RuntimeError("operator_required")
+    result = read_column(operator, config["table_id"], config["column_id"])
+    context["table_values"] = result["values"]
+    context["table"] = len(result["values"])
+    return {"rows": result["rows"], "values": len(result["values"])}
+
+
 async def _join_groups(config: dict, context: dict, account_id: str) -> dict:
     from telethon import errors, functions as tl_functions
 
     from telegram_ops import _parse_join_target
 
+    urls = (context.get("table_values") or []) if config.get("from_table") else config["urls"]
+    if not urls:
+        context["joined"] = 0
+        return {"joined": 0, "skipped": 0, "failed": 0, "stopped": "table_empty"}
+
     client = await _client(account_id)
     joined = skipped = failed = 0
-    for index, raw in enumerate(config["urls"]):
+    reasons: dict[str, int] = {}
+    for index, raw in enumerate(urls):
         target = _parse_join_target(raw)
-        try:
-            if target and target[0] == "invite":
-                await client(tl_functions.messages.ImportChatInviteRequest(target[1]))
-            elif target:
-                entity = await client.get_entity(target[1])
-                await client(tl_functions.channels.JoinChannelRequest(entity))
-            else:
-                failed += 1
-        except errors.UserAlreadyParticipantError:
-            skipped += 1
-        except errors.FloodWaitError as exc:
-            context["joined"] = joined
-            return {"joined": joined, "skipped": skipped, "failed": failed,
-                    "stopped": "telegram_cooldown", "wait_seconds": int(exc.seconds)}
-        except Exception:
+        if not target:
             failed += 1
-        if index < len(config["urls"]) - 1:
+            reasons["invalid_link"] = reasons.get("invalid_link", 0) + 1
+        else:
+            try:
+                if target[0] == "invite":
+                    await client(tl_functions.messages.ImportChatInviteRequest(target[1]))
+                else:
+                    entity = await client.get_entity(target[1])
+                    await client(tl_functions.channels.JoinChannelRequest(entity))
+            except errors.UserAlreadyParticipantError:
+                skipped += 1
+            except errors.FloodWaitError as exc:
+                context["joined"] = joined
+                return {"joined": joined, "skipped": skipped, "failed": failed,
+                        "reasons": reasons, "stopped": "telegram_cooldown",
+                        "wait_seconds": int(exc.seconds)}
+            except Exception as exc:
+                failed += 1
+                reason = _failure_reason(exc)
+                reasons[reason] = reasons.get(reason, 0) + 1
+            else:
+                joined += 1
+        if index < len(urls) - 1:
             await asyncio.sleep(config["delay"])
     context["joined"] = joined
-    return {"joined": joined, "skipped": skipped, "failed": failed}
+    return {"joined": joined, "skipped": skipped, "failed": failed, "reasons": reasons}
 
 
 async def _wait(config: dict, context: dict, account_id: str) -> dict:
@@ -487,6 +590,7 @@ async def _wait(config: dict, context: dict, account_id: str) -> dict:
 async def _notify_self(config: dict, context: dict, account_id: str) -> dict:
     text = config["text"]
     for token, value in (("{scraped}", context.get("scraped", "?")),
+                         ("{table}", context.get("table", "?")),
                          ("{joined}", context.get("joined", "?"))):
         text = text.replace(token, str(value))
     client = await _client(account_id)
@@ -496,11 +600,32 @@ async def _notify_self(config: dict, context: dict, account_id: str) -> dict:
 
 HANDLERS: dict[str, Callable[[dict, dict, str], Awaitable[dict]]] = {
     "scrape": _scrape_members,
-    "wait": _wait,
-    "join": _join_groups,
-    "notify": _notify_self,
+    "group_info": _group_info,
+    "table_read": _read_table,
     "table_append": _append_table,
+    "join": _join_groups,
+    "wait": _wait,
+    "notify": _notify_self,
 }
+
+_SAFE_REASONS = {"account_not_connected", "operator_required"}
+
+
+def _failure_reason(exc: BaseException) -> str:
+    """A short, safe reason. Exception text can carry tokens and peer data."""
+    text = str(exc)
+    if text in _SAFE_REASONS:
+        return text
+    if isinstance(exc, asyncio.TimeoutError):
+        return "timed_out"
+    name = type(exc).__name__
+    if (getattr(type(exc), "__module__", "") or "").startswith("telethon.") \
+            and name.endswith("Error"):
+        stem = name[:-5] if name.endswith("Error") else name
+        return "telegram_" + re.sub(r"(?<!^)(?=[A-Z])", "_", stem).lower()
+    if isinstance(exc, (ConnectionError, OSError)):
+        return "network"
+    return "step_failed"
 
 
 async def _run_account(nodes: dict, steps: list, context: dict, account_id: str,
@@ -519,9 +644,9 @@ async def _run_account(nodes: dict, steps: list, context: dict, account_id: str,
                 handler(node["config"], context, account_id), timeout=STEP_TIMEOUT_SECONDS)
         except asyncio.CancelledError:
             raise
-        except Exception:
-            # Never echo exception text: it can carry tokens or peer data.
-            step.update(status="failed", detail={"error": "step_failed"}, finished_at=_now())
+        except Exception as exc:
+            step.update(status="failed", detail={"error": _failure_reason(exc)},
+                        finished_at=_now())
             return "failed", None
         step.update(status="ok", detail=detail if isinstance(detail, dict) else {},
                     finished_at=_now())

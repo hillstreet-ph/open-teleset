@@ -30,7 +30,8 @@ test('unreachable, opted-out and non-consenting recipients are labelled as skips
 });
 function harness(post) {
   return { accessReady: true, authRevision: 1, outreachJobs: [], loadOutreachJobs() {}, apiErrorText, bulksend: { accountId: 'account', accountIds: [], rotationMode: 'single', perAccountLimit: 0,
-    consentConfirmed: true, delay: 0, message: 'test', messages: {}, targets: Array.from({length: 30}, (_,i)=>String(i+1)).join('\n') },
+    consentConfirmed: true, delay: 0, message: 'test', messages: {}, media: [], uploading: false, dragActive: false,
+    filterBots: true, activityFilter: 'all', targets: Array.from({length: 30}, (_,i)=>String(i+1)).join('\n') },
     runBulkSend: vm.runInNewContext(`({${method}}).runBulkSend`, { _api: { post }, crypto: { randomUUID } }) };
 }
 test('form submits over 20 recipients with zero delay and no approval', async () => {
@@ -41,10 +42,31 @@ test('form submits over 20 recipients with zero delay and no approval', async ()
   assert.equal(payload.delay, 0);
   assert.equal(payload.per_account_limit, 0);
   assert.equal(payload.consent_confirmed, true);
+  assert.deepEqual(payload.media_ids, []);
   assert.equal(Object.hasOwn(payload, 'approval_id'), false);
   assert.match(state.bulksend.resultMsg, /Queued/);
   assert.ok(payload.request_id);
   assert.equal(state.bulksend.requestId, '');
+});
+test('attachments ride along as media ids and captions stay inside the limit', async () => {
+  let payload;
+  const state = harness(async (path, body) => { payload = body; return {data: {id: 'job', state: 'queued'}}; });
+  state.bulksend.message = '';
+  state.bulksend.media = [{ id: 'media_1' }, { id: 'media_2' }];
+  await state.runBulkSend();
+  assert.deepEqual(payload.media_ids, ['media_1', 'media_2']);
+  assert.equal(payload.message, '');
+
+  const over = harness(async () => assert.fail('an over-long caption must not reach the API'));
+  over.bulksend.media = [{ id: 'media_1' }];
+  over.bulksend.message = 'x'.repeat(1025);
+  await over.runBulkSend();
+  assert.match(over.bulksend.resultMsg, /1024 characters/);
+
+  const silent = harness(async () => assert.fail('an empty attachment-only run needs a file'));
+  silent.bulksend.message = '';
+  await silent.runBulkSend();
+  assert.match(silent.bulksend.resultMsg, /attach a file/);
 });
 test('optional cap and negative delay still fail before network', async () => {
   for (const change of [{perAccountLimit: 1}, {delay: -1}]) {

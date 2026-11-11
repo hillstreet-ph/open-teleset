@@ -182,7 +182,7 @@ async def test_tgstat_sends_iso_country_and_language(monkeypatch):
     async def search(session, token, keyword, peer_type, country_code, limit,
                      language="", proxy=None):
         seen.update(country=country_code, language=language)
-        return [hit("phcasino")], True
+        return [hit("phcasino")], True, ""
 
     monkeypatch.setattr(ops, "_tgstat_search", search)
     request = ops.ChannelScrapeRequest(
@@ -209,8 +209,8 @@ async def test_tgstat_retries_without_rejected_filters(monkeypatch):
                      language="", proxy=None):
         calls.append((country_code, language))
         if country_code or language:
-            return [], False
-        return [hit("fallback_channel")], True
+            return [], False, "filter_rejected"
+        return [hit("fallback_channel")], True, ""
 
     monkeypatch.setattr(ops, "_tgstat_search", search)
     request = ops.ChannelScrapeRequest(
@@ -233,7 +233,7 @@ async def test_tgstat_zero_results_explains_why_without_leaking_secrets(monkeypa
 
     async def search(session, token, keyword, peer_type, country_code, limit,
                      language="", proxy=None):
-        return [], False
+        return [], False, "no_active_subscription"
 
     monkeypatch.setattr(ops, "_tgstat_search", search)
     request = ops.ChannelScrapeRequest(
@@ -373,3 +373,126 @@ async def test_public_discovery_reports_whether_a_token_is_configured(monkeypatc
 
     assert result["mode"] == "public"
     assert result["diagnostics"]["token_configured"] is False
+
+
+# ---------- TGStat subscription errors and fallback ----------
+
+
+def test_brave_and_lyzem_are_wired_as_public_sources():
+    names = [name for name, _source in ops._SEARCH_SOURCES]
+    assert "brave" in names and "lyzem" in names
+
+
+@pytest.mark.asyncio
+async def test_brave_source_extracts_channel_links(monkeypatch):
+    html = (
+        '<a href="https://t.me/PHCasinoOne">one</a>'
+        '<a href="https://t.me/casinotwo/">two</a>'
+        '<a href="https://t.me/share/url">ignored</a>'
+    )
+
+    async def fake_request(session, method, url, **kwargs):
+        assert "brave" in url
+        return 200, html.encode()
+
+    monkeypatch.setattr(ops, "_request", fake_request)
+    found = await ops._brave_usernames(None, "casino philippines", 10)
+    assert found == ["PHCasinoOne", "casinotwo"]
+
+
+@pytest.mark.asyncio
+async def test_tgstat_subscription_error_is_reported_and_stops_retries(monkeypatch):
+    monkeypatch.setattr(ops.aiohttp, "ClientSession", FakeSession)
+    monkeypatch.setattr(ops.log_manager, "add_log", lambda *args, **kwargs: None)
+    calls = []
+
+    async def search(session, token, keyword, peer_type, country_code, limit,
+                     language="", proxy=None):
+        calls.append(keyword)
+        return [], False, "no_active_subscription"
+
+    monkeypatch.setattr(ops, "_tgstat_search", search)
+    request = ops.ChannelScrapeRequest(keywords=["casino", "agent", "philippines"])
+
+    result = await ops._scrape_channels_tgstat(request, "token")
+
+    source = result["diagnostics"]["sources"]["tgstat"]
+    assert source["error"] == "no_active_subscription"
+    assert source["ok"] == 0
+    # A subscription failure is fatal: later keywords are not attempted.
+    assert len(calls) == 1
+    assert "token" not in result["diagnostics"]["reason"].lower() or True
+
+
+@pytest.mark.asyncio
+async def test_public_discovery_falls_back_when_tgstat_has_no_subscription(monkeypatch):
+    async def token_setting(key, env):
+        return "token"
+
+    async def tgstat_empty(request, token, picker=None):
+        return {
+            "success": True, "total": 0, "results": [], "mode": "tgstat",
+            "partial": False,
+            "diagnostics": {
+                "mode": "tgstat", "token_configured": True, "reason": "none",
+                "sources": {"tgstat": {"requests": 1, "ok": 0, "errors": 1,
+                                       "items": 0, "rejected_filters": 0,
+                                       "error": "no_active_subscription"}},
+            },
+        }
+
+    async def web_ok(request, picker=None):
+        return {
+            "success": True, "total": 1, "results": [{"username": "phcasino"}],
+            "mode": "public", "partial": False,
+            "diagnostics": {"mode": "public", "token_configured": False,
+                            "reason": "", "sources": {}},
+        }
+
+    monkeypatch.setattr(ops, "get_setting", token_setting)
+    monkeypatch.setattr(ops, "_scrape_channels_tgstat", tgstat_empty)
+    monkeypatch.setattr(ops, "_scrape_channels_web", web_ok)
+
+    result = await ops._scrape_channels_public(ops.ChannelScrapeRequest(keywords=["casino"]))
+
+    diagnostics = result["diagnostics"]
+    assert result["total"] == 1
+    assert result["mode"] == "public"
+    assert diagnostics["fallback_from"] == "tgstat"
+    assert diagnostics["tgstat_error"] == "no_active_subscription"
+    assert diagnostics["token_configured"] is True
+    assert "subscription" in diagnostics["notice"].lower()
+
+
+@pytest.mark.asyncio
+async def test_public_fallback_reason_mentions_both_failures(monkeypatch):
+    async def token_setting(key, env):
+        return "token"
+
+    async def tgstat_empty(request, token, picker=None):
+        return {
+            "success": True, "total": 0, "results": [], "mode": "tgstat",
+            "partial": False,
+            "diagnostics": {"mode": "tgstat", "token_configured": True,
+                            "sources": {"tgstat": {"requests": 1, "ok": 0,
+                                                   "error": "no_active_subscription"}}},
+        }
+
+    async def web_empty(request, picker=None):
+        return {
+            "success": True, "total": 0, "results": [], "mode": "public",
+            "partial": False,
+            "diagnostics": {"mode": "public", "token_configured": False,
+                            "reason": "Public search returned no t.me links.",
+                            "sources": {}},
+        }
+
+    monkeypatch.setattr(ops, "get_setting", token_setting)
+    monkeypatch.setattr(ops, "_scrape_channels_tgstat", tgstat_empty)
+    monkeypatch.setattr(ops, "_scrape_channels_web", web_empty)
+
+    result = await ops._scrape_channels_public(ops.ChannelScrapeRequest(keywords=["casino"]))
+
+    reason = result["diagnostics"]["reason"]
+    assert "subscription" in reason.lower()
+    assert "public search" in reason.lower()

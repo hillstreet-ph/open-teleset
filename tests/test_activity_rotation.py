@@ -217,7 +217,7 @@ async def test_tgstat_scraper_used_when_token_set(monkeypatch):
             {"id": "usadeals", "title": "USA Deals", "username": "usadeals",
              "url": "https://t.me/usadeals", "type": "channel", "members": 5,
              "verified": False, "about": "deals in the usa"},
-        ], True
+        ], True, ""
     monkeypatch.setattr(ops, "_tgstat_search", fake_search)
     res = await ops.scrape_channels(ops.ChannelScrapeRequest(keywords=["casino"], country="philippines"))
     assert res["mode"] == "tgstat"

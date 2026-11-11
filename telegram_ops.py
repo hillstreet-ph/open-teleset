@@ -23,6 +23,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, model_validator
 from telethon import errors, functions, types, utils
 
+import bulk_media
 from open_teleset.app_settings import get_setting
 
 from account_manager import account_manager
@@ -194,9 +195,12 @@ class BulkSendRequest(BaseModel):
     account_ids: List[str] = Field(default_factory=list)
     per_account_limit: int = Field(default=0, ge=0, strict=True)  # 0 = unlimited
     consent_confirmed: bool = Field(default=False, strict=True)
+    media_ids: List[str] = Field(default_factory=list)  # operator-owned uploads
 
     @model_validator(mode="after")
     def validate_accounts(self):
+        if len(self.media_ids) > bulk_media.MAX_ITEMS:
+            raise ValueError(f"At most {bulk_media.MAX_ITEMS} attachments per send")
         normalized = {}
         targets = {t.strip().lower().lstrip("@") for t in self.targets}
         for key, value in self.messages.items():
@@ -207,7 +211,12 @@ class BulkSendRequest(BaseModel):
                 raise ValueError("Conflicting messages for the same recipient")
             normalized[recipient] = value
         self.messages = normalized
-        if not self.message.strip() and not self.template_id and any(t not in normalized for t in targets):
+        if self.media_ids:
+            # Telegram shows a caption under a file, capped at 1024 characters.
+            if len(self.message) > 1024 or any(len(v) > 1024 for v in normalized.values()):
+                raise ValueError("A caption is limited to 1024 characters when a file is attached")
+        if (not self.media_ids and not self.message.strip() and not self.template_id
+                and any(t not in normalized for t in targets)):
             raise ValueError("A message is required for every recipient")
         if self.template_id and self.messages:
             raise ValueError("Choose either template or CSV messages")
@@ -895,8 +904,41 @@ async def _bing_usernames(session, keyword, want, proxy=None):
     return _usernames_from_html(body.decode("utf-8", "replace"), want)
 
 
+async def _brave_usernames(session, keyword, want, proxy=None):
+    status, body = await _request(
+        session, "GET", "https://search.brave.com/search",
+        params={"q": f"site:t.me {keyword}"}, proxy=proxy, timeout=10,
+        headers={"Accept": "text/html,application/xhtml+xml",
+                 "Accept-Language": "en-US,en;q=0.9"},
+    )
+    if status != 200:
+        raise aiohttp.ClientConnectionError(f"search source returned HTTP {status}")
+    return _usernames_from_html(body.decode("utf-8", "replace"), want)
+
+
+# Lyzem links its own channel on every result page; it is never a match.
+_LYZEM_NOISE = {"lyzemcom"}
+
+
+async def _lyzem_usernames(session, keyword, want, proxy=None):
+    status, body = await _request(
+        session, "GET", "https://lyzem.com/search",
+        params={"q": keyword, "type": "all"}, proxy=proxy, timeout=10,
+        headers={"Accept": "text/html,application/xhtml+xml",
+                 "Accept-Language": "en-US,en;q=0.9"},
+    )
+    if status != 200:
+        raise aiohttp.ClientConnectionError(f"search source returned HTTP {status}")
+    names = _usernames_from_html(body.decode("utf-8", "replace"), want + len(_LYZEM_NOISE))
+    return [name for name in names if name.lower() not in _LYZEM_NOISE][:want]
+
+
 # Tried in parallel; the first one that returns candidates wins.
+# Brave and Lyzem answer from datacenter IPs where DuckDuckGo and Bing often
+# rate-limit the server, so they lead the race.
 _SEARCH_SOURCES = (
+    ("brave", _brave_usernames),
+    ("lyzem", _lyzem_usernames),
     ("duckduckgo", _ddg_lite_usernames),
     ("duckduckgo_html", _ddg_html_usernames),
     ("mojeek", _mojeek_usernames),
@@ -951,9 +993,30 @@ def _parse_tgstat_item(item, fallback_type):
     }
 
 
+# TGStat error strings that mean no keyword can succeed: the credential itself
+# is unusable, so retrying the remaining keywords only burns time.
+_TGSTAT_FATAL_ERRORS = {
+    "no_active_subscription",
+    "invalid_token",
+    "token_not_found",
+    "unauthorized",
+    "http_401",
+    "http_403",
+}
+
+
+def _tgstat_error_is_fatal(error: str) -> bool:
+    return bool(error) and error in _TGSTAT_FATAL_ERRORS
+
+
 async def _tgstat_search(session, token, keyword, peer_type, country_code, limit,
                          language="", proxy=None):
-    """Return (normalised items, whether TGStat answered successfully)."""
+    """Return (normalised items, whether TGStat answered successfully, error code).
+
+    The error code is TGStat's own `error` string when it reports one (for
+    example `no_active_subscription`), otherwise `http_<status>`, `timeout`, or
+    `bad_response`. It never contains the request URL or the token.
+    """
     params = {"token": token, "q": keyword, "search_by_description": "1",
               "peer_type": peer_type, "limit": str(min(max(limit, 1), 100))}
     if country_code:
@@ -964,20 +1027,23 @@ async def _tgstat_search(session, token, keyword, peer_type, country_code, limit
         status, body = await _request(
             session, "GET", _TGSTAT_SEARCH_URL, params=params, proxy=proxy, timeout=15)
     except (aiohttp.ClientError, asyncio.TimeoutError):
-        return [], False
+        return [], False, "timeout"
     if status != 200:
-        return [], False
+        return [], False, f"http_{status}"
     try:
         data = json.loads(body.decode("utf-8", "replace"))
     except ValueError:
-        return [], False
-    if not isinstance(data, dict) or data.get("status") != "ok":
-        return [], False
+        return [], False, "bad_response"
+    if not isinstance(data, dict):
+        return [], False, "bad_response"
+    if data.get("status") != "ok":
+        error = str(data.get("error") or "").strip()
+        return [], False, error or "bad_response"
     response = data.get("response")
     items = response.get("items") if isinstance(response, dict) else None
     if not isinstance(items, list):
-        return [], True
-    return [info for info in (_parse_tgstat_item(it, peer_type) for it in items) if info], True
+        return [], True, ""
+    return [info for info in (_parse_tgstat_item(it, peer_type) for it in items) if info], True, ""
 
 
 KEYWORD_SEARCH_BUDGET = 90.0  # seconds; queued keywords past this are reported as partial
@@ -1020,37 +1086,56 @@ async def _scrape_channels_tgstat(request: ChannelScrapeRequest, token, picker=N
     iso_country, country_tokens = resolve_country(request.country)
     language_code = resolve_language(request.language)
     picker = _picker_for(request, picker)
-    stats = {"requests": 0, "ok": 0, "errors": 0, "items": 0, "rejected_filters": 0}
+    stats = {"requests": 0, "ok": 0, "errors": 0, "items": 0,
+             "rejected_filters": 0, "error": ""}
     seen: set = set()
     results: list = []
     async with aiohttp.ClientSession(headers=_BROWSER_HEADERS) as session:
-        # Search every keyword concurrently; a runaway keyword list must not
-        # push the whole request past the dashboard's 120 s timeout.
-        async def search(keyword):
+        async def lookup(keyword):
             stats["requests"] += 1
             proxy = picker.pick()
-            infos, ok = await _tgstat_search(
+            infos, ok, error = await _tgstat_search(
                 session, token, keyword, peer_type, iso_country, request.limit,
                 language_code, proxy=proxy)
-            if not ok and (iso_country or language_code):
+            if not ok and (iso_country or language_code) and not _tgstat_error_is_fatal(error):
                 stats["requests"] += 1
-                infos, ok = await _tgstat_search(
+                infos, ok, error = await _tgstat_search(
                     session, token, keyword, peer_type, "", request.limit, "",
                     proxy=picker.pick())
                 if ok:
                     stats["rejected_filters"] += 1
-            if not ok and proxy:
+            if not ok and proxy and not _tgstat_error_is_fatal(error):
                 # A dead proxy must not hide the directory behind it.
                 picker.fallbacks += 1
                 stats["requests"] += 1
-                infos, ok = await _tgstat_search(
+                infos, ok, error = await _tgstat_search(
                     session, token, keyword, peer_type, "", request.limit, "")
             stats["ok" if ok else "errors"] += 1
             stats["items"] += len(infos)
-            return infos, ok
+            if not ok and error and not stats["error"]:
+                stats["error"] = error
+            return infos, ok, error
 
-        per_keyword, skipped = await _gather_keywords(
-            request.keywords, search, KEYWORD_SEARCH_BUDGET, concurrency=8)
+        # Probe one keyword first: an unusable credential fails on the first
+        # request, so the remaining keywords are skipped instead of all racing
+        # into the same error.
+        keywords = list(request.keywords)
+        per_keyword: list = []
+        skipped: list = []
+        started = time.monotonic()
+        if keywords:
+            infos, ok, error = await lookup(keywords[0])
+            per_keyword.append((keywords[0], (infos, ok)))
+            if ok or not _tgstat_error_is_fatal(error):
+                # Search the rest concurrently; a runaway keyword list must not
+                # push the whole request past the dashboard's 120 s timeout. The
+                # probe already spent part of the budget.
+                remaining = max(0.0, KEYWORD_SEARCH_BUDGET - (time.monotonic() - started))
+                gathered, skipped = await _gather_keywords(
+                    keywords[1:], lookup, remaining, concurrency=8)
+                per_keyword.extend(
+                    (keyword, (found[0], found[1])) if found else (keyword, None)
+                    for keyword, found in gathered)
         # Text matching is only a stand-in when TGStat has no ISO filter for the
         # input. Once an ISO filter is rejected, the returned rows are simply
         # keyword matches and must not be dropped by a guessed country name.
@@ -1078,7 +1163,14 @@ async def _scrape_channels_tgstat(request: ChannelScrapeRequest, token, picker=N
     partial = bool(skipped)
     reason = ""
     if not results:
-        if stats["ok"] == 0:
+        if stats["error"] == "no_active_subscription":
+            reason = ("TGStat rejected the request: TGSTAT_TOKEN has no active TGStat API "
+                      "subscription. Enable the subscription or clear the token to use "
+                      "public search.")
+        elif stats["error"]:
+            reason = (f"TGStat did not answer any keyword ({stats['error']}). "
+                      "Check TGSTAT_TOKEN and try again.")
+        elif stats["ok"] == 0:
             reason = ("TGStat did not answer any keyword. Check TGSTAT_TOKEN and try again.")
         elif stats["rejected_filters"]:
             reason = ("TGStat rejected the country or language filter and still found no "
@@ -1120,17 +1212,57 @@ async def _scrape_channels_tgstat(request: ChannelScrapeRequest, token, picker=N
     }
 
 
+def _tgstat_failure_sentence(error: str, result) -> str:
+    """One sentence explaining why TGStat returned nothing, safe to show."""
+    if error == "no_active_subscription":
+        return "TGSTAT_TOKEN has no active TGStat subscription."
+    if error:
+        return f"TGStat returned an error ({error})."
+    return (result.get("diagnostics", {}).get("reason")
+            or "TGStat returned no matches.")
+
+
+def _tgstat_fallback_notice(error: str) -> str:
+    if error == "no_active_subscription":
+        return ("TGStat has no active subscription for TGSTAT_TOKEN; showing public "
+                "search results instead.")
+    if error:
+        return f"TGStat returned no results ({error}); showing public search results instead."
+    return "TGStat returned no results; showing public search results instead."
+
+
 async def _scrape_channels_public(request: ChannelScrapeRequest):
     """Account-free discovery. Uses the TGStat directory API when TGSTAT_TOKEN is
-    configured (reliable, searches title + description, native country filter);
-    otherwise falls back to best-effort public web discovery. The token comes
-    from the TGSTAT_TOKEN env var or the operations_shared.app_settings store."""
+    configured (reliable, searches title + description, native country filter),
+    and falls back to public web discovery when TGStat finds nothing. The token
+    comes from the TGSTAT_TOKEN env var or the operations_shared.app_settings
+    store."""
     token = await get_setting("tgstat_token", "TGSTAT_TOKEN")
     pool = await configured_proxy_urls() if request.proxy_mode == "pool" else []
     picker = ProxyPicker(request.proxy_urls if request.proxy_mode == "custom" else pool)
-    if token:
-        return await _scrape_channels_tgstat(request, token, picker=picker)
-    return await _scrape_channels_web(request, picker=picker)
+    if not token:
+        return await _scrape_channels_web(request, picker=picker)
+    result = await _scrape_channels_tgstat(request, token, picker=picker)
+    if result["total"]:
+        return result
+
+    # A valid token can still return nothing — most often because the account
+    # has no TGStat API subscription. Public search is a worse directory but a
+    # working one, so never report zero while it is available.
+    fallback = await _scrape_channels_web(request, picker=picker)
+    diagnostics = fallback["diagnostics"]
+    error = ((result.get("diagnostics", {}).get("sources", {}).get("tgstat", {}) or {})
+             .get("error", ""))
+    diagnostics["fallback_from"] = "tgstat"
+    diagnostics["tgstat_error"] = error
+    diagnostics["token_configured"] = True
+    if fallback["total"]:
+        diagnostics["notice"] = _tgstat_fallback_notice(error)
+    else:
+        diagnostics["reason"] = (
+            f"TGStat: {_tgstat_failure_sentence(error, result)} "
+            f"Public search: {diagnostics.get('reason') or 'no results.'}")
+    return fallback
 
 
 _PUBLIC_SEARCH_BUDGET = 55.0  # seconds; leaves room for previews inside the client timeout
@@ -1575,6 +1707,18 @@ async def bulk_send_personal(request: BulkSendRequest, http_request: Request = N
         if request.per_account_limit and len(targets) > len(account_ids) * request.per_account_limit:
             raise HTTPException(status_code=400, detail="Per-account run limit exceeded")
         operator = getattr(getattr(http_request, "state", None), "user", None)
+        media = []
+        if request.media_ids:
+            if not operator or not getattr(operator, "id", None):
+                raise HTTPException(status_code=403, detail="Authenticated operator required")
+            try:
+                media = bulk_media.resolve(request.media_ids, str(operator.id))
+            except HTTPException as error:
+                if error.status_code == 404:
+                    raise HTTPException(status_code=400,
+                                        detail="Unknown attachment; upload it again.") from None
+                raise
+        media_paths = [item["path"] for item in media]
         if request.consent_confirmed:
             if not operator or not operator.id:
                 raise HTTPException(status_code=403, detail="Authenticated operator required")
@@ -1613,8 +1757,17 @@ async def bulk_send_personal(request: BulkSendRequest, http_request: Request = N
             except Exception:
                 pass  # fall back to request.message
 
-        if (not message_text.strip() and any(t not in request.messages for t in targets)) or len(message_text) > 4096:
+        if media_paths:
+            if len(message_text) > 1024 or any(len(v) > 1024 for v in request.messages.values()):
+                raise HTTPException(status_code=400, detail="A caption is limited to 1024 characters when a file is attached")
+        elif (not message_text.strip() and any(t not in request.messages for t in targets)) or len(message_text) > 4096:
             raise HTTPException(status_code=400, detail="A valid message or renderable template is required")
+
+        async def deliver(client, entity, text):
+            if media_paths:
+                payload = media_paths[0] if len(media_paths) == 1 else media_paths
+                return await client.send_file(entity, payload, caption=text or None)
+            return await client.send_message(entity, text)
 
         results = []
         sent = 0
@@ -1658,7 +1811,8 @@ async def bulk_send_personal(request: BulkSendRequest, http_request: Request = N
                         outreach_policy.record_personal_consents([resolved_peer], account_id, operator.id)
                     await dispatch_outreach(action="personal_send", subject=resolved_peer,
                         account_id=account_id, approval_id=request.approval_id, delay=request.delay,
-                        send=lambda c=client, e=entity: c.send_message(e, request.messages.get(target, message_text)))
+                        send=lambda c=client, e=entity, t=target: deliver(
+                            c, e, request.messages.get(t, message_text)))
                     outcome = ("sent", "", account_id)
                     break
                 except account_limit_errors as exc:
