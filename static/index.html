@@ -3,30 +3,552 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <meta name="description" content="open-teleset — Telegram Multi-Account Manager"/>
-  <meta name="keywords" content="telegram, multi-account, manager, bot, automation"/>
-  <meta property="og:title" content="open-teleset"/>
-  <meta property="og:description" content="Telegram Multi-Account Manager with scheduling, bulk messaging and AI tools"/>
+  <meta name="description" content="open-teleset — Professional Telegram Multi-Account Management Platform. Mass autojoin, member scraping, bulk outreach, and account automation in one secure dashboard."/>
+  <meta name="keywords" content="telegram, multi-account, manager, mass join, member scraper, bulk messaging, automation, outreach"/>
+  <meta property="og:title" content="open-teleset · Telegram Management Platform"/>
+  <meta property="og:description" content="Mass autojoin, member scraping, and bulk outreach for Telegram. Manage multiple accounts from one secure dashboard."/>
   <meta property="og:url" content="https://open-teleset.site"/>
-  <title>open-teleset · Telegram Multi-Account Manager</title>
-  <link rel="canonical" href="https://open-teleset.site/dashboard"/>
+  <meta property="og:type" content="website"/>
+  <title>open-teleset · Telegram Management Platform</title>
   <script src="/config.js"></script>
-  <script>
-    // Redirect immediately to dashboard
-    window.location.replace("/dashboard");
-  </script>
   <style>
-    body { margin:0; background:#1a1a2e; display:flex; align-items:center; justify-content:center; min-height:100vh; font-family:system-ui,sans-serif; }
-    .loader { text-align:center; color:#e0e0e0; }
-    .spinner { width:48px; height:48px; border:3px solid rgba(102,126,234,.3); border-top-color:#667eea; border-radius:50%; animation:spin .8s linear infinite; margin:0 auto 20px; }
-    @keyframes spin { to { transform:rotate(360deg); } }
-    a { color:#667eea; }
+    :root {
+      --bg: #0f0f1a;
+      --surface: #1a1a2e;
+      --surface2: #16213e;
+      --border: rgba(102,126,234,.18);
+      --accent: #667eea;
+      --accent2: #764ba2;
+      --accent-hover: #7b93f5;
+      --text: #e8e8f0;
+      --muted: #8a8aa8;
+      --success: #48bb78;
+      --warning: #f6ad55;
+      --danger: #fc8181;
+    }
+    *,*::before,*::after { box-sizing:border-box; margin:0; padding:0; }
+    html { scroll-behavior: smooth; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+      line-height: 1.6;
+      min-height: 100vh;
+    }
+
+    /* ── NAV ── */
+    nav {
+      position: sticky; top: 0; z-index: 100;
+      background: rgba(15,15,26,.92);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+      padding: 0 24px;
+      display: flex; align-items: center; justify-content: space-between;
+      height: 60px;
+    }
+    .nav-brand {
+      font-size: 1.1rem; font-weight: 700;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      background-clip: text;
+      text-decoration: none;
+    }
+    .nav-links { display: flex; gap: 8px; align-items: center; }
+    .nav-link {
+      color: var(--muted); text-decoration: none; font-size: .875rem;
+      padding: 6px 12px; border-radius: 6px; transition: color .2s, background .2s;
+    }
+    .nav-link:hover { color: var(--text); background: rgba(102,126,234,.1); }
+    .nav-cta {
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      color: #fff !important;
+      padding: 7px 18px; border-radius: 8px; font-weight: 600;
+      text-decoration: none; font-size: .875rem;
+      transition: opacity .2s, transform .15s;
+    }
+    .nav-cta:hover { opacity: .9; transform: translateY(-1px); }
+
+    /* ── HERO ── */
+    .hero {
+      min-height: calc(100vh - 60px);
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      text-align: center; padding: 60px 24px;
+      background: radial-gradient(ellipse 80% 60% at 50% -10%, rgba(102,126,234,.18) 0%, transparent 60%);
+    }
+    .hero-badge {
+      display: inline-flex; align-items: center; gap: 6px;
+      background: rgba(102,126,234,.12); border: 1px solid rgba(102,126,234,.3);
+      color: var(--accent); font-size: .78rem; font-weight: 600;
+      padding: 5px 14px; border-radius: 999px; margin-bottom: 28px;
+      letter-spacing: .04em; text-transform: uppercase;
+    }
+    .hero-badge span { font-size: .9em; }
+    h1 {
+      font-size: clamp(2.2rem, 6vw, 3.8rem); font-weight: 800;
+      line-height: 1.12; letter-spacing: -.02em;
+      max-width: 820px; margin-bottom: 20px;
+    }
+    h1 .gradient {
+      background: linear-gradient(135deg, var(--accent) 0%, #a78bfa 50%, var(--accent2) 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .hero-desc {
+      font-size: 1.1rem; color: var(--muted); max-width: 580px;
+      margin: 0 auto 40px;
+    }
+    .hero-actions { display: flex; gap: 14px; flex-wrap: wrap; justify-content: center; }
+    .btn-primary {
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      color: #fff; border: none; cursor: pointer;
+      padding: 13px 32px; border-radius: 10px; font-size: 1rem;
+      font-weight: 700; text-decoration: none; transition: transform .15s, box-shadow .15s;
+      box-shadow: 0 4px 24px rgba(102,126,234,.35);
+    }
+    .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 8px 32px rgba(102,126,234,.45); }
+    .btn-secondary {
+      background: rgba(102,126,234,.1); color: var(--accent);
+      border: 1px solid rgba(102,126,234,.35); cursor: pointer;
+      padding: 13px 32px; border-radius: 10px; font-size: 1rem;
+      font-weight: 600; text-decoration: none; transition: background .2s, transform .15s;
+    }
+    .btn-secondary:hover { background: rgba(102,126,234,.18); transform: translateY(-1px); }
+
+    /* ── STATS ── */
+    .stats-row {
+      display: flex; gap: 40px; flex-wrap: wrap; justify-content: center;
+      margin-top: 56px; padding-top: 40px;
+      border-top: 1px solid var(--border); width: 100%; max-width: 740px;
+    }
+    .stat { text-align: center; }
+    .stat-num { font-size: 2rem; font-weight: 800; color: var(--accent); }
+    .stat-label { font-size: .78rem; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-top: 2px; }
+
+    /* ── SECTIONS ── */
+    section { padding: 80px 24px; max-width: 1120px; margin: 0 auto; }
+    .section-label {
+      font-size: .78rem; font-weight: 700; letter-spacing: .1em;
+      text-transform: uppercase; color: var(--accent); margin-bottom: 12px;
+    }
+    h2 { font-size: clamp(1.6rem, 3.5vw, 2.4rem); font-weight: 800; margin-bottom: 16px; }
+    .section-desc { color: var(--muted); font-size: 1.05rem; max-width: 580px; margin-bottom: 48px; }
+
+    /* ── FEATURES GRID ── */
+    .features-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 20px;
+    }
+    .feature-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 14px; padding: 28px;
+      transition: border-color .25s, transform .2s;
+    }
+    .feature-card:hover { border-color: rgba(102,126,234,.45); transform: translateY(-3px); }
+    .feature-icon {
+      width: 44px; height: 44px; border-radius: 10px; margin-bottom: 16px;
+      display: flex; align-items: center; justify-content: center; font-size: 1.3rem;
+      background: linear-gradient(135deg, rgba(102,126,234,.2), rgba(118,75,162,.2));
+      border: 1px solid rgba(102,126,234,.2);
+    }
+    .feature-card h3 { font-size: 1rem; font-weight: 700; margin-bottom: 8px; }
+    .feature-card p { font-size: .88rem; color: var(--muted); line-height: 1.6; }
+
+    /* ── PLATFORM WALKTHROUGH ── */
+    .walkthrough { background: var(--surface); border-radius: 20px; padding: 48px; margin-top: 20px; border: 1px solid var(--border); }
+    .walkthrough-tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 36px; }
+    .wtab {
+      padding: 8px 18px; border-radius: 8px; font-size: .88rem; font-weight: 600;
+      cursor: pointer; border: 1px solid var(--border); background: transparent;
+      color: var(--muted); transition: all .2s;
+    }
+    .wtab.active, .wtab:hover { background: rgba(102,126,234,.15); border-color: rgba(102,126,234,.4); color: var(--text); }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+    .tab-panel h3 { font-size: 1.3rem; font-weight: 700; margin-bottom: 12px; }
+    .tab-panel p { color: var(--muted); margin-bottom: 20px; font-size: .95rem; }
+    .step-list { list-style: none; display: flex; flex-direction: column; gap: 12px; }
+    .step-list li {
+      display: flex; gap: 14px; align-items: flex-start;
+      background: var(--bg); border: 1px solid var(--border);
+      border-radius: 10px; padding: 14px 18px;
+    }
+    .step-num {
+      flex-shrink: 0; width: 26px; height: 26px; border-radius: 50%;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      display: flex; align-items: center; justify-content: center;
+      font-size: .75rem; font-weight: 800; color: #fff;
+    }
+    .step-list li span { font-size: .9rem; color: var(--text); }
+    .step-list li span strong { color: #fff; }
+    .step-list li span .tag {
+      display: inline-block; font-size: .7rem; font-weight: 700;
+      padding: 2px 8px; border-radius: 4px; margin-left: 6px;
+      background: rgba(102,126,234,.18); color: var(--accent); letter-spacing: .02em;
+    }
+
+    /* ── HOW IT WORKS ── */
+    .how-row { display: flex; gap: 0; flex-wrap: wrap; }
+    .how-step {
+      flex: 1 1 200px; text-align: center; padding: 24px;
+      position: relative;
+    }
+    .how-step + .how-step::before {
+      content: '→'; position: absolute; left: 0; top: 50%;
+      transform: translateY(-50%); color: var(--border); font-size: 1.4rem;
+    }
+    .how-num {
+      width: 52px; height: 52px; margin: 0 auto 16px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1.1rem; font-weight: 800; color: #fff;
+    }
+    .how-step h4 { font-size: .95rem; font-weight: 700; margin-bottom: 6px; }
+    .how-step p { font-size: .84rem; color: var(--muted); }
+
+    /* ── CTA BANNER ── */
+    .cta-banner {
+      background: linear-gradient(135deg, rgba(102,126,234,.15), rgba(118,75,162,.15));
+      border: 1px solid rgba(102,126,234,.25); border-radius: 20px;
+      padding: 60px 40px; text-align: center; margin: 0 24px 80px;
+    }
+    .cta-banner h2 { margin-bottom: 12px; }
+    .cta-banner p { color: var(--muted); margin-bottom: 32px; font-size: 1rem; }
+
+    /* ── FOOTER ── */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 32px 24px;
+      text-align: center; color: var(--muted); font-size: .84rem;
+    }
+    footer a { color: var(--accent); text-decoration: none; }
+    footer a:hover { text-decoration: underline; }
+
+    /* ── RESPONSIVE ── */
+    @media (max-width: 600px) {
+      .nav-links .nav-link { display: none; }
+      .walkthrough { padding: 28px 20px; }
+      .cta-banner { padding: 40px 20px; margin: 0 16px 60px; }
+      .how-step + .how-step::before { display: none; }
+    }
   </style>
 </head>
 <body>
-  <div class="loader">
-    <div class="spinner"></div>
-    <p>Loading <a href="/dashboard">open-teleset</a>…</p>
+
+<!-- Navigation -->
+<nav>
+  <a href="/" class="nav-brand">open-teleset</a>
+  <div class="nav-links">
+    <a href="#features" class="nav-link">Features</a>
+    <a href="#how-it-works" class="nav-link">How It Works</a>
+    <a href="#platform" class="nav-link">Platform</a>
+    <a href="/dashboard" class="nav-cta">Open Dashboard →</a>
   </div>
+</nav>
+
+<!-- Hero -->
+<div class="hero">
+  <div class="hero-badge"><span>⚡</span> Telegram Automation Platform</div>
+  <h1>Manage Telegram at <span class="gradient">Scale</span></h1>
+  <p class="hero-desc">
+    Mass autojoin, member scraping, bulk outreach, and multi-account management —
+    all from one secure, server-side dashboard.
+    No browser redirects. No third-party apps.
+  </p>
+  <div class="hero-actions">
+    <a href="/dashboard" class="btn-primary">Open Dashboard</a>
+    <a href="#features" class="btn-secondary">Explore Features</a>
+  </div>
+  <div class="stats-row">
+    <div class="stat">
+      <div class="stat-num">∞</div>
+      <div class="stat-label">Accounts Supported</div>
+    </div>
+    <div class="stat">
+      <div class="stat-num">MTProto</div>
+      <div class="stat-label">Native Protocol</div>
+    </div>
+    <div class="stat">
+      <div class="stat-num">100%</div>
+      <div class="stat-label">Server-Side</div>
+    </div>
+    <div class="stat">
+      <div class="stat-num">Bulk</div>
+      <div class="stat-label">Operations Ready</div>
+    </div>
+  </div>
+</div>
+
+<!-- Features -->
+<section id="features">
+  <div class="section-label">Core Features</div>
+  <h2>Everything you need to operate Telegram at scale</h2>
+  <p class="section-desc">
+    Built on Telethon MTProto — the same native protocol Telegram uses.
+    All operations run server-side, keeping your devices and credentials safe.
+  </p>
+  <div class="features-grid">
+
+    <div class="feature-card">
+      <div class="feature-icon">🚀</div>
+      <h3>Mass Autojoin</h3>
+      <p>
+        Join hundreds of Telegram channels and groups in bulk using multiple accounts simultaneously.
+        Paste a list of t.me links — the platform queues them as a durable background job,
+        handles flood-wait errors automatically, and reports each result.
+        Supports round-robin rotation across accounts.
+      </p>
+    </div>
+
+    <div class="feature-card">
+      <div class="feature-icon">🔍</div>
+      <h3>Member Scraper</h3>
+      <p>
+        Extract member lists from any public group or channel you have access to.
+        When a channel hides its participant list, the platform falls back to scanning
+        recent messages to collect unique active members — so you still get results
+        even on privacy-restricted groups.
+      </p>
+    </div>
+
+    <div class="feature-card">
+      <div class="feature-icon">📋</div>
+      <h3>Bulk Target Scraping</h3>
+      <p>
+        Process multiple scrape targets in a single run. Paste one channel or group
+        per line — Apify-style — and the platform scrapes all targets in sequence,
+        combining results or delivering per-target exports. Ideal for competitor
+        research and audience building at scale.
+      </p>
+    </div>
+
+    <div class="feature-card">
+      <div class="feature-icon">📢</div>
+      <h3>Bulk Message Sender</h3>
+      <p>
+        Send personalised or broadcast messages to lists of users across your
+        connected accounts. Supports scheduling, rotation mode (spread load across
+        multiple accounts), and per-message delay tuning to stay within
+        Telegram's rate limits.
+      </p>
+    </div>
+
+    <div class="feature-card">
+      <div class="feature-icon">👤</div>
+      <h3>Account Manager</h3>
+      <p>
+        Onboard and manage multiple Telegram accounts in one place. Each account
+        connects via secure MTProto session files encrypted at rest.
+        Monitor account health, session status, and connectivity — no need to
+        keep a device logged in.
+      </p>
+    </div>
+
+    <div class="feature-card">
+      <div class="feature-icon">📅</div>
+      <h3>Scheduler</h3>
+      <p>
+        Schedule recurring tasks — joins, outreach runs, scrape jobs — to run
+        automatically at set times. The scheduler persists across deployments,
+        ensuring your automation continues uninterrupted even after updates
+        or server restarts.
+      </p>
+    </div>
+
+    <div class="feature-card">
+      <div class="feature-icon">📊</div>
+      <h3>Job Progress Tracker</h3>
+      <p>
+        Every background operation (autojoin, bulk send, scrape) is tracked as
+        a durable job with real-time status. See queued, running, completed, and
+        failed counts. Expand any job card to inspect per-link results with
+        timestamps and error reasons.
+      </p>
+    </div>
+
+    <div class="feature-card">
+      <div class="feature-icon">🤖</div>
+      <h3>MCP / AI Agent Tools</h3>
+      <p>
+        Expose platform capabilities as MCP (Model Context Protocol) tools for
+        AI agents. Automate complex workflows by connecting open-teleset to
+        Claude, ChatGPT, or any agent framework — with built-in auth,
+        rate limiting, and audit logging.
+      </p>
+    </div>
+
+  </div>
+</section>
+
+<!-- How It Works -->
+<section id="how-it-works" style="text-align:center; padding-top:0;">
+  <div class="section-label">How It Works</div>
+  <h2>From setup to running in minutes</h2>
+  <p class="section-desc" style="margin:0 auto 48px;">
+    open-teleset runs entirely on your own infrastructure.
+    Your Telegram sessions never leave the server.
+  </p>
+  <div class="how-row">
+    <div class="how-step">
+      <div class="how-num">1</div>
+      <h4>Add Accounts</h4>
+      <p>Connect your Telegram accounts via phone + OTP. Sessions are encrypted and stored server-side.</p>
+    </div>
+    <div class="how-step">
+      <div class="how-num">2</div>
+      <h4>Pick a Tool</h4>
+      <p>Choose Autojoin, Scraper, Bulk Send, or Scheduler from the dashboard navigation.</p>
+    </div>
+    <div class="how-step">
+      <div class="how-num">3</div>
+      <h4>Configure &amp; Run</h4>
+      <p>Paste your targets, set options, and click Run. Jobs execute in the background — no browser tab required.</p>
+    </div>
+    <div class="how-step">
+      <div class="how-num">4</div>
+      <h4>Monitor Results</h4>
+      <p>Track live progress in the Job Tracker. Download exports or pipe results into the next step.</p>
+    </div>
+  </div>
+</section>
+
+<!-- Platform Walkthrough -->
+<section id="platform" style="padding-top:0;">
+  <div class="section-label">Platform Guide</div>
+  <h2>Every section, explained</h2>
+  <p class="section-desc">A quick reference for each part of the dashboard.</p>
+
+  <div class="walkthrough">
+    <div class="walkthrough-tabs">
+      <button class="wtab active" onclick="showTab('autojoin')">Autojoin</button>
+      <button class="wtab" onclick="showTab('scraper')">Scraper</button>
+      <button class="wtab" onclick="showTab('bulksend')">Bulk Send</button>
+      <button class="wtab" onclick="showTab('accounts')">Accounts</button>
+      <button class="wtab" onclick="showTab('scheduler')">Scheduler</button>
+      <button class="wtab" onclick="showTab('adder')">Member Adder</button>
+    </div>
+
+    <div id="tab-autojoin" class="tab-panel active">
+      <h3>Autojoin — Mass channel &amp; group joining</h3>
+      <p>
+        Paste multiple Telegram links (one per line) and join them all across one or many accounts.
+        The job runs in the background — you can close the browser and results will still be tracked.
+      </p>
+      <ul class="step-list">
+        <li><div class="step-num">1</div><span>Select <strong>Account</strong> or enable <strong>Rotation Mode</strong> to spread joins across multiple accounts and avoid flood-wait errors.</span></li>
+        <li><div class="step-num">2</div><span>Paste your links in the <strong>Target URLs</strong> textarea — one t.me link per line. <span class="tag">Supports t.me, telegram.me, telegram.dog</span></span></li>
+        <li><div class="step-num">3</div><span>Set <strong>Delay (seconds)</strong> between joins (recommended: 30–60s) and an optional <strong>Per-run cap</strong> (0 = unlimited).</span></li>
+        <li><div class="step-num">4</div><span>Click <strong>Queue Join Job</strong>. A durable background job is created — progress appears in the Job Tracker below.</span></li>
+        <li><div class="step-num">5</div><span>Expand any job card in the <strong>Progress Tracker</strong> to see per-link outcomes: joined, already-member, skipped, or failed with reason.</span></li>
+      </ul>
+    </div>
+
+    <div id="tab-scraper" class="tab-panel">
+      <h3>Scraper — Extract member lists from channels</h3>
+      <p>
+        Collect the user list from any channel or group you have access to. If the member list is
+        hidden, the platform automatically falls back to scanning recent messages.
+      </p>
+      <ul class="step-list">
+        <li><div class="step-num">1</div><span>Select the <strong>Account</strong> that is a member of the target group/channel.</span></li>
+        <li><div class="step-num">2</div><span>Enter one or more targets in the <strong>Target</strong> field — one per line for bulk scraping. <span class="tag">Bulk mode</span></span></li>
+        <li><div class="step-num">3</div><span>Click <strong>Pick from Groups</strong> to browse groups the selected account has joined, or type the channel username directly.</span></li>
+        <li><div class="step-num">4</div><span>Click <strong>Scrape Members</strong>. The <strong>scrape_mode</strong> in the result will show <em>participants</em> (full list) or <em>messages_fallback</em> (hidden-members mode).</span></li>
+        <li><div class="step-num">5</div><span>Download the member list or use it as input for <strong>Bulk Send</strong> or <strong>Member Adder</strong>.</span></li>
+      </ul>
+    </div>
+
+    <div id="tab-bulksend" class="tab-panel">
+      <h3>Bulk Send — Send messages to user lists</h3>
+      <p>
+        Send a message to a list of Telegram user IDs or usernames. Supports account rotation
+        and configurable per-message delays to stay within Telegram rate limits.
+      </p>
+      <ul class="step-list">
+        <li><div class="step-num">1</div><span>Paste <strong>User IDs or usernames</strong> — one per line — into the recipients field.</span></li>
+        <li><div class="step-num">2</div><span>Write your <strong>Message</strong> (supports basic Telegram markdown formatting).</span></li>
+        <li><div class="step-num">3</div><span>Select a <strong>Sender Account</strong> or enable <strong>Round-Robin Rotation</strong> across multiple accounts.</span></li>
+        <li><div class="step-num">4</div><span>Set <strong>Delay</strong> between sends. 20–45 seconds is typical for safety; lower values risk flood-wait.</span></li>
+        <li><div class="step-num">5</div><span>Click <strong>Send</strong>. Progress tracks in real time with sent / failed counts per account.</span></li>
+      </ul>
+    </div>
+
+    <div id="tab-accounts" class="tab-panel">
+      <h3>Accounts — Manage connected Telegram accounts</h3>
+      <p>
+        Add, monitor, and control the Telegram accounts that power all platform operations.
+        Sessions are stored encrypted on the server — no active device required after login.
+      </p>
+      <ul class="step-list">
+        <li><div class="step-num">1</div><span>Click <strong>Add Account</strong> and enter your phone number. A one-time Telegram OTP code will be sent to your device.</span></li>
+        <li><div class="step-num">2</div><span>Enter the <strong>OTP code</strong> (and 2FA password if enabled). The session is saved server-side, encrypted at rest.</span></li>
+        <li><div class="step-num">3</div><span>The account appears in the list with its <strong>Telegram username, ID, and session status</strong>.</span></li>
+        <li><div class="step-num">4</div><span>Use <strong>Deactivate</strong> to pause an account without deleting the session, or <strong>Remove</strong> to permanently delete it.</span></li>
+        <li><div class="step-num">5</div><span>Accounts flagged with <span class="tag" style="background:rgba(252,129,129,.15);color:#fc8181">error</span> status have a session that needs re-authentication — click to refresh.</span></li>
+      </ul>
+    </div>
+
+    <div id="tab-scheduler" class="tab-panel">
+      <h3>Scheduler — Automated recurring tasks</h3>
+      <p>
+        Create scheduled runs that execute automatically on a cron-like schedule.
+        Schedules persist across deployments and server restarts via persistent storage.
+      </p>
+      <ul class="step-list">
+        <li><div class="step-num">1</div><span>Click <strong>New Schedule</strong> and select the task type: Autojoin, Bulk Send, or Scrape.</span></li>
+        <li><div class="step-num">2</div><span>Configure the task parameters exactly as you would in the manual tab.</span></li>
+        <li><div class="step-num">3</div><span>Set the <strong>Schedule</strong>: daily, hourly, or a custom cron expression.</span></li>
+        <li><div class="step-num">4</div><span>Toggle <strong>Active</strong> to enable. The scheduler fires the task at the configured interval even if the dashboard is not open.</span></li>
+        <li><div class="step-num">5</div><span>Past runs appear in the schedule history with status and result counts.</span></li>
+      </ul>
+    </div>
+
+    <div id="tab-adder" class="tab-panel">
+      <h3>Member Adder — Add users to your groups</h3>
+      <p>
+        Add a list of users to a Telegram group or channel you administrate.
+        Typically used after scraping members from a source group.
+      </p>
+      <ul class="step-list">
+        <li><div class="step-num">1</div><span>Select the <strong>Account</strong> that is an admin of the target group.</span></li>
+        <li><div class="step-num">2</div><span>Use <strong>Pick from Groups</strong> to select the destination group, or type its username.</span></li>
+        <li><div class="step-num">3</div><span>Paste the <strong>User IDs</strong> to add — one per line. These are typically exported from the Scraper.</span></li>
+        <li><div class="step-num">4</div><span>Set a <strong>Delay</strong> between adds (30s+ recommended). Telegram rate-limits group add operations heavily.</span></li>
+        <li><div class="step-num">5</div><span>Click <strong>Add Members</strong>. Results show added, already-member, privacy-blocked, and failed counts.</span></li>
+      </ul>
+    </div>
+
+  </div>
+</section>
+
+<!-- CTA -->
+<div class="cta-banner">
+  <div class="section-label" style="text-align:center; margin-bottom:14px;">Ready to start</div>
+  <h2>Your dashboard is waiting</h2>
+  <p>All tools are live. Connect your first account and run your first job in under 5 minutes.</p>
+  <a href="/dashboard" class="btn-primary" style="font-size:.95rem; padding:12px 36px;">Open Dashboard →</a>
+</div>
+
+<!-- Footer -->
+<footer>
+  <p>
+    <strong>open-teleset</strong> · Telegram Multi-Account Management Platform ·
+    <a href="/dashboard">Dashboard</a> ·
+    <a href="https://github.com/hillstreet-ph/open-teleset" rel="noopener">GitHub</a>
+  </p>
+  <p style="margin-top:8px; font-size:.8rem;">
+    All Telegram operations run server-side via MTProto. Never exposes your session to the browser.
+  </p>
+</footer>
+
+<script>
+  function showTab(id) {
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.wtab').forEach(b => b.classList.remove('active'));
+    document.getElementById('tab-' + id).classList.add('active');
+    event.currentTarget.classList.add('active');
+  }
+</script>
 </body>
 </html>
