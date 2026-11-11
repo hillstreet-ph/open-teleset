@@ -6674,7 +6674,7 @@
                             this.scraper.results = d.members || [];
                             const errs = d.errors || [];
                             const hasF = d.has_fallback ? ' Some results via recent messages (members hidden).' : '';
-                            const errSummary = errs.length ? ' Failed: ' + errs.map(e => e.target).join(', ') + '.' : '';
+                            const errSummary = errs.length ? ' Failed: ' + errs.map(e => `${e.target}: ${e.error}`).join(', ') + '.' : '';
                             this.scraper.summary = `${targets.length} targets: ${d.total || 0} unique members total.${hasF}${errSummary}`;
                         }
                     } catch (e) {

@@ -318,7 +318,7 @@
       <p>
         Process multiple scrape targets in a single run. Paste one channel or group
         per line — Apify-style — and the platform scrapes all targets in sequence,
-        combining results or delivering per-target exports. Ideal for competitor
+        combining all results into a single export. Ideal for competitor
         research and audience building at scale.
       </p>
     </div>
@@ -360,10 +360,10 @@
       <div class="feature-icon">📊</div>
       <h3>Job Progress Tracker</h3>
       <p>
-        Every background operation (autojoin, bulk send, scrape) is tracked as
-        a durable job with real-time status. See queued, running, completed, and
-        failed counts. Expand any job card to inspect per-link results with
-        timestamps and error reasons.
+        Background operations (autojoin, bulk send) are tracked as durable jobs
+        with real-time status. See queued, running, completed, and failed counts.
+        Expand any job card to inspect per-link results with timestamps and error
+        reasons. Manual scrapes run synchronously and are not tracked as jobs.
       </p>
     </div>
 
@@ -454,7 +454,7 @@
         <li><div class="step-num">1</div><span>Select the <strong>Account</strong> that is a member of the target group/channel.</span></li>
         <li><div class="step-num">2</div><span>Enter one or more targets in the <strong>Target</strong> field — one per line for bulk scraping. <span class="tag">Bulk mode</span></span></li>
         <li><div class="step-num">3</div><span>Click <strong>Pick from Groups</strong> to browse groups the selected account has joined, or type the channel username directly.</span></li>
-        <li><div class="step-num">4</div><span>Click <strong>Scrape Members</strong>. The <strong>scrape_mode</strong> in the result will show <em>participants</em> (full list) or <em>messages_fallback</em> (hidden-members mode).</span></li>
+        <li><div class="step-num">4</div><span>Click <strong>Scrape Members</strong>. If the member list is hidden, a partial-results note appears in the summary — the platform automatically switched to scanning recent messages.</span></li>
         <li><div class="step-num">5</div><span>Download the member list or use it as input for <strong>Bulk Send</strong> or <strong>Member Adder</strong>.</span></li>
       </ul>
     </div>
@@ -496,9 +496,9 @@
         Schedules persist across deployments and server restarts via persistent storage.
       </p>
       <ul class="step-list">
-        <li><div class="step-num">1</div><span>Click <strong>New Schedule</strong> and select the task type: Autojoin, Bulk Send, or Scrape.</span></li>
+        <li><div class="step-num">1</div><span>Click <strong>New Schedule</strong> to open the schedule form. Enter a name and configure the target URLs or message content.</span></li>
         <li><div class="step-num">2</div><span>Configure the task parameters exactly as you would in the manual tab.</span></li>
-        <li><div class="step-num">3</div><span>Set the <strong>Schedule</strong>: daily, hourly, or a custom cron expression.</span></li>
+        <li><div class="step-num">3</div><span>Set the <strong>Schedule</strong>: once, daily, weekly, or weekdays.</span></li>
         <li><div class="step-num">4</div><span>Toggle <strong>Active</strong> to enable. The scheduler fires the task at the configured interval even if the dashboard is not open.</span></li>
         <li><div class="step-num">5</div><span>Past runs appear in the schedule history with status and result counts.</span></li>
       </ul>
@@ -508,13 +508,14 @@
       <h3>Member Adder — Add users to your groups</h3>
       <p>
         Add a list of users to a Telegram group or channel you administrate.
-        Typically used after scraping members from a source group.
+        Only add users who have consented to being added. Typically used after
+        scraping members from a source group.
       </p>
       <ul class="step-list">
         <li><div class="step-num">1</div><span>Select the <strong>Account</strong> that is an admin of the target group.</span></li>
         <li><div class="step-num">2</div><span>Use <strong>Pick from Groups</strong> to select the destination group, or type its username.</span></li>
         <li><div class="step-num">3</div><span>Paste the <strong>User IDs</strong> to add — one per line. These are typically exported from the Scraper.</span></li>
-        <li><div class="step-num">4</div><span>Set a <strong>Delay</strong> between adds (30s+ recommended). Telegram rate-limits group add operations heavily.</span></li>
+        <li><div class="step-num">4</div><span>Set a <strong>Delay</strong> between adds (35s+ recommended). Telegram rate-limits group add operations heavily.</span></li>
         <li><div class="step-num">5</div><span>Click <strong>Add Members</strong>. Results show added, already-member, privacy-blocked, and failed counts.</span></li>
       </ul>
     </div>
@@ -538,7 +539,7 @@
     <a href="https://github.com/hillstreet-ph/open-teleset" rel="noopener">GitHub</a>
   </p>
   <p style="margin-top:8px; font-size:.8rem;">
-    All Telegram operations run server-side via MTProto. Never exposes your session to the browser.
+    All Telegram operations run server-side via MTProto. Session files remain server-side except during the account export flow.
   </p>
 </footer>
 
