@@ -15,6 +15,7 @@ function methodSource(startMarker, endMarker) {
 
 const scraperMethods = methodSource('async runScraper() {', 'copyScrapedUsernames() {');
 const channelMethods = methodSource('async runChannelScraper() {', 'exportChannelCSV() {');
+const targetMethods = methodSource('parseScrapeTargets(raw) {', 'async runChannelScraper() {');
 const rowCaps = methodSource('scraperRows() {', 'autojoinLinks() {');
 
 function harness(source, post) {
@@ -29,7 +30,11 @@ function harness(source, post) {
   const state = {
     scraper: { accountId: 'acct_1', target: '@channel', bulkTargets: '', limit: 200, filterBots: true, activityFilter: 'all', loading: false, results: [], summary: '' },
     scraperTargets: ['@channel'],
-    channelScraper: { keywords: 'casino', country: '', groupType: 'all', limit: 100, loading: false, results: [], summary: '', partial: false },
+    channelScraper: {
+      keywords: 'casino', country: '', language: '', proxyMode: 'none', proxyUrls: '',
+      groupType: 'all', limit: 100, loading: false, results: [], summary: '', partial: false,
+      diagnostics: null,
+    },
     showToast: (message, error) => toasts.push({ message, error }),
   };
   const methods = vm.runInNewContext(`({${source}})`, context);
@@ -63,6 +68,88 @@ test('workflow results label recent posters as partial, not members', () => {
   assert.match(partial, /partial/i);
   assert.doesNotMatch(partial, /members read/);
   assert.equal(methods.stepSummary({ status: 'succeeded', detail: { scraped: 2 } }), '2 members read');
+});
+
+test('channel search sends the language hint and the proxy choice', async () => {
+  const { state, calls } = harness(channelMethods, async () => ({ data: { results: [], total: 0 } }));
+  state.channelScraper.country = 'Philippines';
+  state.channelScraper.language = 'tagalog';
+  state.channelScraper.proxyMode = 'custom';
+  state.channelScraper.proxyUrls = '  http://user:pass@a.example:8080 \n\n https://b.example:8443 ';
+  await state.runChannelScraper();
+  assert.equal(calls[0].body.language, 'tagalog');
+  assert.equal(calls[0].body.proxy_mode, 'custom');
+  assert.deepEqual([...calls[0].body.proxy_urls], [
+    'http://user:pass@a.example:8080', 'https://b.example:8443',
+  ]);
+});
+
+test('custom proxy mode without URLs stops before the request', async () => {
+  const { state, calls, toasts } = harness(channelMethods, async () => ({ data: { results: [], total: 0 } }));
+  state.channelScraper.proxyMode = 'custom';
+  state.channelScraper.proxyUrls = '   ';
+  await state.runChannelScraper();
+  assert.equal(calls.length, 0);
+  assert.equal(toasts.length, 1);
+  assert.match(toasts[0].message, /proxy URL/i);
+  assert.equal(state.channelScraper.loading, false);
+});
+
+test('non-custom modes send an empty proxy list', async () => {
+  const { state, calls } = harness(channelMethods, async () => ({ data: { results: [], total: 0 } }));
+  state.channelScraper.proxyMode = 'pool';
+  state.channelScraper.proxyUrls = 'http://ignored.example:8080';
+  await state.runChannelScraper();
+  assert.equal(calls[0].body.proxy_mode, 'pool');
+  assert.deepEqual([...calls[0].body.proxy_urls], []);
+});
+
+test('zero channel results use the server reason instead of a bare zero', async () => {
+  const { state } = harness(channelMethods, async () => ({
+    data: {
+      results: [], total: 0,
+      diagnostics: { mode: 'public', reason: 'TGStat did not answer any keyword. Check TGSTAT_TOKEN and try again.' },
+    },
+  }));
+  await state.runChannelScraper();
+  assert.match(state.channelScraper.summary, /Found 0 public channels\/groups/);
+  assert.match(state.channelScraper.summary, /TGSTAT_TOKEN/);
+  assert.equal(state.channelScraper.diagnostics.mode, 'public');
+});
+
+test('bulk target parsing accepts spreadsheets, comments and de-duplicates usernames', () => {
+  const methods = vm.runInNewContext(`({${targetMethods}})`, {});
+  const parsed = methods.parseScrapeTargets.call({}, [
+    'https://t.me/AlphaChannel',
+    '@alphaCHANNEL   # duplicate link',
+    'secondgroup, -1001234567890; thirdgroup',
+    '"https://t.me/+InviteHash_123"',
+    'https://t.me/+invitehash_123',
+    '-1001234567890',
+    '',
+  ].join('\n'));
+  assert.deepEqual([...parsed.unique], [
+    'https://t.me/AlphaChannel', 'secondgroup', '-1001234567890', 'thirdgroup',
+    'https://t.me/+InviteHash_123',
+  ]);
+  assert.equal(parsed.duplicates, 3);
+});
+
+test('finder results merge into bulk targets without duplicates', () => {
+  const methods = vm.runInNewContext(`({${targetMethods}})`, {});
+  const state = {
+    scraper: { bulkTargets: '@alpha\n@beta' },
+    channelScraper: { results: [
+      { username: 'alpha' }, { username: 'gamma' }, { username: '' , url: 'https://t.me/+joinhash1' },
+    ] },
+    showToast: () => {},
+  };
+  Object.assign(state, {
+    parseScrapeTargets: methods.parseScrapeTargets.bind(state),
+    useChannelResultsAsTargets: methods.useChannelResultsAsTargets.bind(state),
+  });
+  state.useChannelResultsAsTargets();
+  assert.equal(state.scraper.bulkTargets, '@alpha\n@beta\n@gamma\nhttps://t.me/+joinhash1');
 });
 
 test('a normal roster clears a previous degraded notice', async () => {
