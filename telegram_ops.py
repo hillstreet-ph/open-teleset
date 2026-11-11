@@ -89,6 +89,25 @@ class ScrapeRequest(BaseModel):
     admin_filter: Literal["include", "exclude"] = "include"
 
 
+class BulkScrapeRequest(BaseModel):
+    account_id: str
+    targets: List[str] = Field(min_length=1, max_length=50)
+    limit: int = Field(default=500, ge=1, le=10000, strict=True)
+    filter_bots: bool = True
+    activity_filter: ActivityFilter = "all"
+    admin_filter: Literal["include", "exclude"] = "include"
+
+    @model_validator(mode="after")
+    def _check_targets(self):
+        valid = [t.strip() for t in self.targets if t.strip()]
+        if not valid:
+            raise ValueError("Provide at least one target")
+        if len(valid) > 50:
+            raise ValueError("At most 50 targets per bulk request")
+        self.targets = valid
+        return self
+
+
 class ChannelScrapeRequest(BaseModel):
     account_id: str = ""   # optional: empty = account-free public discovery
     keywords: List[str] = Field(default_factory=list)      # directory search terms
@@ -343,7 +362,21 @@ async def scrape_members(request: ScrapeRequest):
                        "the selected account can access it.",
             ) from None
 
-        participants = await client.get_participants(entity, limit=request.limit)
+        scrape_mode = "participants"
+        try:
+            participants = await client.get_participants(entity, limit=request.limit)
+        except (errors.ChatAdminRequiredError, errors.ChannelPrivateError):
+            scrape_mode = "messages_fallback"
+            seen_ids: set = set()
+            participants = []
+            async for msg in client.iter_messages(entity, limit=request.limit):
+                sender = getattr(msg, "sender", None)
+                if sender is None or not isinstance(sender, types.User):
+                    continue
+                if sender.id in seen_ids:
+                    continue
+                seen_ids.add(sender.id)
+                participants.append(sender)
 
         admin_ids = set()
         if request.admin_filter == "exclude":
@@ -385,6 +418,7 @@ async def scrape_members(request: ScrapeRequest):
 
         return {
             "success": True,
+            "scrape_mode": scrape_mode,
             "target": request.target,
             "total": len(members),
             "scanned": len(participants),
@@ -422,6 +456,40 @@ async def scrape_members(request: ScrapeRequest):
             status_code=500,
             detail="Scrape failed for an unexpected reason. Check the account connection and try again.",
         ) from None
+
+
+@telegram_ops_router.post("/api/scraper/members/bulk")
+async def scrape_members_bulk(request: BulkScrapeRequest):
+    """Scrape members from multiple Telegram targets; deduplicates by user ID."""
+    all_members: dict[int, dict] = {}
+    errors_list = []
+
+    for target_raw in request.targets:
+        single_req = ScrapeRequest(
+            account_id=request.account_id,
+            target=target_raw,
+            limit=request.limit,
+            filter_bots=request.filter_bots,
+            activity_filter=request.activity_filter,
+            admin_filter=request.admin_filter,
+        )
+        try:
+            result = await scrape_members(single_req)
+            for m in result.get("members", []):
+                all_members[m["id"]] = m
+        except HTTPException as e:
+            errors_list.append({"target": target_raw, "error": e.detail})
+        except Exception as e:
+            errors_list.append({"target": target_raw, "error": str(e)})
+
+    members = list(all_members.values())
+    return {
+        "success": True,
+        "targets": request.targets,
+        "total": len(members),
+        "members": members,
+        "errors": errors_list,
+    }
 
 
 class GroupListRequest(BaseModel):

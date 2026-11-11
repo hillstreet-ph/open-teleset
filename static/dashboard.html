@@ -3853,9 +3853,12 @@
                         </select>
                     </div>
                     <div class="form-group">
-                        <label>Target (channel/group link, @username, or ID)</label>
-                        <div style="display:flex;gap:10px;flex-wrap:wrap;">
-                            <input class="form-control" style="flex:2;min-width:220px;" v-model="scraper.target" placeholder="https://t.me/mychannel, @mychannel or -1001234567890">
+                        <label>Targets (one per line — link, @username, or numeric ID)</label>
+                        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start;">
+                            <div style="flex:2;min-width:220px;">
+                                <textarea class="form-control" rows="3" v-model="scraper.target" placeholder="One target per line:&#10;https://t.me/mychannel&#10;@anothergroup&#10;-1001234567890"></textarea>
+                                <small style="color:var(--text-dim);">{{ scraperValidTargets.length }} valid target{{ scraperValidTargets.length !== 1 ? 's' : '' }}</small>
+                            </div>
                             <select class="form-control" style="flex:1;min-width:190px;" :disabled="!scraper.accountId || groups.scraper.loading" @focus="loadGroups('scraper')" @change="pickGroup($event, 'scraper')">
                                 <option value="">{{ groups.scraper.loading ? 'Detecting groups…' : 'Pick from my groups' }}</option>
                                 <option v-for="g in groups.scraper.list" :key="g.peer_id" :value="g.username ? '@' + g.username : String(g.peer_id)">
@@ -3864,8 +3867,8 @@
                             </select>
                         </div>
                         <small v-if="groups.scraper.error" style="color:var(--danger);">{{ groups.scraper.error }}</small>
-                        <small v-else-if="groups.scraper.accountId">Detected {{ groups.scraper.list.length }} groups and channels for this account. Picking one fills the target; private groups use their numeric ID. Links like <code>t.me/name</code>, <code>@name</code> and post links also work.</small>
-                        <small v-else>Select an account to detect the groups and channels it belongs to.</small>
+                        <small v-else-if="groups.scraper.accountId">Detected {{ groups.scraper.list.length }} groups and channels. Pick one to append it; private groups use their numeric ID.</small>
+                        <small v-else>Select an account to detect groups and channels, then pick or type targets above.</small>
                     </div>
                     <div style="display: flex; gap: 15px;">
                         <div class="form-group" style="flex:1;">
@@ -3894,7 +3897,7 @@
                         </select>
                         <small>Uses Telegram's visible last-seen status. Unknown activity is excluded when filtering; an approximate month does not qualify for 15 days.</small>
                     </div>
-                    <button id="gate-scraper" class="btn btn-primary" @click="runScraper" :disabled="scraper.loading || !scraper.accountId || !scraper.target">
+                    <button id="gate-scraper" class="btn btn-primary" @click="runScraper" :disabled="scraper.loading || !scraper.accountId || !scraperValidTargets.length">
                         {{ scraper.loading ? 'Scraping…' : 'Scrape members' }}
                     </button>
                     <p v-if="scraper.summary" style="margin-top: 12px;">{{ scraper.summary }}</p>
@@ -6273,6 +6276,9 @@
                 },
                 adderRecipients() { return this.parseAdderRecipients(); },
                 scraperRows() { return this.scraper.results.slice(0, 200) },
+                scraperValidTargets() {
+                    return (this.scraper.target || '').split(/\r\n|\r|\n/).map(l => l.trim()).filter(Boolean);
+                },
                 channelRows() { return this.channelScraper.results.slice(0, 200) },
                 autojoinLinks() {
                     // Unique, non-blank lines; server does authoritative parsing.
@@ -6626,25 +6632,49 @@
                 pickGroup(event, context) {
                     const value = event.target.value;
                     if (!value) return;
-                    if (context === 'adder') this.adder.destTarget = value;
-                    else this.scraper.target = value;
+                    if (context === 'adder') {
+                        this.adder.destTarget = value;
+                    } else {
+                        const existing = (this.scraper.target || '').trim();
+                        this.scraper.target = existing ? existing + '\n' + value : value;
+                    }
                 },
                 // ---- Scraper ----
                 async runScraper() {
+                    const targets = this.scraperValidTargets;
+                    if (!targets.length) return;
                     this.scraper.loading = true;
                     this.scraper.results = [];
                     this.scraper.summary = '';
                     try {
-                        const res = await _api.post('/api/scraper/members', {
-                            account_id: this.scraper.accountId,
-                            target: this.scraper.target,
-                            limit: this.scraper.limit,
-                            filter_bots: this.scraper.filterBots,
-                            admin_filter: this.scraper.adminFilter,
-                            activity_filter: this.scraper.activityFilter,
-                        }, {timeout: 90000});
-                        this.scraper.results = res.data.members || [];
-                        this.scraper.summary = `Matched ${res.data.total || 0}, scanned ${res.data.scanned || 0}, excluded ${res.data.excluded || 0}.`;
+                        let d;
+                        if (targets.length === 1) {
+                            const res = await _api.post('/api/scraper/members', {
+                                account_id: this.scraper.accountId,
+                                target: targets[0],
+                                limit: this.scraper.limit,
+                                filter_bots: this.scraper.filterBots,
+                                admin_filter: this.scraper.adminFilter,
+                                activity_filter: this.scraper.activityFilter,
+                            }, {timeout: 90000});
+                            d = res.data;
+                            this.scraper.results = d.members || [];
+                            const modeTag = d.scrape_mode === 'messages_fallback' ? ' (via messages — members hidden)' : '';
+                            this.scraper.summary = `Matched ${d.total || 0}, scanned ${d.scanned || 0}, excluded ${d.excluded || 0}.${modeTag}`;
+                        } else {
+                            const res = await _api.post('/api/scraper/members/bulk', {
+                                account_id: this.scraper.accountId,
+                                targets,
+                                limit: this.scraper.limit,
+                                filter_bots: this.scraper.filterBots,
+                                admin_filter: this.scraper.adminFilter,
+                                activity_filter: this.scraper.activityFilter,
+                            }, {timeout: 90000 * targets.length});
+                            d = res.data;
+                            this.scraper.results = d.members || [];
+                            const errs = (d.errors || []).length;
+                            this.scraper.summary = `${targets.length} targets: ${d.total || 0} unique members total.${errs ? ' ' + errs + ' target(s) failed.' : ''}`;
+                        }
                     } catch (e) {
                         const message = e.code === 'ECONNABORTED'
                             ? 'Scrape timed out. Lower the member limit or check the account connection.'
