@@ -43,6 +43,23 @@ def test_percent_encoded_html_pages_are_decoded():
     ]
 
 
+def test_html_entity_pages_keep_the_port_and_secret():
+    """Telegram's t.me/s preview escapes the query separator as ``&amp;``.
+    Splitting that raw leaves the port under ``amp;port`` and the row dies."""
+    text = ("<a href=\"https://t.me/proxy?server=8.8.4.4&amp;port=443"
+            "&amp;secret=dd" + "0" * 32 + "\">proxy</a>")
+    assert mtproxy.parse_tg_links(text) == [
+        {"host": "8.8.4.4", "port": 443, "secret": "dd" + "0" * 32}
+    ]
+
+
+def test_public_catalog_sources_cover_the_reported_pages():
+    urls = {source["url"] for source in mtproxy.MTPROXY_SOURCES}
+    assert "https://telegramsearchengine.com/proxy" in urls
+    assert "https://t.me/s/ProXyMTproto" in urls
+    assert len(urls) == len(mtproxy.MTPROXY_SOURCES)
+
+
 @pytest.mark.asyncio
 async def test_catalog_reports_each_source_and_caches(monkeypatch):
     mtproxy._cache.update(at=0.0, items=[], sources=[])
@@ -59,7 +76,8 @@ async def test_catalog_reports_each_source_and_caches(monkeypatch):
     first = await mtproxy.fetch_catalog()
     assert [item["source"] for item in first["items"]] == ["radikal"]
     assert {source["id"]: source["status"] for source in first["sources"]} == {
-        "radikal": "ok", "stormycloud": "unavailable", "vanced": "empty"}
+        "radikal": "ok", "stormycloud": "unavailable", "vanced": "empty",
+        "tse_proxy": "ok", "proxymtproto": "ok"}
     assert first["cached"] is False
     second = await mtproxy.fetch_catalog()
     assert second["cached"] is True

@@ -558,6 +558,22 @@
         .form-control::placeholder { color: #6f6f6f; }
         .form-row { display: flex; gap: 14px; flex-wrap: wrap; }
         .form-row .form-group { flex: 1; min-width: 140px; }
+        .field-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+        .field-head label { margin-bottom: 6px; }
+        .field-tools { display: flex; gap: 10px; }
+        .field-tools button {
+            background: none; border: 0; padding: 0; cursor: pointer;
+            font-size: 11.5px; color: var(--accent);
+        }
+        .field-tools button:hover { text-decoration: underline; }
+        .field-tools button:disabled { color: var(--text-dim); cursor: default; text-decoration: none; }
+        .campaign-bar {
+            display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end;
+            padding: 12px 14px; margin-bottom: 18px;
+            border: 1px solid var(--border-strong); border-radius: 10px;
+            background: rgba(255,255,255,0.02);
+        }
+        .campaign-actions { display: flex; gap: 8px; flex-wrap: wrap; }
         select.form-control { cursor: pointer; }
         textarea.form-control { resize: vertical; line-height: 1.5; }
         input[type="file"] { color: var(--text-dim); font-size: 12.5px; }
@@ -4182,20 +4198,61 @@
                     </div>
                     <p style="color: var(--text-dim); margin-bottom: 20px;">Discover public Telegram channels and groups by keyword and export their t.me URLs. <strong>No Telegram account is used.</strong> Search runs on the server. With a <code>TGSTAT_TOKEN</code> configured it uses the TGStat directory (names and descriptions, native country filter); without one it races several public search sources and verifies each t.me preview page. A server IP can still be rate-limited, so a proxy can be attached to this request. Read-only: no messages are sent and nothing is joined.</p>
 
+                    <div class="campaign-bar" data-testid="campaign-bar">
+                        <div class="form-group" style="margin:0; min-width: 190px;">
+                            <label>Campaign</label>
+                            <select class="form-control" v-model="channelScraper.campaignId" @change="applyCampaign" data-testid="campaign-select">
+                                <option value="">— New campaign —</option>
+                                <option v-for="c in campaigns.list" :key="c.id" :value="c.id">{{ c.name }}</option>
+                            </select>
+                        </div>
+                        <div class="form-group" style="margin:0; min-width: 200px; flex:1;">
+                            <label>Campaign name</label>
+                            <input class="form-control" v-model="channelScraper.campaignName" maxlength="80" placeholder="e.g. PH casino agents" data-testid="campaign-name">
+                        </div>
+                        <div class="campaign-actions">
+                            <button class="btn btn-outline btn-sm" @click="newCampaign" data-testid="campaign-new">New campaign</button>
+                            <button class="btn btn-primary btn-sm" @click="saveCampaign" :disabled="campaigns.busy === 'save'" data-testid="campaign-save">{{ channelScraper.campaignId ? 'Save changes' : 'Create campaign' }}</button>
+                            <button v-if="channelScraper.campaignId" class="btn btn-outline btn-sm" @click="runCampaign" data-testid="campaign-run">Run</button>
+                            <button v-if="channelScraper.campaignId" class="btn btn-outline btn-sm" @click="deleteCampaign" :disabled="campaigns.busy === 'delete'" data-testid="campaign-delete">Delete</button>
+                        </div>
+                        <small class="muted" v-if="campaigns.error" style="color: var(--danger); flex-basis: 100%;">{{ campaigns.error }}</small>
+                        <small v-else class="muted" style="flex-basis: 100%;">A campaign saves the keywords and every filter below, so you can rerun it later. Proxy credentials are never stored in a campaign.</small>
+                    </div>
+
                     <div class="form-group">
-                        <label>Keywords (one per line or comma-separated — no count limit)</label>
-                        <textarea class="form-control" rows="3" v-model="channelScraper.keywords" placeholder="casino&#10;crypto trading&#10;forex signals"></textarea>
+                        <div class="field-head">
+                            <label>Keywords (one per line or comma-separated — no count limit)</label>
+                            <div class="field-tools">
+                                <button type="button" data-testid="keywords-expand" @click="toggleFieldSize('keywords')">{{ channelScraper.expanded.keywords ? 'Collapse' : 'Expand' }}</button>
+                                <button type="button" data-testid="keywords-copy" :disabled="!channelScraper.keywords" @click="copyFieldValue(channelScraper.keywords, 'Keywords')">Copy</button>
+                                <button type="button" data-testid="keywords-clear" :disabled="!channelScraper.keywords" @click="channelScraper.keywords = ''">Clear</button>
+                            </div>
+                        </div>
+                        <textarea class="form-control" :rows="channelScraper.expanded.keywords ? 18 : 3" :style="channelScraper.expanded.keywords ? 'min-height: 330px;' : ''" v-model="channelScraper.keywords" placeholder="casino&#10;crypto trading&#10;forex signals"></textarea>
                     </div>
                     <div style="display: flex; gap: 15px; flex-wrap: wrap;">
                         <div class="form-group" style="flex: 1; min-width: 150px;">
-                            <label>Country (optional)</label>
+                            <div class="field-head">
+                                <label>Country (optional)</label>
+                                <div class="field-tools">
+                                    <button type="button" data-testid="country-copy" :disabled="!channelScraper.country" @click="copyFieldValue(channelScraper.country, 'Country')">Copy</button>
+                                    <button type="button" data-testid="country-clear" :disabled="!channelScraper.country" @click="channelScraper.country = ''">Clear</button>
+                                </div>
+                            </div>
                             <input class="form-control" v-model="channelScraper.country" placeholder="e.g. Philippines or PH">
                             <small>Country name or ISO code. TGStat filters natively; text-only values filter titles.</small>
                         </div>
                         <div class="form-group" style="flex: 1; min-width: 140px;">
-                            <label>Language hint (optional)</label>
+                            <div class="field-head">
+                                <label>Language hint (optional)</label>
+                                <div class="field-tools">
+                                    <button type="button" data-testid="language-copy" :disabled="!channelScraper.language" @click="copyFieldValue(channelScraper.language, 'Language')">Copy</button>
+                                    <button type="button" data-testid="language-clear" :disabled="!channelScraper.language" @click="channelScraper.language = ''">Clear</button>
+                                </div>
+                            </div>
                             <input class="form-control" v-model="channelScraper.language" placeholder="e.g. tagalog, tl, english">
-                            <small>Mapped to an ISO 639-1 code for TGStat; ignored if TGStat rejects it.</small>
+                            <small>Mapped to an ISO 639-1 code for TGStat; a conflicting script filters rows out.</small>
                         </div>
                         <div class="form-group" style="flex: 1; min-width: 120px;">
                             <label>Type</label>
@@ -4261,6 +4318,7 @@
                             <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                                 <button class="btn btn-outline" @click="exportChannelCSV">Export CSV</button>
                                 <button class="btn btn-outline" @click="copyChannelUrls" style="font-size: 0.85em;">Copy URLs</button>
+                                <button class="btn btn-outline" @click="saveChannelResultsToNote" :disabled="channelScraper.saveBusy === 'all'" style="font-size: 0.85em;" data-testid="channel-save-note">Save all to a note</button>
                                 <button class="btn btn-outline" @click="useChannelResultsAsTargets" style="font-size: 0.85em;" data-testid="channel-to-targets">Add to bulk scrape targets</button>
                             </div>
                         </div>
@@ -4274,6 +4332,7 @@
                                         <th style="padding: 8px 12px; text-align: left;">Type</th>
                                         <th style="padding: 8px 12px; text-align: left;">Members</th>
                                         <th style="padding: 8px 12px; text-align: left;">Matched in</th>
+                                        <th style="padding: 8px 12px; text-align: left;">Note</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -4287,6 +4346,9 @@
                                         <td style="padding: 6px 12px;">{{ c.type }}</td>
                                         <td style="padding: 6px 12px;">{{ c.members == null ? '—' : c.members }}</td>
                                         <td style="padding: 6px 12px;" class="muted small">{{ matchedInLabel(c) }}</td>
+                                        <td style="padding: 6px 12px;">
+                                            <button class="btn btn-outline btn-sm" :disabled="channelScraper.saveBusy === c.username" @click="saveChannelToNotes(c)" title="Save this channel to Notes">Save</button>
+                                        </td>
                                     </tr>
                                 </tbody>
                             </table>
@@ -6422,7 +6484,12 @@
                         loading: false,
                         results: [],
                         diagnostics: null,
+                        expanded: {},
+                        saveBusy: '',
+                        campaignId: '',
+                        campaignName: '',
                     },
+                    campaigns: { loading: false, busy: '', error: '', list: [] },
                     outreachJobs: [], outreachJobsLoading: false, outreachJobError: '', outreachWorker: '',
                     outreachJobBusy: '', jobsPoll: null,
                     groups: {
@@ -6889,6 +6956,7 @@
                     }
                     else this.stopMailboxStream()
                     if (tab === 'scraper' || tab === 'adder') this.loadGroups(tab)
+                    if (tab === 'scraper') this.loadCampaigns()
                     if (tab === 'proxies') this.loadMtprotoCatalog()
                     if (tab === 'schedule') this.loadSchedules()
                     if (tab === 'logs') this.loadLogs()
@@ -6916,6 +6984,7 @@
                     if (this.tab === 'copilot') this.loadCopilotHistory()
                     if (this.tab === 'cloudphone') { this.loadRecovery(); this.loadCloudPhone() }
                     if (this.tab === 'scraper' || this.tab === 'adder') this.loadGroups(this.tab)
+                    if (this.tab === 'scraper') this.loadCampaigns()
                     if (['overview', 'tasks', 'automation', 'factory'].includes(this.tab)) this.loadAutomationStatus()
                     this.showToast('Refreshed.')
                 },
@@ -7131,6 +7200,173 @@
                 copyChannelUrls() {
                     const urls = this.channelScraper.results.map(c => c.url).join('\n');
                     navigator.clipboard.writeText(urls).then(() => this.showToast('URLs copied')).catch(() => this.showToast('Copy failed', true));
+                },
+                async loadCampaigns() {
+                    this.campaigns.loading = true
+                    try {
+                        const { data } = await _api.get('/api/campaigns')
+                        this.campaigns.list = data.campaigns || []
+                        this.campaigns.error = ''
+                    } catch (e) {
+                        this.campaigns.error = e.response?.data?.detail || 'Could not load your campaigns.'
+                    } finally {
+                        this.campaigns.loading = false
+                    }
+                },
+                campaignPayload() {
+                    return {
+                        name: this.channelScraper.campaignName.trim(),
+                        keywords: this.channelScraper.keywords,
+                        category: this.channelScraper.category,
+                        country: this.channelScraper.country,
+                        language: this.channelScraper.language,
+                        group_type: this.channelScraper.groupType,
+                        min_members: Number(this.channelScraper.minMembers) || 0,
+                        limit: Number(this.channelScraper.limit) || 300,
+                    }
+                },
+                async saveCampaign() {
+                    if (!this.channelScraper.campaignName.trim()) {
+                        this.showToast('Give the campaign a name first.', true)
+                        return
+                    }
+                    this.campaigns.busy = 'save'
+                    this.campaigns.error = ''
+                    try {
+                        if (this.channelScraper.campaignId) {
+                            const { data } = await _api.put(`/api/campaigns/${this.channelScraper.campaignId}`, this.campaignPayload())
+                            this.showToast('Campaign updated.')
+                            this.channelScraper.campaignName = data.campaign.name
+                        } else {
+                            const { data } = await _api.post('/api/campaigns', this.campaignPayload())
+                            this.channelScraper.campaignId = data.campaign.id
+                            this.channelScraper.campaignName = data.campaign.name
+                            this.showToast('Campaign created.')
+                        }
+                        await this.loadCampaigns()
+                    } catch (e) {
+                        this.campaigns.error = e.response?.data?.detail || 'Could not save that campaign.'
+                        this.showToast(this.campaigns.error, true)
+                    } finally {
+                        this.campaigns.busy = ''
+                    }
+                },
+                applyCampaign() {
+                    const campaign = this.campaigns.list.find(c => c.id === this.channelScraper.campaignId)
+                    if (!campaign) {
+                        this.channelScraper.campaignName = ''
+                        return
+                    }
+                    this.channelScraper.campaignName = campaign.name
+                    this.channelScraper.keywords = campaign.keywords || ''
+                    this.channelScraper.category = campaign.category || 'all'
+                    this.channelScraper.country = campaign.country || ''
+                    this.channelScraper.language = campaign.language || ''
+                    this.channelScraper.groupType = campaign.group_type || 'all'
+                    this.channelScraper.minMembers = campaign.min_members ?? 0
+                    this.channelScraper.limit = campaign.limit ?? 300
+                    this.showToast(`Loaded “${campaign.name}”.`)
+                },
+                newCampaign() {
+                    this.channelScraper.campaignId = ''
+                    this.channelScraper.campaignName = ''
+                },
+                async runCampaign() {
+                    this.applyCampaign()
+                    await this.runChannelScraper()
+                },
+                async deleteCampaign() {
+                    const campaign = this.campaigns.list.find(c => c.id === this.channelScraper.campaignId)
+                    if (!campaign) return
+                    if (!window.confirm(`Delete the campaign “${campaign.name}”?`)) return
+                    this.campaigns.busy = 'delete'
+                    try {
+                        await _api.delete(`/api/campaigns/${campaign.id}`)
+                        this.newCampaign()
+                        await this.loadCampaigns()
+                        this.showToast('Campaign deleted.')
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not delete that campaign.', true)
+                    } finally {
+                        this.campaigns.busy = ''
+                    }
+                },
+                toggleFieldSize(key) {
+                    this.channelScraper.expanded = {
+                        ...this.channelScraper.expanded,
+                        [key]: !this.channelScraper.expanded[key],
+                    };
+                },
+                async copyFieldValue(value, label) {
+                    if (!value) return;
+                    try {
+                        await this.copyNoteText(value);
+                        this.showToast(`${label} copied.`);
+                    } catch (e) {
+                        this.showToast(`Could not copy the ${label.toLowerCase()} field.`, true);
+                    }
+                },
+                channelNoteText(row) {
+                    const members = row.members == null ? 'unknown' : row.members;
+                    const lines = [
+                        row.url,
+                        `Type: ${row.type || 'unknown'} · Members: ${members}`,
+                    ];
+                    if (row.about) lines.push('', row.about);
+                    const keyword = (row.matched_keywords && row.matched_keywords[0]) || row.matched_keyword || '';
+                    if (keyword) lines.push('', `Matched keyword: ${keyword}`);
+                    const scope = [];
+                    const keywords = this.channelScraper.keywords.trim();
+                    if (keywords) scope.push(`keywords: ${keywords}`);
+                    if (this.channelScraper.country) scope.push(`country: ${this.channelScraper.country}`);
+                    if (this.channelScraper.language) scope.push(`language: ${this.channelScraper.language}`);
+                    if (scope.length) lines.push('', `Found with ${scope.join(' · ')}`);
+                    return lines.join('\n');
+                },
+                async saveChannelToNotes(row) {
+                    const key = row.username || row.id || row.url;
+                    this.channelScraper.saveBusy = key;
+                    try {
+                        await _api.post('/api/notes', {
+                            title: (row.title || row.username || 'Channel result').slice(0, 120),
+                            text: this.channelNoteText(row),
+                        });
+                        this.showToast('Saved to Notes.');
+                        this.loadNotes().catch(() => {});
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not save that channel to Notes.', true);
+                    } finally {
+                        this.channelScraper.saveBusy = '';
+                    }
+                },
+                async saveChannelResultsToNote() {
+                    const rows = this.channelScraper.results;
+                    if (!rows.length) return;
+                    const title = (this.channelScraper.keywords.trim().split(/\r?\n/)[0] || 'Finder results').slice(0, 120);
+                    const header = [`${rows.length} public channels/groups found`, ''];
+                    const lines = [];
+                    for (const [index, row] of rows.entries()) {
+                        const members = row.members == null ? 'unknown' : row.members;
+                        const line = `${index + 1}. ${row.title || row.username} — ${row.url} · ${row.type || 'unknown'} · ${members} members`;
+                        if (header.join('\n').length + lines.join('\n').length + line.length > 19000) {
+                            lines.push(`… ${rows.length - index} more. Use Export CSV for the full list.`);
+                            break;
+                        }
+                        lines.push(line);
+                    }
+                    this.channelScraper.saveBusy = 'all';
+                    try {
+                        await _api.post('/api/notes', {
+                            title,
+                            text: [...header, ...lines].join('\n'),
+                        });
+                        this.showToast(`Saved ${rows.length} result${rows.length === 1 ? '' : 's'} to Notes.`);
+                        this.loadNotes().catch(() => {});
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'Could not save these results to Notes.', true);
+                    } finally {
+                        this.channelScraper.saveBusy = '';
+                    }
                 },
                 async importRecipientCSV(event, destination) {
                     const file = event.target.files?.[0];

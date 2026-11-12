@@ -688,18 +688,166 @@ def resolve_language(value: str) -> str:
     return _LANGUAGE_NAMES.get(raw, "")
 
 
+def _term_in_text(text: str, term: str) -> bool:
+    """Substring match for real words, word-boundary match for short tokens."""
+    if not text or not term:
+        return False
+    if len(term) <= 3:
+        return _re.search(rf"(?<![a-z0-9]){_re.escape(term)}(?![a-z0-9])",
+                          text) is not None
+    return term in text
+
+
 def country_matches(haystack: str, tokens, iso_code: str = "") -> bool:
-    """Text filter used where no native country field exists.
+    """True when the row carries a signal for the requested country.
 
     Full name aliases match as substrings; a two-letter ISO code only matches as
     a standalone word so `PH` finds "PH Casino" but not "usadeals".
     """
-    if any(token in haystack for token in tokens):
+    text = (haystack or "").lower()
+    if any(_term_in_text(text, token) for token in tokens):
         return True
     if not iso_code:
         return False
     pattern = rf"(?<![a-z0-9]){_re.escape(iso_code.lower())}(?![a-z0-9])"
-    return _re.search(pattern, haystack) is not None
+    return _re.search(pattern, text) is not None
+
+
+# Countries a result is expected NOT to name when a different country is
+# requested. A row that never names any country stays neutral and is kept;
+# only an explicit foreign signal is a conflict. Without this, filtering on a
+# positive text hit emptied every Philippines run even though almost no PH
+# channel spells out "Philippines" in its bio.
+_COUNTRY_CONFLICTS = {
+    "PH": (
+        # Asia
+        "india", "indian", "china", "chinese", "pakistan", "pakistani",
+        "bangladesh", "bangladeshi", "nepal", "nepali", "sri lanka",
+        "srilanka", "russia", "russian", "indonesia", "indonesian",
+        "thailand", "thai", "vietnam", "vietnamese", "malaysia",
+        "malaysian", "cambodia", "cambodian", "myanmar", "burmese",
+        "korea", "korean", "japan", "japanese", "singapore", "singaporean",
+        "hong kong", "hongkong", "taiwan", "taiwanese", "dubai", "uae",
+        "saudi", "saudi arabia", "qatar", "kuwait", "israel", "israeli",
+        "iranian", "iraq",
+        # North America
+        "usa", "united states", "america", "american", "canada", "canadian",
+        "mexico", "mexican",
+        # Europe
+        "united kingdom", "britain", "british", "england", "scotland",
+        "ireland", "germany", "france", "spain", "italy", "netherlands",
+        "poland", "ukraine", "ukrainian", "portugal", "greece",
+        # Rest of the world
+        "nigeria", "nigerian", "kenya", "ghana", "south africa", "ethiopia",
+        "morocco", "egypt", "egyptian", "brazil", "brazilian", "turkey",
+        "turkish", "argentina", "argentinian", "chile", "chilean",
+        "colombia", "colombian", "peruvian", "venezuela", "australia",
+        "australian",
+    ),
+}
+
+
+def _conflict_tokens(iso_code: str):
+    if not iso_code:
+        return ()
+    listed = _COUNTRY_CONFLICTS.get(iso_code)
+    if listed:
+        return listed
+    # Any other country: every other country's aliases. Short and ambiguous
+    # aliases ("us", "uk", "uae") are skipped because they are common words.
+    tokens = []
+    for other, names in _COUNTRY_NAMES.items():
+        if other != iso_code:
+            tokens.extend(name for name in names if len(name) >= 4)
+    return tuple(tokens)
+
+
+def country_conflict(haystack: str, tokens, iso_code: str = "") -> bool:
+    """True only when the row names a different country than the request."""
+    text = (haystack or "").lower()
+    if not text or country_matches(text, tokens, iso_code):
+        return False
+    return any(_term_in_text(text, token) for token in _conflict_tokens(iso_code))
+
+
+# Scripts a result can be written in. A Latin-script language must not return
+# CJK or Devanagari text, and a non-Latin language must not return a different
+# non-Latin script. Latin text is always allowed because every public link and
+# most channel usernames are Latin, whatever the channel language.
+_SCRIPT_RANGES = {
+    "cjk": ((0x3400, 0x4DBF), (0x4E00, 0x9FFF)),
+    "kana": ((0x3040, 0x30FF),),
+    "hangul": ((0x1100, 0x11FF), (0x3130, 0x318F), (0xAC00, 0xD7AF)),
+    "devanagari": ((0x0900, 0x097F),),
+    "bengali": ((0x0980, 0x09FF),),
+    "gurmukhi": ((0x0A00, 0x0A7F),),
+    "gujarati": ((0x0A80, 0x0AFF),),
+    "tamil": ((0x0B80, 0x0BFF),),
+    "telugu": ((0x0C00, 0x0C7F),),
+    "kannada": ((0x0C80, 0x0CFF),),
+    "malayalam": ((0x0D00, 0x0D7F),),
+    "sinhala": ((0x0D80, 0x0DFF),),
+    "thai": ((0x0E00, 0x0E7F),),
+    "khmer": ((0x1780, 0x17FF),),
+    "myanmar": ((0x1000, 0x109F),),
+    "arabic": ((0x0600, 0x06FF), (0x0750, 0x077F)),
+    "hebrew": ((0x0590, 0x05FF),),
+    "cyrillic": ((0x0400, 0x04FF),),
+    "greek": ((0x0370, 0x03FF),),
+    "ethiopic": ((0x1200, 0x137F),),
+    "georgian": ((0x10A0, 0x10FF),),
+    "armenian": ((0x0530, 0x058F),),
+    "latin": ((0x0041, 0x024F), (0x1E00, 0x1EFF)),
+}
+
+_LANGUAGE_SCRIPTS = {
+    "zh": {"cjk"}, "ja": {"cjk", "kana"}, "ko": {"hangul"},
+    "hi": {"devanagari"}, "mr": {"devanagari"}, "ne": {"devanagari"},
+    "bn": {"bengali"}, "pa": {"gurmukhi"}, "gu": {"gujarati"},
+    "ta": {"tamil"}, "te": {"telugu"}, "kn": {"kannada"},
+    "ml": {"malayalam"}, "si": {"sinhala"}, "th": {"thai"},
+    "km": {"khmer"}, "my": {"myanmar"}, "ar": {"arabic"},
+    "fa": {"arabic"}, "ur": {"arabic"}, "he": {"hebrew"},
+    "ru": {"cyrillic"}, "uk": {"cyrillic"}, "bg": {"cyrillic"},
+    "el": {"greek"}, "am": {"ethiopic"}, "ka": {"georgian"},
+    "hy": {"armenian"},
+}
+
+# Languages written in Latin script. Everything Unicode calls Latin is allowed
+# for these, and any other script in the text is a conflict.
+_LATIN_LANGUAGES = frozenset({
+    "en", "tl", "id", "ms", "es", "pt", "fr", "de", "it", "nl", "pl", "ro",
+    "tr", "vi", "sw", "ha", "yo", "so", "af", "ca", "gl", "eu", "cs", "sk",
+    "sl", "hr", "bs", "da", "sv", "no", "fi", "hu", "lt", "lv", "et", "is",
+    "lb", "mt", "sq", "cy", "ga", "gd", "ig", "st", "tn", "xh", "zu", "rw",
+    "sn", "ny", "mg", "qu", "ay", "gn", "fil",
+})
+
+
+def _scripts_in(text: str) -> set:
+    present = set()
+    for char in text or "":
+        code = ord(char)
+        for name, ranges in _SCRIPT_RANGES.items():
+            if any(low <= code <= high for low, high in ranges):
+                present.add(name)
+                break
+    return present
+
+
+def _script_conflict(text: str, language_code: str) -> bool:
+    """True when the text is written in a script the language cannot use."""
+    if not text or not language_code:
+        return False
+    if language_code in _LATIN_LANGUAGES:
+        allowed = {"latin"}
+    else:
+        allowed = _LANGUAGE_SCRIPTS.get(language_code)
+        if not allowed:
+            return False
+        allowed = set(allowed) | {"latin"}
+    foreign = _scripts_in(text) - allowed
+    return bool(foreign)
 
 
 def _clean_proxy_url(value) -> Optional[str]:
@@ -866,6 +1014,20 @@ def _normalise_text(value) -> str:
     return " ".join((value or "").lower().split())
 
 
+# Structural words that say what a target is, not what it is about. Matching
+# one of these alone is not evidence: "igaming group" must not return any group
+# on Telegram, and "casino agent" must not return a crypto agent channel.
+_GENERIC_TOKENS = frozenset({
+    "group", "groups", "channel", "channels", "chat", "chats", "telegram",
+    "tg", "official", "community", "communities", "news", "update", "updates",
+    "link", "links", "join", "free", "best", "top", "new", "all", "the",
+    "and", "for", "with", "site", "website", "portal", "forum", "public",
+    "private", "global", "worldwide", "international", "list", "directory",
+    "hub", "zone", "room", "admin", "support", "info", "vip", "online",
+    "network", "media", "daily", "live", "channel", "members", "member",
+})
+
+
 def _keyword_tokens(keyword: str):
     """The phrase plus its own words, so a long keyword still matches its parts."""
     phrase = _normalise_text(keyword)
@@ -876,18 +1038,41 @@ def _keyword_tokens(keyword: str):
     return list(dict.fromkeys(tokens))
 
 
+def _keyword_significant(keyword: str):
+    """The meaningful words of a keyword, in order."""
+    return [term for term in _keyword_tokens(keyword)[1:]
+            if term not in _GENERIC_TOKENS]
+
+
+def _keyword_verifies(haystack: str, keyword: str) -> bool:
+    """True when the text is really about the keyword.
+
+    The phrase is the strongest evidence. Otherwise the keyword's own words
+    must cover most of it and the first meaningful word must be present, so
+    "casino agent philippines" needs casino plus one of agent/philippines,
+    while a crypto "agent" channel matches nothing.
+    """
+    phrase = _normalise_text(keyword)
+    if not phrase or not haystack:
+        return False
+    if phrase in haystack:
+        return True
+    significant = _keyword_significant(keyword)
+    if not significant:
+        return False
+    present = [term for term in significant if _term_in_text(haystack, term)]
+    needed = 1 if len(significant) == 1 else (len(significant) + 1) // 2
+    if len(present) < needed:
+        return False
+    return _term_in_text(haystack, significant[0])
+
+
 def _keyword_matches(text, keyword: str) -> bool:
-    """True when the keyword phrase or one of its words appears in the text."""
+    """True when the keyword phrase or enough of its words appear in the text."""
     haystack = _normalise_text(text)
     if not haystack or not keyword:
         return False
-    for term in _keyword_tokens(keyword):
-        if len(term) <= 3:
-            if _re.search(rf"(?<![a-z0-9]){_re.escape(term)}(?![a-z0-9])", haystack):
-                return True
-        elif term in haystack:
-            return True
-    return False
+    return _keyword_verifies(haystack, keyword)
 
 
 # Topic vocabulary for the finder's Category filter. A row matches when any
@@ -954,23 +1139,39 @@ def _keyword_index(keywords):
 
 
 def _match_fields(title, username, about, index):
-    """Return (matched keywords, field names) for one channel or group."""
+    """Return (matched keywords, field names) for one channel or group.
+
+    A term hit only proposes a keyword; the keyword still has to satisfy
+    `_keyword_verifies` over the whole row, so a shared generic word is never
+    reported as a match.
+    """
     keywords, terms, pattern = index
-    hits: set = set()
-    fields = []
-    for name, value in (("title", title), ("username", username),
-                        ("description", about)):
-        haystack = _normalise_text(value)
-        if not haystack or pattern is None:
+    if pattern is None:
+        return [], []
+    parts = (("title", _normalise_text(title)),
+             ("username", _normalise_text(username)),
+             ("description", _normalise_text(about)))
+    combined = " ".join(text for _name, text in parts if text)
+    if not combined:
+        return [], []
+    proposed: set = set()
+    for _name, text in parts:
+        if not text:
             continue
-        found = False
-        for match in pattern.finditer(haystack):
-            for position in terms.get(match.group(0), ()):
-                hits.add(position)
-                found = True
-        if found:
-            fields.append(name)
-    return [keywords[position] for position in sorted(hits)], fields
+        for match in pattern.finditer(text):
+            proposed.update(terms.get(match.group(0), ()))
+    hits, field_names = [], set()
+    for position in sorted(proposed):
+        keyword = keywords[position]
+        if not _keyword_verifies(combined, keyword):
+            continue
+        hits.append(keyword)
+        for name, text in parts:
+            if text and _keyword_verifies(text, keyword):
+                field_names.add(name)
+    ordered = [name for name in ("title", "username", "description")
+               if name in field_names]
+    return hits, ordered
 
 
 def _decode_bing_target(value: str) -> str:
@@ -1169,6 +1370,75 @@ _SEARCH_SOURCES = (
     ("mojeek", _mojeek_usernames),
     ("bing", _bing_usernames),
 )
+
+
+# telegramsearchengine.com is a directory with its own index of public
+# channels and groups. Its JSON API answers with the title, description, type
+# and subscriber count in one request, which is more metadata than a search
+# engine result page and does not need a t.me preview round trip.
+_TSE_SEARCH_URL = "https://telegramsearchengine.com/api/directory"
+_TSE_TIMEOUT = 12
+
+
+def _parse_tse_items(payload, want):
+    """Normalise telegramsearchengine items to the structured-row shape."""
+    items = payload.get("items") if isinstance(payload, dict) else None
+    rows, seen = [], set()
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get("type") or "").lower()
+        if kind not in ("channel", "group"):
+            continue
+        username = str(item.get("username") or "").strip().lstrip("@")
+        valid = _TARGET_USERNAME_RE.match(username)
+        if not valid:
+            continue
+        username = valid.group(1)
+        key = username.lower()
+        if key in _TME_RESERVED or key in seen:
+            continue
+        seen.add(key)
+        members = item.get("subscriberCount", item.get("subscribers"))
+        if not isinstance(members, int) or isinstance(members, bool):
+            members = None
+        rows.append({
+            "username": username,
+            "title": str(item.get("name") or item.get("title") or username),
+            "about": str(item.get("description") or ""),
+            "type": kind,
+            "members": members,
+            "source": "telegramsearchengine",
+        })
+        if len(rows) >= want:
+            break
+    return rows
+
+
+async def _tse_rows(session, keyword, want, proxy=None, group_type="all",
+                    category="all"):
+    """Structured directory search. `search` is strict AND, so callers retry
+    with the keyword head when a long phrase returns nothing."""
+    params = {
+        "search": keyword,
+        "limit": str(min(max(int(want), 10), 100)),
+        "page": "1",
+    }
+    if group_type in ("channel", "group"):
+        params["type"] = group_type
+    if category and category != "all":
+        params["category"] = category
+    status, body = await _request(
+        session, "GET", _TSE_SEARCH_URL, params=params, proxy=proxy,
+        timeout=_TSE_TIMEOUT, headers={"Accept": "application/json"},
+    )
+    if status != 200:
+        raise aiohttp.ClientConnectionError(f"search source returned HTTP {status}")
+    try:
+        payload = json.loads(body.decode("utf-8", "replace"))
+    except (ValueError, UnicodeDecodeError):
+        raise aiohttp.ClientConnectionError("directory answered with unreadable JSON")
+    return _parse_tse_items(payload, want)
 
 
 async def _tme_preview(session, username, proxy=None):
@@ -1615,10 +1885,14 @@ async def _scrape_channels_web(request: ChannelScrapeRequest, picker=None):
     structured: dict = {}          # username.lower() -> row with title and description
     stats = {name: {"requests": 0, "ok": 0, "errors": 0, "items": 0}
              for name, _source in _SEARCH_SOURCES}
-    # lyzem is queried on its own path, not inside the generic source race.
-    stats.setdefault("lyzem", {"requests": 0, "ok": 0, "errors": 0, "items": 0})
+    # lyzem and telegramsearchengine are queried on their own structured path,
+    # not inside the generic source race.
+    for structured_source in ("lyzem", "telegramsearchengine"):
+        stats.setdefault(structured_source,
+                         {"requests": 0, "ok": 0, "errors": 0, "items": 0})
     preview_stats = {"requests": 0, "ok": 0, "errors": 0, "skipped": 0, "dead": 0}
-    filtered = {"type": 0, "country": 0, "category": 0, "members": 0, "dead": 0}
+    filtered = {"type": 0, "country": 0, "language": 0, "category": 0,
+                "members": 0, "keyword": 0, "dead": 0}
 
     def remember(username, keyword, row=None):
         key = username.lower()
@@ -1631,6 +1905,7 @@ async def _scrape_channels_web(request: ChannelScrapeRequest, picker=None):
         entry = dict(row)
         entry["username"] = username
         entry["matched_keyword"] = keyword
+        entry.setdefault("source", "lyzem")
         structured[key] = entry
 
     async with aiohttp.ClientSession(headers=_BROWSER_HEADERS) as session:
@@ -1666,37 +1941,84 @@ async def _scrape_channels_web(request: ChannelScrapeRequest, picker=None):
                 stats["lyzem"]["errors"] += 1
                 return []
 
+        def verified(rows):
+            """Keep directory rows that really are about the keyword.
+
+            lyzem matches loosely (an `igaming group` query answers with any
+            group), so the directory is only a candidate supplier. The local
+            relevance rule decides what is kept.
+            """
+            kept = []
+            for row in rows:
+                matched, _fields = _match_fields(
+                    row["title"], row["username"], row.get("about", ""), index)
+                if matched:
+                    kept.append(row)
+            return kept
+
+        async def tse(keyword, proxy):
+            """Directory search with a broad retry when the phrase is too narrow."""
+            stats["telegramsearchengine"]["requests"] += 1
+            try:
+                rows = await _tse_rows(
+                    session, keyword, want_per_keyword, proxy=proxy,
+                    group_type=request.group_type, category=request.category)
+                if not rows:
+                    head = _keyword_significant(keyword)
+                    if head and head[0] != _normalise_text(keyword):
+                        rows = await _tse_rows(
+                            session, head[0], want_per_keyword, proxy=proxy,
+                            group_type=request.group_type,
+                            category=request.category)
+            except Exception:
+                # A discovery source must never fail the run.
+                stats["telegramsearchengine"]["errors"] += 1
+                return []
+            for row in rows:
+                row.setdefault("source", "telegramsearchengine")
+            rows = verified(rows)
+            if rows:
+                stats["telegramsearchengine"]["ok"] += 1
+                stats["telegramsearchengine"]["items"] += len(rows)
+            return rows
+
         async def discover(keyword):
             if len(seen) >= candidate_cap:
                 return
             proxy = picker.pick()
             qualified = country_query(keyword)
-            rows = await lyzem(qualified, proxy)
+            rows, extra = await asyncio.gather(
+                lyzem(qualified, proxy), tse(keyword, proxy))
             if not rows and qualified != keyword:
                 # A country-qualified query can starve where no page names
                 # both terms; retry the bare keyword before the generic race.
                 rows = await lyzem(keyword, proxy)
+            rows = verified(rows)
             if rows:
                 stats["lyzem"]["ok"] += 1
                 stats["lyzem"]["items"] += len(rows)
-                for row in rows:
-                    remember(row["username"], keyword, row)
-                    if len(seen) >= candidate_cap:
-                        break
+            for row in rows + extra:
+                remember(row["username"], keyword, row)
+                if len(seen) >= candidate_cap:
+                    break
+            if rows or extra:
                 return
             query = f"{keyword} {country_hint}".strip() if country_hint else keyword
             names = await _first_source_candidates(
-                session, query, want_per_keyword, proxy, stats, skip=("lyzem",))
+                session, query, want_per_keyword, proxy, stats,
+                skip=("lyzem", "telegramsearchengine"))
             if not names and country_hint:
                 # Engines that require every term can starve a country-qualified
                 # query; retry the bare keyword before calling the run empty.
                 names = await _first_source_candidates(
-                    session, keyword, want_per_keyword, proxy, stats, skip=("lyzem",))
+                    session, keyword, want_per_keyword, proxy, stats,
+                    skip=("lyzem", "telegramsearchengine"))
             if not names and proxy:
                 # If the proxy itself is dead, retry the race directly once.
                 picker.fallbacks += 1
                 names = await _first_source_candidates(
-                    session, query, want_per_keyword, None, stats, skip=("lyzem",))
+                    session, query, want_per_keyword, None, stats,
+                    skip=("lyzem", "telegramsearchengine"))
             for username in names:
                 remember(username, keyword)
                 if len(seen) >= candidate_cap:
@@ -1712,9 +2034,12 @@ async def _scrape_channels_web(request: ChannelScrapeRequest, picker=None):
                 filtered["type"] += 1
                 continue
             haystack = f"{row['title']} {row['username']} {row['about']}".lower()
-            if (country_tokens or iso_country) and not country_matches(
+            if (country_tokens or iso_country) and country_conflict(
                     haystack, country_tokens, iso_country):
                 filtered["country"] += 1
+                continue
+            if language_code and _script_conflict(haystack, language_code):
+                filtered["language"] += 1
                 continue
             if request.category != "all" and not _category_matches(
                     row["title"], row["username"], row["about"], request.category):
@@ -1723,16 +2048,17 @@ async def _scrape_channels_web(request: ChannelScrapeRequest, picker=None):
             matched, fields = _match_fields(
                 row["title"], row["username"], row["about"], index)
             if not matched:
-                matched = [row["matched_keyword"]]
+                filtered["keyword"] += 1
+                continue
             entries.append({
                 "username": row["username"],
                 "title": row["title"],
                 "about": row["about"],
                 "type": row["type"],
-                "members": None,
+                "members": row.get("members"),
                 "matched_keywords": matched,
                 "matched_in": fields,
-                "source": "lyzem",
+                "source": row.get("source") or "lyzem",
             })
 
         entries.sort(key=_rank_result, reverse=True)
@@ -1799,8 +2125,8 @@ async def _scrape_channels_web(request: ChannelScrapeRequest, picker=None):
             entry["title"] = info["title"] or entry["title"]
             if info.get("about"):
                 entry["about"] = info["about"]
-        # The preview is the authoritative metadata, so the category decision
-        # has to be made again now that it may have replaced title/description.
+        # The preview is the authoritative metadata, so the category and
+        # relevance decisions are made again with it in place.
         if request.category != "all" and not _category_matches(
                 entry["title"], entry["username"], entry["about"], request.category):
             filtered["category"] += 1
@@ -1824,6 +2150,7 @@ async def _scrape_channels_web(request: ChannelScrapeRequest, picker=None):
             "matched_keyword": entry["matched_keywords"][0],
             "matched_keywords": entry["matched_keywords"],
             "matched_in": entry["matched_in"],
+            "source": entry["source"],
         })
 
     structured_names = {entry["username"].lower() for entry in entries}
@@ -1841,9 +2168,12 @@ async def _scrape_channels_web(request: ChannelScrapeRequest, picker=None):
             filtered["type"] += 1
             continue
         haystack = f"{info['title']} {info['username']} {info.get('about', '')}".lower()
-        if (country_tokens or iso_country) and not country_matches(
+        if (country_tokens or iso_country) and country_conflict(
                 haystack, country_tokens, iso_country):
             filtered["country"] += 1
+            continue
+        if language_code and _script_conflict(haystack, language_code):
+            filtered["language"] += 1
             continue
         if request.category != "all" and not _category_matches(
                 info["title"], info["username"], info.get("about", ""), request.category):
@@ -1886,9 +2216,15 @@ async def _scrape_channels_web(request: ChannelScrapeRequest, picker=None):
         elif not seen:
             reason = ("Public search returned no t.me links for these keywords. Try broader "
                       "keywords or set TGSTAT_TOKEN for directory search.")
+        elif filtered["keyword"]:
+            reason = ("Candidates were found but none of them matched the keywords. "
+                      "Use the words the channel or group itself would use.")
         elif filtered["country"]:
             reason = ("Candidates were found but the country filter removed all of them. "
                       "Clear the country filter to see them.")
+        elif filtered["language"]:
+            reason = ("Candidates were found but the language filter removed all of them. "
+                      "Clear the language filter to see them.")
         elif filtered["category"]:
             reason = ("Candidates were found but the category filter removed all of them. "
                       "Choose All categories to see them.")
@@ -1923,7 +2259,8 @@ async def _scrape_channels_web(request: ChannelScrapeRequest, picker=None):
                 "iso": iso_country,
                 "applied": "text" if country_tokens else "none",
             },
-            "language": {"input": request.language, "code": language_code, "applied": "none"},
+            "language": {"input": request.language, "code": language_code,
+                         "applied": "script" if language_code else "none"},
             "category": {
                 "input": request.category,
                 "applied": "terms" if request.category != "all" else "none",
@@ -1991,7 +2328,7 @@ async def scrape_channels(request: ChannelScrapeRequest):
     language_code = resolve_language(request.language)
     seen: set = set()
     results: list = []
-    filtered = {"type": 0, "country": 0, "category": 0, "members": 0}
+    filtered = {"type": 0, "country": 0, "language": 0, "category": 0, "members": 0}
     descriptions: dict = {}
     deadline = time.monotonic() + KEYWORD_SEARCH_BUDGET
     partial = False
@@ -2025,9 +2362,14 @@ async def scrape_channels(request: ChannelScrapeRequest):
                 continue
             title = getattr(chat, "title", "") or ""
             haystack = f"{title} {username}".lower()
-            if (country_tokens or iso_country) and not country_matches(
+            # Neutral rows are kept: Telegram exposes no channel country, so a
+            # title that names another country is the only usable signal.
+            if (country_tokens or iso_country) and country_conflict(
                     haystack, country_tokens, iso_country):
                 filtered["country"] += 1
+                continue
+            if language_code and _script_conflict(title, language_code):
+                filtered["language"] += 1
                 continue
             if request.category != "all" and not _category_matches(
                     title, username, "", request.category):
@@ -2066,6 +2408,9 @@ async def scrape_channels(request: ChannelScrapeRequest):
     elif filtered["country"]:
         reason = ("Candidates were found but the country filter removed all of them. "
                   "Clear the country filter to see them.")
+    elif filtered["language"]:
+        reason = ("Candidates were found but the language filter removed all of them. "
+                  "Clear the language filter to see them.")
     elif filtered["category"]:
         reason = ("Candidates were found but the category filter removed all of them. "
                   "Choose All categories to see them.")
@@ -2095,13 +2440,13 @@ async def scrape_channels(request: ChannelScrapeRequest):
             "token_configured": True,
             "country": {
                 "input": request.country,
-                "iso": "",
-                "applied": "text" if country_tokens else "none",
+                "iso": iso_country,
+                "applied": "text" if (country_tokens or iso_country) else "none",
             },
             "language": {
                 "input": request.language,
                 "code": language_code,
-                "applied": "none",
+                "applied": "script" if language_code else "none",
             },
             "category": {
                 "input": request.category,
