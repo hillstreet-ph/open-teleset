@@ -101,6 +101,8 @@ class ChannelScrapeRequest(BaseModel):
     country: str = Field(default="", max_length=64)        # name or ISO code; server maps it
     language: str = Field(default="", max_length=32)       # optional language hint
     group_type: Literal["all", "group", "channel"] = "all"
+    category: Literal["all", "casino"] = "all"   # topic filter over title/username/description
+    min_members: int = Field(default=0, ge=0, le=10_000_000)  # 0 = no member filter
     limit: int = Field(default=300, ge=1, le=10000, strict=True)  # result ceiling across all keywords
     proxy_mode: Literal["none", "pool", "custom"] = "none"
     proxy_urls: List[str] = Field(default_factory=list)
@@ -888,6 +890,33 @@ def _keyword_matches(text, keyword: str) -> bool:
     return False
 
 
+# Topic vocabulary for the finder's Category filter. A row matches when any
+# term appears in its title, username or public description, using the same
+# phrase/word rules as keyword matching.
+_CATEGORY_TERMS = {
+    "casino": (
+        "casino", "kasino", "igaming", "i-gaming", "online casino", "live casino",
+        "slot", "slots", "slot gacor", "jackpot", "rtp", "baccarat", "poker",
+        "roulette", "blackjack", "sabong", "cockfight", "betting", "sportsbook",
+        "bookmaker", "lottery", "lotto", "togel", "jili", "pgsoft", "pragmatic",
+        "1xbet", "bet365", "e-games", "egames", "pagcor", "color game", "bingo",
+    ),
+}
+
+
+def _category_matches(title, username, about, category):
+    """Matched category terms, empty when the row is outside the category."""
+    terms = _CATEGORY_TERMS.get(category, ())
+    if not terms:
+        return []
+    hits = []
+    for term in terms:
+        if (_keyword_matches(title, term) or _keyword_matches(username, term)
+                or _keyword_matches(about, term)):
+            hits.append(term)
+    return hits
+
+
 def _keyword_index(keywords):
     """Prepare one alternation over every keyword phrase and word.
 
@@ -1548,7 +1577,7 @@ async def _scrape_channels_web(request: ChannelScrapeRequest, picker=None):
     # lyzem is queried on its own path, not inside the generic source race.
     stats.setdefault("lyzem", {"requests": 0, "ok": 0, "errors": 0, "items": 0})
     preview_stats = {"requests": 0, "ok": 0, "errors": 0, "skipped": 0, "dead": 0}
-    filtered = {"type": 0, "country": 0, "dead": 0}
+    filtered = {"type": 0, "country": 0, "category": 0, "members": 0, "dead": 0}
 
     def remember(username, keyword, row=None):
         key = username.lower()
@@ -1646,6 +1675,10 @@ async def _scrape_channels_web(request: ChannelScrapeRequest, picker=None):
                     haystack, country_tokens, iso_country):
                 filtered["country"] += 1
                 continue
+            if request.category != "all" and not _category_matches(
+                    row["title"], row["username"], row["about"], request.category):
+                filtered["category"] += 1
+                continue
             matched, fields = _match_fields(
                 row["title"], row["username"], row["about"], index)
             if not matched:
@@ -1728,6 +1761,10 @@ async def _scrape_channels_web(request: ChannelScrapeRequest, picker=None):
         if request.group_type != "all" and entry["type"] != request.group_type:
             filtered["type"] += 1
             continue
+        if request.min_members and (entry["members"] is None
+                                    or entry["members"] <= request.min_members):
+            filtered["members"] += 1
+            continue
         results.append({
             "id": entry["username"],
             "title": entry["title"],
@@ -1760,6 +1797,14 @@ async def _scrape_channels_web(request: ChannelScrapeRequest, picker=None):
         if (country_tokens or iso_country) and not country_matches(
                 haystack, country_tokens, iso_country):
             filtered["country"] += 1
+            continue
+        if request.category != "all" and not _category_matches(
+                info["title"], info["username"], info.get("about", ""), request.category):
+            filtered["category"] += 1
+            continue
+        if request.min_members and (info["members"] is None
+                                    or info["members"] <= request.min_members):
+            filtered["members"] += 1
             continue
         matched, fields = _match_fields(
             info["title"], info["username"], info.get("about", ""), index)
@@ -1797,6 +1842,12 @@ async def _scrape_channels_web(request: ChannelScrapeRequest, picker=None):
         elif filtered["country"]:
             reason = ("Candidates were found but the country filter removed all of them. "
                       "Clear the country filter to see them.")
+        elif filtered["category"]:
+            reason = ("Candidates were found but the category filter removed all of them. "
+                      "Choose All categories to see them.")
+        elif filtered["members"]:
+            reason = ("Candidates were found but the member filter removed all of them. "
+                      "Lower the member threshold or set it to 0 to see them.")
         elif filtered["type"]:
             reason = ("Candidates were found but the type filter removed all of them. "
                       "Choose All to see them.")
@@ -1826,6 +1877,11 @@ async def _scrape_channels_web(request: ChannelScrapeRequest, picker=None):
                 "applied": "text" if country_tokens else "none",
             },
             "language": {"input": request.language, "code": language_code, "applied": "none"},
+            "category": {
+                "input": request.category,
+                "applied": "terms" if request.category != "all" else "none",
+            },
+            "members": {"above": request.min_members},
             "proxies": proxy_diagnostics(request.proxy_mode, picker),
             "candidates": len(seen),
             "keywords": {
@@ -1906,6 +1962,13 @@ async def scrape_channels(request: ChannelScrapeRequest):
             if (country_tokens or iso_country) and not country_matches(
                     haystack, country_tokens, iso_country):
                 continue
+            if request.category != "all" and not _category_matches(
+                    title, username, "", request.category):
+                continue
+            members = getattr(chat, "participants_count", None)
+            if request.min_members and (members is None
+                                        or members <= request.min_members):
+                continue
             seen.add(chat_id)
             results.append({
                 "id": chat_id,
@@ -1913,7 +1976,7 @@ async def scrape_channels(request: ChannelScrapeRequest):
                 "username": username,
                 "url": f"https://t.me/{username}",
                 "type": kind,
-                "members": getattr(chat, "participants_count", None),
+                "members": members,
                 "verified": bool(getattr(chat, "verified", False)),
                 "matched_keyword": keyword,
             })
@@ -1945,6 +2008,11 @@ async def scrape_channels(request: ChannelScrapeRequest):
                 "code": language_code,
                 "applied": "none",
             },
+            "category": {
+                "input": request.category,
+                "applied": "terms" if request.category != "all" else "none",
+            },
+            "members": {"above": request.min_members},
             "proxies": {"mode": request.proxy_mode, "available": 0, "used": False, "fallbacks": 0},
             "sources": {"account": {"requests": len(request.keywords), "ok": 1 if results else 0}},
             "reason": "" if results else (

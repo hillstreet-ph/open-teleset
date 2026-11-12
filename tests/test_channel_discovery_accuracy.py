@@ -883,3 +883,156 @@ async def test_previews_stop_after_the_server_rate_limits(monkeypatch):
     assert previews["skipped"] >= 1
     assert result["total"] == 80  # structured rows still count without a preview
 
+
+
+# ---------- category and member-count filters ----------
+
+
+@pytest.mark.asyncio
+async def test_category_filter_keeps_only_rows_that_match_the_category(monkeypatch):
+    monkeypatch.setattr(ops.aiohttp, "ClientSession", FakeSession)
+    monkeypatch.setattr(ops.log_manager, "add_log", lambda *args, **kwargs: None)
+
+    async def rows(session, keyword, want, proxy=None, group_type="all"):
+        return [
+            {"username": "slotking", "title": "Slot King",
+             "about": "Daily slots and jackpots", "type": "channel"},
+            {"username": "forexsignals", "title": "Forex Signals",
+             "about": "EURUSD setups", "type": "channel"},
+        ]
+
+    async def no_preview(session, username, proxy=None):
+        return None
+
+    monkeypatch.setattr(ops, "_lyzem_rows", rows)
+    monkeypatch.setattr(ops, "_tme_preview", no_preview)
+    monkeypatch.setattr(ops, "_SEARCH_SOURCES", ())
+
+    result = await ops._scrape_channels_web(
+        ops.ChannelScrapeRequest(keywords=["philippines"], category="casino"))
+
+    assert [row["username"] for row in result["results"]] == ["slotking"]
+    assert result["diagnostics"]["filtered"]["category"] == 1
+    assert result["diagnostics"]["category"] == {"input": "casino", "applied": "terms"}
+
+
+@pytest.mark.asyncio
+async def test_category_filter_reason_names_the_filter_when_it_removes_every_row(monkeypatch):
+    monkeypatch.setattr(ops.aiohttp, "ClientSession", FakeSession)
+    monkeypatch.setattr(ops.log_manager, "add_log", lambda *args, **kwargs: None)
+
+    async def rows(session, keyword, want, proxy=None, group_type="all"):
+        return [{"username": "forexsignals", "title": "Forex Signals",
+                 "about": "EURUSD setups", "type": "channel"}]
+
+    async def no_preview(session, username, proxy=None):
+        return None
+
+    monkeypatch.setattr(ops, "_lyzem_rows", rows)
+    monkeypatch.setattr(ops, "_tme_preview", no_preview)
+    monkeypatch.setattr(ops, "_SEARCH_SOURCES", ())
+
+    result = await ops._scrape_channels_web(
+        ops.ChannelScrapeRequest(keywords=["philippines"], category="casino"))
+
+    assert result["total"] == 0
+    assert "category filter" in result["diagnostics"]["reason"].lower()
+
+
+@pytest.mark.asyncio
+async def test_min_members_keeps_only_rows_above_the_threshold(monkeypatch):
+    monkeypatch.setattr(ops.aiohttp, "ClientSession", FakeSession)
+    monkeypatch.setattr(ops.log_manager, "add_log", lambda *args, **kwargs: None)
+
+    async def rows(session, keyword, want, proxy=None, group_type="all"):
+        return [
+            {"username": "bigcasino", "title": "Big Casino", "about": "", "type": "channel"},
+            {"username": "exactcasino", "title": "Exact Casino", "about": "", "type": "channel"},
+        ]
+
+    async def preview(session, username, proxy=None):
+        members = 5000 if username == "bigcasino" else 100
+        return {"username": username, "title": username.replace("casino", " Casino"),
+                "type": "channel", "members": members, "about": ""}
+
+    monkeypatch.setattr(ops, "_lyzem_rows", rows)
+    monkeypatch.setattr(ops, "_tme_preview", preview)
+    monkeypatch.setattr(ops, "_SEARCH_SOURCES", ())
+
+    result = await ops._scrape_channels_web(
+        ops.ChannelScrapeRequest(keywords=["casino"], min_members=100))
+
+    assert [row["username"] for row in result["results"]] == ["bigcasino"]
+    assert result["results"][0]["members"] == 5000
+    assert result["diagnostics"]["filtered"]["members"] == 1
+    assert result["diagnostics"]["members"] == {"above": 100}
+
+
+@pytest.mark.asyncio
+async def test_min_members_drops_rows_without_a_member_count(monkeypatch):
+    monkeypatch.setattr(ops.aiohttp, "ClientSession", FakeSession)
+    monkeypatch.setattr(ops.log_manager, "add_log", lambda *args, **kwargs: None)
+
+    async def rows(session, keyword, want, proxy=None, group_type="all"):
+        return [{"username": "ghostcasino", "title": "Ghost Casino",
+                 "about": "", "type": "channel"}]
+
+    async def no_preview(session, username, proxy=None):
+        return None
+
+    monkeypatch.setattr(ops, "_lyzem_rows", rows)
+    monkeypatch.setattr(ops, "_tme_preview", no_preview)
+    monkeypatch.setattr(ops, "_SEARCH_SOURCES", ())
+
+    result = await ops._scrape_channels_web(
+        ops.ChannelScrapeRequest(keywords=["casino"], min_members=100))
+
+    assert result["total"] == 0
+    assert result["diagnostics"]["filtered"]["members"] == 1
+
+
+def test_category_and_member_filters_are_validated():
+    from pydantic import ValidationError
+
+    request = ops.ChannelScrapeRequest(keywords=["casino"], category="casino", min_members=100)
+    assert request.category == "casino" and request.min_members == 100
+
+    defaults = ops.ChannelScrapeRequest(keywords=["casino"])
+    assert defaults.category == "all" and defaults.min_members == 0
+
+    with pytest.raises(ValidationError):
+        ops.ChannelScrapeRequest(keywords=["casino"], category="crypto")
+    with pytest.raises(ValidationError):
+        ops.ChannelScrapeRequest(keywords=["casino"], min_members=-1)
+
+
+@pytest.mark.asyncio
+async def test_account_search_applies_category_and_member_filters(monkeypatch):
+    class Chat:
+        def __init__(self, username, title, members):
+            self.username = username
+            self.title = title
+            self.participants_count = members
+            self.broadcast = True
+            self.id = abs(hash(username)) % 100000
+
+    class Found:
+        chats = [Chat("casino_ph", "Casino PH", 500),
+                 Chat("forex_ph", "Forex PH", 500),
+                 Chat("casino_small", "Casino Small PH", 100)]
+
+    class Client:
+        async def __call__(self, request):
+            return Found()
+
+    async def get_client(account_id):
+        return Client()
+
+    monkeypatch.setattr(ops.account_manager, "get_client", get_client)
+    monkeypatch.setattr(ops.log_manager, "add_log", lambda *args, **kwargs: None)
+
+    result = await ops.scrape_channels(ops.ChannelScrapeRequest(
+        account_id="ui-one", keywords=["casino"], country="Philippines",
+        category="casino", min_members=100))
+
+    assert [row["username"] for row in result["results"]] == ["casino_ph"]
