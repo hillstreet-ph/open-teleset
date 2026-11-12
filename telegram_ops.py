@@ -367,6 +367,63 @@ async def _resolve_target_entity(client, target):
         raise
 
 
+# Joining by username only exists for channels and communities. A user or a
+# legacy chat cannot be cast to an input channel, which Telethon reports as a
+# bare TypeError rather than an RPC error.
+JOINABLE_ENTITIES = (types.Channel, types.Community)
+TELEGRAM_MEMBERSHIP_TIMEOUT = 30
+
+
+def joined_channel(entity, updates=None):
+    """Return the channel Telegram reports the account joined, if any."""
+    candidates = [entity]
+    candidates.extend(getattr(updates, "chats", None) or ())
+    for candidate in candidates:
+        if isinstance(candidate, JOINABLE_ENTITIES):
+            return candidate
+    return None
+
+
+async def confirm_membership(client, channel):
+    """Ask Telegram whether the account is really a member now.
+
+    True, False, or None when Telegram did not answer. A join RPC can return
+    while the account is still only requesting access, so a returned request is
+    never enough evidence to report "Joined" to the operator.
+    """
+    try:
+        response = await asyncio.wait_for(
+            client(functions.channels.GetParticipantRequest(
+                channel=channel, participant=types.InputPeerSelf())),
+            TELEGRAM_MEMBERSHIP_TIMEOUT)
+    except (errors.UserNotParticipantError, errors.ChannelPrivateError):
+        return False
+    except errors.FloodWaitError:
+        raise
+    except (errors.RPCError, TimeoutError, OSError, TypeError):
+        return None
+    participant = getattr(response, "participant", None)
+    if participant is None:
+        return None
+    if isinstance(participant, types.ChannelParticipantLeft):
+        return False
+    if (isinstance(participant, types.ChannelParticipantBanned)
+            and getattr(participant, "left", False)):
+        return False
+    return True
+
+
+def membership_failure(channel, confirmed):
+    """Map a join probe verdict to (state, reason) for the caller's report."""
+    if confirmed:
+        return "joined", ""
+    if confirmed is False and getattr(channel, "join_request", False):
+        return "skipped", "join_request_pending"
+    if confirmed is False:
+        return "failed", "join_not_confirmed"
+    return "failed", "join_unverified"
+
+
 RECENT_POSTER_SCAN_MAX = 10000
 
 
@@ -2861,17 +2918,22 @@ async def join_channels(request: JoinChannelsRequest):
         # them independently, so each link records against its own scope.
         account_limit_errors = (errors.FloodWaitError, errors.UserDeactivatedBanError,
                                 errors.AuthKeyUnregisteredError, errors.FrozenMethodInvalidError)
-        # Already-joined / invalid-link errors are per-link, never account-wide.
+        # Invalid-link errors are per-link, never account-wide.
         invalid_link_errors = (errors.InviteHashExpiredError, errors.InviteHashInvalidError,
-                               errors.InviteRequestSentError, errors.UsernameInvalidError,
-                               errors.UsernameNotOccupiedError)
+                               errors.UsernameInvalidError, errors.UsernameNotOccupiedError)
 
         async def _attempt(client, kind, value):
+            """Join one link and return what Telegram says about membership."""
             if kind == "invite":
-                await client(functions.messages.ImportChatInviteRequest(value))
-            else:
-                entity = await client.get_entity(value)
-                await client(functions.channels.JoinChannelRequest(entity))
+                updates = await client(functions.messages.ImportChatInviteRequest(value))
+                channel = joined_channel(None, updates)
+                confirmed = (await confirm_membership(client, channel)
+                             if channel is not None else True)
+                return channel, confirmed
+            entity = await client.get_entity(value)
+            updates = await client(functions.channels.JoinChannelRequest(entity))
+            channel = joined_channel(entity, updates)
+            return channel, await confirm_membership(client, channel)
 
         def _clear(account_id, scope):
             """A completed join proves the account is usable for this method now."""
@@ -2909,9 +2971,11 @@ async def join_channels(request: JoinChannelsRequest):
             for account_id in candidates:
                 client = clients[account_id]
                 try:
-                    await _attempt(client, kind, value)
-                    _clear(account_id, join_scope)
-                    outcome = ("joined", "", account_id)
+                    channel, confirmed = await _attempt(client, kind, value)
+                    state, detail = membership_failure(channel, confirmed)
+                    if state == "joined":
+                        _clear(account_id, join_scope)
+                    outcome = (state, detail, account_id)
                     break
                 except errors.UserAlreadyParticipantError:
                     _clear(account_id, join_scope)
@@ -2932,12 +2996,20 @@ async def join_channels(request: JoinChannelsRequest):
                         continue
                     outcome = ("stop", type(exc).__name__, account_id)
                     break
+                except errors.InviteRequestSentError:
+                    # Telegram accepted the request; an admin must approve it.
+                    outcome = ("skipped", "join_request_pending", account_id)
+                    break
                 except invalid_link_errors as exc:
                     outcome = ("failed", type(exc).__name__, account_id)
                     break
                 except Exception as exc:
                     record_provider_restriction(account_id, exc, join_action)
-                    outcome = ("failed", type(exc).__name__, account_id)
+                    # Only Telegram RPC names are meaningful to the operator;
+                    # arbitrary exception text never leaves the server.
+                    detail = (type(exc).__name__ if isinstance(exc, errors.RPCError)
+                              else "join_failed")
+                    outcome = ("failed", detail, account_id)
                     break
 
             if outcome is None:
@@ -2951,6 +3023,11 @@ async def join_channels(request: JoinChannelsRequest):
                 log_manager.add_log("AutoJoin", account_id,
                                     f"Joined {raw}" if state == "joined" else f"Already a member of {raw}",
                                     "success")
+            elif state == "skipped":
+                results.append({"url": raw, "account_id": account_id, "success": False,
+                                "skipped": detail})
+                skipped += 1
+                log_manager.add_log("AutoJoin", account_id, f"Skipped {raw}: {detail}", "warning")
             else:  # failed or stop
                 results.append({"url": raw, "account_id": account_id, "success": False, "error": detail})
                 failed += 1

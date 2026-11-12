@@ -5,28 +5,49 @@ from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
-from telethon import errors, functions
+from telethon import errors, functions, types
 
 import outreach_jobs as jobs
 import outreach_policy as policy
 from open_teleset.crypto.cipher import SessionCipher
 
 
-class JoinClient:
-    """Callable Telethon-style client that records join requests."""
+def public_channel(username="examplechan", **kwargs):
+    return types.Channel(id=1, title="Example channel", photo=types.ChatPhotoEmpty(),
+                         date=None, access_hash=1, username=username, **kwargs)
 
-    def __init__(self, error=None):
+
+class JoinClient:
+    """Callable Telethon-style client that records join requests.
+
+    Telegram is the only authority on membership: the fake answers the RPC and
+    then a separate getParticipant probe, so a join is never taken on trust.
+    """
+
+    def __init__(self, error=None, entity=None, membership=None, membership_error=None):
         self.error = error
+        self.entity = entity if entity is not None else public_channel()
+        self.membership = membership or SimpleNamespace(participant=object())
+        self.membership_error = membership_error
         self.requests = []
 
     async def __call__(self, request):
         self.requests.append(request)
+        if isinstance(request, functions.channels.GetParticipantRequest):
+            if self.membership_error:
+                raise self.membership_error
+            return self.membership
         if self.error:
             raise self.error
-        return True
+        return SimpleNamespace(chats=[self.entity], updates=[])
 
     async def get_entity(self, value):
-        return SimpleNamespace(id=1, username=str(value))
+        return self.entity
+
+    def joins(self):
+        return [r for r in self.requests
+                if isinstance(r, (functions.channels.JoinChannelRequest,
+                                  functions.messages.ImportChatInviteRequest))]
 
 
 @pytest.fixture
@@ -80,9 +101,13 @@ async def test_public_and_invite_links_complete_with_timestamps(env):
     result = env.store.snapshot(job, 'owner')
     assert result['state'] == 'completed' and result['completed'] == 2
     assert result['started'] > 0 and result['finished'] >= result['started']
-    assert len(env.client.requests) == 2
-    assert isinstance(env.client.requests[0], functions.channels.JoinChannelRequest)
-    assert isinstance(env.client.requests[1], functions.messages.ImportChatInviteRequest)
+    joins = env.client.joins()
+    assert isinstance(joins[0], functions.channels.JoinChannelRequest)
+    assert isinstance(joins[1], functions.messages.ImportChatInviteRequest)
+    # Each join is followed by a membership probe Telegram can attest to.
+    probes = [r for r in env.client.requests
+              if isinstance(r, functions.channels.GetParticipantRequest)]
+    assert len(probes) == 2
     assert env.emitted and env.emitted[-1][0] == 'auto_join'
     assert env.emitted[-1][1]['state'] == 'completed'
     assert b'examplechan' not in env.store.path.read_bytes()
@@ -96,7 +121,7 @@ async def test_invalid_links_are_skipped_before_dispatch(env):
     await run_until(env, job)
     result = env.store.snapshot(job, 'owner')
     assert result['state'] == 'completed' and result['completed'] == 1 and result['skipped'] == 1
-    assert len(env.client.requests) == 1
+    assert len(env.client.joins()) == 1
 
 
 @pytest.mark.asyncio
@@ -135,7 +160,7 @@ async def test_rotation_uses_the_healthy_account(env):
     await run_until(env, job, step=45)
     result = env.store.snapshot(job, 'owner')
     assert result['state'] == 'completed' and result['completed'] == 2
-    assert len(flooded.requests) <= 1 and len(healthy.requests) == 2
+    assert len(flooded.joins()) <= 1 and len(healthy.joins()) == 2
 
 
 def test_submission_is_idempotent_and_owner_scoped(env):
@@ -157,7 +182,7 @@ async def test_stop_survives_restart_and_is_reported(env):
     env.store.control(job, 'owner', 'stop')
     env.store.recover()
     await env.worker.tick()
-    assert len(env.client.requests) == 0
+    assert len(env.client.joins()) == 0
     result = env.store.snapshot(job, 'owner')
     assert result['state'] == 'stopped' and result['finished'] > 0
     with pytest.raises(HTTPException):
@@ -178,6 +203,74 @@ async def test_every_target_carries_its_outcome_time(env):
     stamps = [row['updated'] for row in result['results']]
     assert all(stamp > 0 for stamp in stamps)
     assert stamps == sorted(stamps)
+
+
+@pytest.mark.asyncio
+async def test_a_join_telegram_did_not_record_is_failed_not_reported_as_joined(env):
+    """The RPC returned, but Telegram says the account is not a member.
+
+    The dashboard used to print "Joined" for exactly this case, so the operator
+    looked for a group in Telegram that was never joined.
+    """
+    env.client.membership_error = errors.UserNotParticipantError(None)
+    job = env.submit(['https://t.me/s5philippines'])
+    await run_until(env, job)
+    result = env.store.snapshot(job, 'owner')
+    assert result['state'] == 'completed'
+    assert result['completed'] == 0 and result['failed'] == 1
+    item = result['results'][0]
+    assert item['state'] == 'failed' and item['reason'] == 'join_not_confirmed'
+
+
+@pytest.mark.asyncio
+async def test_an_approval_required_channel_reports_the_pending_request(env):
+    env.client.entity = public_channel('approvalonly', join_request=True)
+    env.client.membership_error = errors.UserNotParticipantError(None)
+    job = env.submit(['https://t.me/approvalonly'])
+    await run_until(env, job)
+    result = env.store.snapshot(job, 'owner')
+    assert result['state'] == 'completed'
+    item = result['results'][0]
+    assert item['state'] == 'skipped' and item['reason'] == 'join_request_pending'
+    assert result['completed'] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_username_that_is_not_a_channel_skips_only_that_link(env):
+    env.client.entity = SimpleNamespace(id=7, username='someuser')
+    second = JoinClient(entity=public_channel('realchan'))
+    env.monkeypatch.setattr(jobs.account_manager, 'get_client',
+                            AsyncMock(side_effect=[env.client, second]))
+    job = env.submit(['https://t.me/someuser', 'https://t.me/realchan'])
+    await run_until(env, job)
+    result = env.store.snapshot(job, 'owner')
+    assert result['state'] == 'completed'
+    assert result['results'][0]['reason'] == 'target_not_joinable'
+    assert result['results'][1]['state'] == 'completed'
+
+
+@pytest.mark.asyncio
+async def test_a_type_error_from_the_join_rpc_fails_only_that_link(env):
+    """A target Telethon cannot cast must not pause the whole run."""
+    broken = JoinClient(error=TypeError('Cannot cast Chat to any kind of InputChannel.'))
+    healthy = JoinClient(entity=public_channel('realchan'))
+    env.monkeypatch.setattr(jobs.account_manager, 'get_client',
+                            AsyncMock(side_effect=[broken, healthy, healthy]))
+    job = env.submit(['https://t.me/legacychat', 'https://t.me/realchan'])
+    await run_until(env, job, step=45)
+    result = env.store.snapshot(job, 'owner')
+    assert result['state'] == 'completed'
+    assert result['results'][0]['reason'] == 'target_not_joinable'
+    assert result['results'][1]['state'] == 'completed'
+
+
+@pytest.mark.asyncio
+async def test_an_unanswered_membership_probe_is_reported_as_unverified(env):
+    env.client.membership_error = errors.RPCError(None, 'probe failed')
+    job = env.submit(['https://t.me/maybechan'])
+    await run_until(env, job)
+    item = env.store.snapshot(job, 'owner')['results'][0]
+    assert item['state'] == 'failed' and item['reason'] == 'join_unverified'
 
 
 @pytest.mark.asyncio
