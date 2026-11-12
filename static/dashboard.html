@@ -6697,9 +6697,16 @@
                     const d = this.channelScraper.diagnostics || {}
                     const k = d.keywords
                     const p = (d.sources && d.sources.previews) || {}
+                    const f = d.filtered || {}
                     const parts = []
                     if (k && k.input) parts.push(`${k.queried}/${k.input} keywords searched`)
-                    if (p.requests) parts.push(`member counts filled for ${p.ok}/${p.requests}`)
+                    const alive = p.requests ? Math.max(0, p.requests - (p.dead || 0)) : 0
+                    if (alive) parts.push(`member counts filled for ${p.ok || 0}/${alive} live`)
+                    const dropped = []
+                    if (f.dead) dropped.push(`${f.dead} dead link${f.dead === 1 ? '' : 's'}`)
+                    if (f.country) dropped.push(`${f.country} off-country`)
+                    if (f.type) dropped.push(`${f.type} wrong type`)
+                    if (dropped.length) parts.push(`dropped ${dropped.join(', ')}`)
                     return parts.join(' · ')
                 },
                 autojoinLinks() {
@@ -6990,7 +6997,7 @@
                         for (let i = 0; i < keywords.length; i += CHUNK) batches.push(keywords.slice(i, i + CHUNK));
                         const merged = new Map();
                         const totals = {input: 0, queried: 0, skipped: 0, requests: 0, ok: 0, errors: 0,
-                                        previewSkipped: 0, candidates: 0, filtered: {}};
+                                        dead: 0, previewSkipped: 0, candidates: 0, filtered: {}};
                         const sourceTotals = {};
                         let lastDiagnostics = null;
                         let anyPartial = false;
@@ -7020,6 +7027,7 @@
                             totals.requests += p.requests || 0;
                             totals.ok += p.ok || 0;
                             totals.errors += p.errors || 0;
+                            totals.dead += p.dead || 0;
                             totals.previewSkipped += p.skipped || 0;
                             totals.candidates += diagnostics.candidates || 0;
                             Object.entries(diagnostics.filtered || {}).forEach(([name, value]) => {
@@ -7043,7 +7051,8 @@
                             sources: {
                                 ...sourceTotals,
                                 previews: {requests: totals.requests, ok: totals.ok,
-                                           errors: totals.errors, skipped: totals.previewSkipped},
+                                           errors: totals.errors, dead: totals.dead,
+                                           skipped: totals.previewSkipped},
                             },
                         };
                         const results = [...merged.values()].slice(0, this.channelScraper.limit);

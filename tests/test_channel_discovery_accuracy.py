@@ -318,6 +318,149 @@ async def test_web_search_qualifies_the_query_with_country_and_falls_back(monkey
 
 
 @pytest.mark.asyncio
+async def test_lyzem_is_queried_with_the_country_when_the_keyword_omits_it(monkeypatch):
+    """The index matches every term against title, username and description.
+
+    Searching the bare keyword and filtering the results afterwards dropped
+    almost the whole index for a country filter (`casino` + Philippines:
+    58 rows, none naming the country). The query has to carry the country.
+    """
+    monkeypatch.setattr(ops.aiohttp, "ClientSession", FakeSession)
+    monkeypatch.setattr(ops.log_manager, "add_log", lambda *args, **kwargs: None)
+    queries = []
+
+    async def lyzem(session, keyword, want, proxy=None, group_type="all"):
+        queries.append(keyword)
+        return [{"username": "phcasino", "title": "PH Casino",
+                 "about": "Casino in the Philippines", "type": "channel"}]
+
+    monkeypatch.setattr(ops, "_lyzem_rows", lyzem)
+    monkeypatch.setattr(ops, "_SEARCH_SOURCES", ())
+    monkeypatch.setattr(ops, "_tme_preview", lambda *a, **k: None)
+    request = ops.ChannelScrapeRequest(keywords=["casino"], country="Philippines")
+
+    result = await ops._scrape_channels_web(request)
+
+    assert queries == ["casino philippines"]
+    assert [row["username"] for row in result["results"]] == ["phcasino"]
+    assert result["diagnostics"]["filtered"]["country"] == 0
+
+
+@pytest.mark.asyncio
+async def test_lyzem_retries_the_bare_keyword_when_the_country_query_starves(monkeypatch):
+    monkeypatch.setattr(ops.aiohttp, "ClientSession", FakeSession)
+    monkeypatch.setattr(ops.log_manager, "add_log", lambda *args, **kwargs: None)
+    queries = []
+
+    async def lyzem(session, keyword, want, proxy=None, group_type="all"):
+        queries.append(keyword)
+        if "philippines" in keyword:
+            return []
+        return [{"username": "sabongph", "title": "Sabong PH",
+                 "about": "Philippines cockfight arena", "type": "group"}]
+
+    monkeypatch.setattr(ops, "_lyzem_rows", lyzem)
+    monkeypatch.setattr(ops, "_SEARCH_SOURCES", ())
+    monkeypatch.setattr(ops, "_tme_preview", lambda *a, **k: None)
+    request = ops.ChannelScrapeRequest(keywords=["sabong"], country="PH")
+
+    result = await ops._scrape_channels_web(request)
+
+    assert queries == ["sabong philippines", "sabong"]
+    assert [row["username"] for row in result["results"]] == ["sabongph"]
+    assert result["diagnostics"]["sources"]["lyzem"]["requests"] == 2
+
+
+@pytest.mark.asyncio
+async def test_lyzem_keeps_the_keyword_when_it_already_names_the_country(monkeypatch):
+    monkeypatch.setattr(ops.aiohttp, "ClientSession", FakeSession)
+    monkeypatch.setattr(ops.log_manager, "add_log", lambda *args, **kwargs: None)
+    queries = []
+
+    async def lyzem(session, keyword, want, proxy=None, group_type="all"):
+        queries.append(keyword)
+        return []
+
+    monkeypatch.setattr(ops, "_lyzem_rows", lyzem)
+    monkeypatch.setattr(ops, "_SEARCH_SOURCES", ())
+    request = ops.ChannelScrapeRequest(
+        keywords=["casino philippines"], country="Philippines")
+
+    await ops._scrape_channels_web(request)
+
+    assert queries == ["casino philippines"]
+
+
+@pytest.mark.asyncio
+async def test_dead_usernames_are_dropped_from_results(monkeypatch):
+    """t.me answers 200 with a generic 'Telegram: Contact @name' page for a
+    deleted or renamed channel. Those rows used to stay in the list with an
+    empty member count, which read as a live channel with no subscribers."""
+    monkeypatch.setattr(ops.aiohttp, "ClientSession", FakeSession)
+    monkeypatch.setattr(ops.log_manager, "add_log", lambda *args, **kwargs: None)
+
+    async def lyzem(session, keyword, want, proxy=None, group_type="all"):
+        return [
+            {"username": "gonechannel", "title": "Gone", "about": "", "type": "channel"},
+            {"username": "alivechannel", "title": "PH Casino",
+             "about": "Philippines casino", "type": "channel"},
+        ]
+
+    async def preview(session, username, proxy=None):
+        if username == "gonechannel":
+            return ops._TME_DEAD
+        return hit(username, title="PH Casino")
+
+    monkeypatch.setattr(ops, "_lyzem_rows", lyzem)
+    monkeypatch.setattr(ops, "_SEARCH_SOURCES", ())
+    monkeypatch.setattr(ops, "_tme_preview", preview)
+    result = await ops._scrape_channels_web(ops.ChannelScrapeRequest(keywords=["casino"]))
+
+    assert [row["username"] for row in result["results"]] == ["alivechannel"]
+    assert result["diagnostics"]["filtered"]["dead"] == 1
+
+
+@pytest.mark.asyncio
+async def test_preview_cap_scales_with_the_result_limit(monkeypatch):
+    """A fixed 120-preview ceiling left every row past the 120th without a
+    member count, which read as a channel with no subscribers."""
+    monkeypatch.setattr(ops.aiohttp, "ClientSession", FakeSession)
+    monkeypatch.setattr(ops.log_manager, "add_log", lambda *args, **kwargs: None)
+    rows = [{"username": f"chan{i:03d}", "title": "PH Casino",
+             "about": "Philippines casino", "type": "channel"} for i in range(250)]
+
+    async def lyzem(session, keyword, want, proxy=None, group_type="all"):
+        return rows
+
+    calls = []
+
+    async def preview(session, username, proxy=None):
+        calls.append(username)
+        return hit(username, title="PH Casino", members=5)
+
+    monkeypatch.setattr(ops, "_lyzem_rows", lyzem)
+    monkeypatch.setattr(ops, "_SEARCH_SOURCES", ())
+    monkeypatch.setattr(ops, "_tme_preview", preview)
+
+    result = await ops._scrape_channels_web(
+        ops.ChannelScrapeRequest(keywords=["casino"], limit=200))
+
+    assert len(calls) == 200
+    assert result["total"] == 200
+    assert all(row["members"] == 5 for row in result["results"])
+
+
+def test_contact_page_identifies_a_dead_username():
+    dead = ('<meta property="og:title" content="Telegram: Contact @gonechannel">'
+            '<meta property="og:description" content="">')
+    live = ('<meta property="og:title" content="VVIP CASINO">'
+            '<meta property="og:description" content="PH casino">')
+    assert ops._tme_contact_page(dead, "gonechannel")
+    assert not ops._tme_contact_page(dead, "alivechannel")
+    assert not ops._tme_contact_page(live, "phcasino")
+
+
+@pytest.mark.asyncio
 async def test_web_search_zero_results_names_the_real_cause(monkeypatch):
     monkeypatch.setattr(ops.aiohttp, "ClientSession", FakeSession)
     monkeypatch.setattr(ops.log_manager, "add_log", lambda *args, **kwargs: None)
