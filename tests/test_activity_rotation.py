@@ -149,7 +149,8 @@ async def test_channel_scraper_flood_wait_maps_to_429(monkeypatch):
 def test_parse_tme_preview_channel_group_and_user():
     channel = '<meta property="og:title" content="PH Casino &amp; Agents"><div class="tgme_page_extra">12 345 subscribers</div>'
     assert ops._parse_tme_preview(channel, "phcasino") == {
-        "username": "phcasino", "title": "PH Casino & Agents", "type": "channel", "members": 12345}
+        "username": "phcasino", "title": "PH Casino & Agents", "type": "channel",
+        "members": 12345, "about": ""}
     group = '<meta property="og:title" content="Traders"><div class="tgme_page_extra">250 members, 10 online</div>'
     parsed = ops._parse_tme_preview(group, "traders")
     assert parsed["type"] == "group" and parsed["members"] == 250
@@ -176,6 +177,11 @@ async def test_public_channel_scraper_enriches_dedupes_filters_limits(monkeypatc
         return dict(info) if info else None
     monkeypatch.setattr(ops, "_SEARCH_SOURCES", (("fake", fake_source),))
     monkeypatch.setattr(ops, "_tme_preview", fake_preview)
+
+    async def no_lyzem(session, keyword, want, proxy=None, group_type="all"):
+        return []
+
+    monkeypatch.setattr(ops, "_lyzem_rows", no_lyzem)
 
     country = await ops.scrape_channels(ops.ChannelScrapeRequest(keywords=["casino"], country="ph"))
     assert country["mode"] == "public"

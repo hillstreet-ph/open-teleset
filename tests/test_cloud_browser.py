@@ -18,7 +18,12 @@ from fastapi import HTTPException
 
 import cloud_browser
 from open_teleset import operator_store
-from open_teleset.cdp_client import CdpClient, CdpError
+from open_teleset.cdp_client import (
+    KEY_REJECTED_MESSAGE,
+    CdpClient,
+    CdpError,
+    parse_combo,
+)
 
 
 class _User:
@@ -201,6 +206,142 @@ async def test_unknown_key_is_refused_before_the_wire():
     with pytest.raises(CdpError):
         await client.press_key("t1", "F13")
     await client.close()
+
+
+def test_a_combo_names_its_key_and_modifiers():
+    assert parse_combo("Enter") == ("Enter", 0)
+    assert parse_combo("Control+L") == ("L", 2)
+    assert parse_combo("control+shift+t") == ("T", 10)
+    assert parse_combo("Meta+ArrowLeft") == ("ArrowLeft", 4)
+    assert parse_combo("Alt+F12") == ("F12", 1)
+    for bad in ("Hyper+L", "Control+Control+L", "Control+Nope", "Shift+"):
+        with pytest.raises(CdpError):
+            parse_combo(bad)
+
+
+@pytest.mark.asyncio
+async def test_a_combo_sends_the_modifier_mask():
+    socket = FakeSocket()
+    client = await _client(socket)
+    await client.press_combo("t1", "Control+Shift+T")
+    await client.close()
+    keys = [frame for frame in socket.frames if frame["method"] == "Input.dispatchKeyEvent"]
+    assert [frame["params"]["type"] for frame in keys] == ["keyDown", "keyUp"]
+    down = keys[0]["params"]
+    assert down["modifiers"] == 10
+    assert down["key"] == "T" and down["code"] == "KeyT"
+    assert down["windowsVirtualKeyCode"] == ord("T")
+    assert keys[1]["params"]["modifiers"] == 10
+
+
+@pytest.mark.asyncio
+async def test_a_plain_combo_matches_press_key():
+    """No modifiers is the same key press the button list has always sent."""
+    plain, combo = FakeSocket(), FakeSocket()
+    first, second = await _client(plain), await _client(combo)
+    await first.press_key("t1", "Enter")
+    await second.press_combo("t1", "Enter")
+    await first.close()
+    await second.close()
+    sent = [frame["params"] for frame in plain.frames if frame["method"] == "Input.dispatchKeyEvent"]
+    assert sent == [frame["params"] for frame in combo.frames if frame["method"] == "Input.dispatchKeyEvent"]
+
+
+@pytest.mark.asyncio
+async def test_typing_sends_one_down_and_up_per_character():
+    socket = FakeSocket()
+    client = await _client(socket)
+    await client.type_keystrokes("t1", "a7")
+    await client.close()
+    keys = [frame["params"] for frame in socket.frames if frame["method"] == "Input.dispatchKeyEvent"]
+    assert [event["type"] for event in keys] == ["keyDown", "keyUp", "keyDown", "keyUp"]
+    assert keys[0]["text"] == "a" and keys[0]["unmodifiedText"] == "a"
+    assert keys[0]["key"] == "a" and keys[0]["code"] == "KeyA"
+    assert keys[0]["windowsVirtualKeyCode"] == ord("A")
+    assert "text" not in keys[1]
+    assert keys[2]["text"] == "7" and keys[2]["code"] == "Digit7"
+    assert keys[2]["windowsVirtualKeyCode"] == ord("7")
+
+
+def _history_handler(current_index, entries):
+    def handler(payload):
+        if payload["method"] == "Page.getNavigationHistory":
+            return {"currentIndex": current_index, "entries": entries}
+        return FakeSocket._default(payload)
+
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_history_reports_where_the_tab_can_go():
+    entries = [
+        {"id": 10, "url": "https://a.example/", "title": "A"},
+        {"id": 11, "url": "https://b.example/", "title": "B"},
+        {"id": 12, "url": "https://c.example/", "title": "C"},
+    ]
+    socket = FakeSocket(_history_handler(1, entries))
+    client = await _client(socket)
+    middle = await client.history("t1")
+    assert middle["index"] == 1
+    assert middle["url"] == "https://b.example/" and middle["title"] == "B"
+    assert middle["can_go_back"] is True and middle["can_go_forward"] is True
+    await client.close()
+
+    first = await _client(FakeSocket(_history_handler(0, entries)))
+    start = await first.history("t1")
+    assert start["can_go_back"] is False and start["can_go_forward"] is True
+    await first.close()
+
+    last = await _client(FakeSocket(_history_handler(2, entries)))
+    end = await last.history("t1")
+    assert end["can_go_back"] is True and end["can_go_forward"] is False
+    await last.close()
+
+
+@pytest.mark.asyncio
+async def test_history_is_capped_and_truncated():
+    entries = [
+        {"id": n, "url": "https://x.example/" + "a" * 600, "title": "t" * 300}
+        for n in range(60)
+    ]
+    client = await _client(FakeSocket(_history_handler(59, entries)))
+    history = await client.history("t1")
+    await client.close()
+    assert len(history["entries"]) == 50
+    assert history["entries"][-1]["id"] == 59
+    assert len(history["entries"][0]["url"]) == 500
+    assert len(history["entries"][0]["title"]) == 200
+    assert len(history["url"]) == 500 and len(history["title"]) == 200
+
+
+@pytest.mark.asyncio
+async def test_back_forward_and_reload_send_their_cdp_commands():
+    entries = [{"id": 10, "url": "https://a.example/", "title": "A"},
+               {"id": 11, "url": "https://b.example/", "title": "B"},
+               {"id": 12, "url": "https://c.example/", "title": "C"}]
+    socket = FakeSocket(_history_handler(1, entries))
+    client = await _client(socket)
+    await client.go_back("t1")
+    await client.go_forward("t1")
+    await client.reload("t1")
+    await client.close()
+    sent = [frame for frame in socket.frames if frame["method"] != "Page.getNavigationHistory"]
+    steps = [frame["params"]["entryId"] for frame in sent if frame["method"] == "Page.navigateToHistoryEntry"]
+    assert steps == [10, 12]
+    reload_frame = [frame for frame in sent if frame["method"] == "Page.reload"][0]
+    assert reload_frame["params"] == {"ignoreCache": True}
+
+
+@pytest.mark.asyncio
+async def test_a_combo_the_browser_does_not_know_is_refused_before_the_wire():
+    socket = FakeSocket()
+    client = await _client(socket)
+    for bad in ("Hyper+L", "Control+Control+L"):
+        with pytest.raises(CdpError) as caught:
+            await client.press_combo("t1", bad)
+        assert str(caught.value) == KEY_REJECTED_MESSAGE
+    await client.close()
+    assert socket.frames == []
 
 
 @pytest.mark.asyncio
@@ -626,6 +767,17 @@ async def test_the_panel_is_told_how_many_browsers_it_can_keep():
 
 class FakeClient:
     pages_returned = [{"target_id": "t1", "title": "Telegram", "url": "https://web.telegram.org/"}]
+    history_returned = {
+        "index": 1,
+        "entries": [
+            {"id": 10, "url": "https://web.telegram.org/", "title": "Telegram"},
+            {"id": 11, "url": "https://web.telegram.org/a/", "title": "Telegram Web"},
+        ],
+        "url": "https://web.telegram.org/a/",
+        "title": "Telegram Web",
+        "can_go_back": True,
+        "can_go_forward": False,
+    }
 
     def __init__(self, url, headers=None):
         self.url = url
@@ -633,6 +785,7 @@ class FakeClient:
         self.calls = []
         self.is_closed = False
         self.publisher = None
+        self.listeners = {}
 
     async def version(self):
         self.calls.append("version")
@@ -661,6 +814,32 @@ class FakeClient:
 
     async def press_key(self, target_id, key):
         self.calls.append(("key", target_id, key))
+
+    async def press_combo(self, target_id, combo):
+        self.calls.append(("combo", target_id, combo))
+
+    async def type_keystrokes(self, target_id, text):
+        self.calls.append(("keystrokes", target_id, text))
+
+    async def history(self, target_id):
+        self.calls.append(("history", target_id))
+        return dict(self.history_returned)
+
+    async def go_back(self, target_id):
+        self.calls.append(("back", target_id))
+
+    async def go_forward(self, target_id):
+        self.calls.append(("forward", target_id))
+
+    async def reload(self, target_id):
+        self.calls.append(("reload", target_id))
+
+    async def allow_downloads(self, target_id):
+        self.calls.append(("downloads", target_id))
+
+    def subscribe(self, method, handler):
+        self.calls.append(("subscribe", method))
+        self.listeners.setdefault(method, []).append(handler)
 
     async def start_screencast(self, target_id, on_frame, quality=60, max_width=1280, max_height=800):
         self.calls.append(("startcast", target_id))
@@ -773,6 +952,69 @@ async def test_unknown_key_is_refused_before_connecting(connected):
         await cloud_browser.press_key("t1", cloud_browser.KeyInput(key="F13"), _Request())
     assert caught.value.status_code == 400
     assert connected.get("client") is None
+
+
+@pytest.mark.asyncio
+async def test_a_modifier_key_rides_as_a_combo(connected):
+    await cloud_browser.save_config(cloud_browser.ConfigInput(endpoint="wss://browser.example/a"), _Request())
+    await cloud_browser.press_key(
+        "t1", cloud_browser.KeyInput(key="T", modifiers="Control,Shift"), _Request()
+    )
+    await cloud_browser.press_key("t1", cloud_browser.KeyInput(key="Enter"), _Request())
+    calls = [call for client in connected["clients"] for call in client.calls]
+    assert ("combo", "t1", "Control,Shift+T") in calls
+    assert ("key", "t1", "Enter") in calls
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_combo_is_refused_before_connecting(connected):
+    await cloud_browser.save_config(cloud_browser.ConfigInput(endpoint="wss://browser.example/a"), _Request())
+    for modifiers in ("Hyper", "Control,Control"):
+        with pytest.raises(HTTPException) as caught:
+            await cloud_browser.press_key(
+                "t1", cloud_browser.KeyInput(key="T", modifiers=modifiers), _Request()
+            )
+        assert caught.value.status_code == 400
+        assert caught.value.detail == KEY_REJECTED_MESSAGE
+    assert connected.get("client") is None
+
+
+@pytest.mark.asyncio
+async def test_the_keys_route_counts_characters_and_never_logs_them(connected, monkeypatch):
+    await cloud_browser.save_config(cloud_browser.ConfigInput(endpoint="wss://browser.example/a"), _Request())
+    records = []
+    monkeypatch.setattr(
+        cloud_browser.log_manager, "add_log", lambda *args, **kwargs: records.append(" ".join(map(str, args)))
+    )
+    result = await cloud_browser.type_keystrokes_into_page(
+        "t1", cloud_browser.KeysInput(text="+63917"), _Request()
+    )
+    assert result == {"success": True, "characters": 6}
+    assert ("keystrokes", "t1", "+63917") in connected["client"].calls
+    logged = " ".join(records)
+    assert "+63917" not in logged
+    assert "6 characters" in logged
+
+
+@pytest.mark.asyncio
+async def test_the_state_route_reads_the_tabs_history(connected):
+    await cloud_browser.save_config(cloud_browser.ConfigInput(endpoint="wss://browser.example/a"), _Request())
+    state = await cloud_browser.page_state("t1", _Request())
+    assert state["can_go_back"] is True and state["can_go_forward"] is False
+    assert state["url"] == "https://web.telegram.org/a/"
+    assert ("history", "t1") in connected["client"].calls
+
+
+@pytest.mark.asyncio
+async def test_history_buttons_reach_the_browser(connected):
+    await cloud_browser.save_config(cloud_browser.ConfigInput(endpoint="wss://browser.example/a"), _Request())
+    await cloud_browser.page_back("t1", _Request())
+    await cloud_browser.page_forward("t1", _Request())
+    await cloud_browser.page_reload("t1", _Request())
+    calls = [call for client in connected["clients"] for call in client.calls]
+    assert ("back", "t1") in calls
+    assert ("forward", "t1") in calls
+    assert ("reload", "t1") in calls
 
 
 @pytest.mark.asyncio
@@ -937,6 +1179,60 @@ async def test_a_page_that_is_not_viewed_keeps_the_stream_open(live):
     await cloud_browser.close_page("other", _Request())
     assert live["client"].is_closed is False
     assert cloud_browser._sessions["operator-1"].target_id == "t1"
+
+
+@pytest.mark.asyncio
+async def test_downloads_are_listed_by_host_and_never_by_url(live):
+    assert ("downloads", "t1") in live["client"].calls
+    begin = live["client"].listeners["Browser.downloadWillBegin"][0]
+    progress = live["client"].listeners["Browser.downloadProgress"][0]
+    await begin({
+        "guid": "g1",
+        "url": "https://files.example/private/path/report.pdf?token=hunter2",
+        "suggestedFilename": "report.pdf",
+    }, "")
+    await progress({"guid": "g1", "receivedBytes": 10, "totalBytes": 100, "state": "inProgress"}, "")
+    await progress({"guid": "g1", "receivedBytes": 100, "totalBytes": 100, "state": "completed"}, "")
+
+    listed = await cloud_browser.list_downloads(_Request())
+    items = listed["downloads"]
+    assert [item["state"] for item in items] == ["started", "progress", "completed"]
+    assert all(item["host"] == "files.example" for item in items)
+    assert items[0]["filename"] == "report.pdf"
+    assert items[-1]["received"] == 100 and items[-1]["total"] == 100
+    dumped = json.dumps(listed)
+    assert "hunter2" not in dumped
+    assert "/private/path" not in dumped
+
+
+@pytest.mark.asyncio
+async def test_the_download_list_keeps_the_newest_events(live):
+    begin = live["client"].listeners["Browser.downloadWillBegin"][0]
+    for index in range(25):
+        await begin({"guid": f"g{index}", "url": "https://files.example/a", "suggestedFilename": "a"}, "")
+    items = (await cloud_browser.list_downloads(_Request()))["downloads"]
+    assert len(items) == 20
+    assert items[-1]["guid"] == "g24"
+
+
+@pytest.mark.asyncio
+async def test_downloads_with_no_live_view_are_an_empty_list(connected):
+    await cloud_browser.save_config(cloud_browser.ConfigInput(endpoint="wss://browser.example/a"), _Request())
+    assert await cloud_browser.list_downloads(_Request()) == {"downloads": []}
+
+
+@pytest.mark.asyncio
+async def test_a_browser_without_the_download_command_still_streams(connected, monkeypatch):
+    await cloud_browser.save_config(cloud_browser.ConfigInput(endpoint="wss://browser.example/a"), _Request())
+
+    async def refuse(self, target_id):
+        raise CdpError("The browser endpoint refused the DevTools command.")
+
+    monkeypatch.setattr(FakeClient, "allow_downloads", refuse)
+    response = await cloud_browser.stream_page("t1", _Request())
+    body = response.body_iterator
+    assert (await _next_event(body))["type"] == "ready"
+    await body.aclose()
 
 
 # --------------------------------------------------------------------- mouse

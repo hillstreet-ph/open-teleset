@@ -32,6 +32,37 @@ Your choice is remembered in the browser (`ot_copilot_mode`), and the panel head
 mode is on. When Work applies a handoff, the panel closes so you land on the surface with the
 result in front of you.
 
+## Draft and Agent engines
+
+The panel header has a two-button switch. **Draft** is everything described above: the rules
+read your words and prepare the surface. **Agent** hands the same prompt to your configured AI
+provider and lets the model choose what to do from a fixed registry — the internal commands,
+your curated skills and the connectors you saved. The choice is remembered in
+`ot_copilot_engine`.
+
+The registry is the whole world the model may call. `GET /api/copilot/agent/capabilities`
+returns it, and the panel counts it in the agent intro. A name outside the registry is
+reported back to the model as unknown and **never executed**.
+
+- **Reads run inside the loop.** The model asks for a read command, the server runs it, and
+  the model reads the result before answering. Each executed step appears under the reply with
+  its tool name, a status badge (`ok`, `pending`, `error`) and one readable line, not a JSON
+  dump.
+- **Writes, skills and connector steps stop as a draft.** The model can ask for a scheduling
+  write, `run_skill`, or `inspect_connector`; a write or a skill comes back as the same pending
+  draft the Drafter produces, with **Run now** waiting for you. The model cannot press it.
+- **The guard runs before the provider is contacted.** A refused prompt returns `Refused` with
+  no model call at all, so a jailbreak attempt never spends a token.
+- **No provider means the Drafter.** With no base URL, model or key configured, `POST
+  /api/copilot/agent` answers with the same rule-based draft and labels itself *Built-in
+  drafter*.
+
+The loop is bounded: 6 model steps, 3 tool calls per step, a 30-second wall clock, 2000
+characters of prompt and 1500 characters per tool result. Hitting a bound ends the turn with a
+plain sentence in the panel instead of a half-finished action. The agent never reaches a send,
+bulk, outreach, join or add endpoint — it has no tool for them, and the server refuses them
+before any model call.
+
 ## Attachments
 
 The paperclip in the panel attaches files to the next prompt. They are read in memory for that

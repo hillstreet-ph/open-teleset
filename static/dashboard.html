@@ -865,6 +865,16 @@
         .copilot-footnote { margin: 8px 0 0; font-size: 10.5px; color: var(--text-dim); }
         .copilot-enhanced { margin-bottom: 8px; padding: 8px 10px; border-radius: 9px; background: var(--accent-soft); }
         .copilot-enhanced ul { margin: 0 0 0 14px; padding: 0; font-size: 11.5px; color: var(--text-secondary); }
+        .copilot-engine { flex: none; display: inline-flex; padding: 2px; gap: 2px; border: 1px solid var(--border); border-radius: 9px; }
+        .copilot-engine button { border: 0; border-radius: 7px; background: transparent; color: var(--text-dim); font: inherit; font-size: 11px; font-weight: 700; padding: 5px 8px; cursor: pointer; }
+        .copilot-engine button:hover { color: var(--text); }
+        .copilot-engine button.on { background: var(--accent-soft); color: var(--accent); }
+        .copilot-engine button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+        .copilot-agent-reply { padding: 10px 12px; border-radius: 12px; background: var(--accent-soft); }
+        .copilot-agent-reply .copilot-label { display: flex; align-items: center; gap: 6px; }
+        .copilot-steps { margin: 8px 0 0 18px; padding: 0; font-size: 11.5px; color: var(--text-secondary); }
+        .copilot-steps li { margin-bottom: 5px; display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+        .copilot-steps .badge { font-size: 9px; padding: 1px 5px; }
         @media (max-width: 640px) {
             .copilot-fab { right: 14px; bottom: 14px; }
             .copilot-panel { right: 8px; left: 8px; width: auto; bottom: 84px; max-height: calc(100dvh - 108px); }
@@ -1700,6 +1710,10 @@
                                 <button class="toggle" :class="{ on: features.cloud_browser_enabled }" role="switch" :aria-checked="features.cloud_browser_enabled ? 'true' : 'false'" :disabled="features.saving === 'cloud_browser_enabled'" @click="saveFeature('cloud_browser_enabled', !features.cloud_browser_enabled)"></button>
                             </div>
                             <div class="toggle-row">
+                                <div><strong style="font-size:13px;">Cloud Phone</strong><p class="muted small" style="margin-top:2px;">Drives an Android cloud phone you rent over its WebDriver endpoint. Off until you add your gateway and switch it on.</p></div>
+                                <button class="toggle" :class="{ on: features.cloud_phone_enabled }" role="switch" :aria-checked="features.cloud_phone_enabled ? 'true' : 'false'" :disabled="features.saving === 'cloud_phone_enabled'" @click="saveFeature('cloud_phone_enabled', !features.cloud_phone_enabled)"></button>
+                            </div>
+                            <div class="toggle-row">
                                 <div><strong style="font-size:13px;">Auto Reply</strong><p class="muted small" style="margin-top:2px;">Answers private chats that messaged an account first. Off until you switch it on and name the accounts.</p></div>
                                 <button class="toggle" :class="{ on: features.auto_reply_enabled }" role="switch" :aria-checked="features.auto_reply_enabled ? 'true' : 'false'" :disabled="features.saving === 'auto_reply_enabled'" @click="saveFeature('auto_reply_enabled', !features.auto_reply_enabled)"></button>
                             </div>
@@ -2033,10 +2047,92 @@
 
             <!-- Cloud Phone -->
             <div v-show="tab === 'cloudphone'">
+                <div class="card" data-testid="phone-bridge">
+                    <div class="card-header">
+                        <div>
+                            <h3>Device bridge</h3>
+                            <p class="muted small" style="margin-top:4px;">Drive an Android cloud phone you already rent, over its WebDriver (Appium) endpoint. Telegram sending, joining and scraping still run on the Telethon accounts - this is for the steps that need a real device.</p>
+                        </div>
+                        <span class="badge" :class="!phone.config.enabled ? 'badge-danger' : (!phone.config.configured ? 'badge-warning' : (phone.connected ? 'badge-success' : 'badge-info'))">{{ !phone.config.enabled ? 'Switched off' : (!phone.config.configured ? 'Needs setup' : (phone.connected ? 'Connected' : 'Ready')) }}</span>
+                    </div>
+                    <div class="note-strip">
+                        The endpoint and token are encrypted per operator and never shown back. Text you type goes straight to the device and is only counted in the logs - never stored or repeated. No proxy rotation or fingerprint masking is built in.
+                    </div>
+                    <p v-if="!phone.config.enabled" class="small" style="color:var(--warning);">Cloud Phone is off. Turn it on under Integrations › Platform switches.</p>
+                    <p v-else-if="!phone.config.encryption_ready" class="small" style="color:var(--danger);">SESSION_ENCRYPTION_KEY is not set on the server, so the gateway address cannot be stored safely yet.</p>
+                    <p v-if="phone.error" class="small" style="color:var(--danger);">{{ phone.error }}</p>
+                    <p v-if="phone.message" class="muted small">{{ phone.message }}</p>
+                    <div class="form-row">
+                        <div class="form-group" style="flex:2;"><label>WebDriver endpoint</label><input v-model="phone.endpoint" data-testid="phone-endpoint" class="form-control mono" placeholder="https://phone.example.com/wd/hub" autocomplete="off" spellcheck="false"></div>
+                        <div class="form-group"><label>Access token</label><input v-model="phone.token" data-testid="phone-token" type="password" class="form-control" :placeholder="phone.config.has_token ? 'Stored — leave blank to keep' : 'Optional'" autocomplete="new-password"></div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group"><label>Device name</label><input v-model="phone.device" data-testid="phone-device" class="form-control" placeholder="Pixel 7" maxlength="60" autocomplete="off"></div>
+                        <div class="form-group"><label>UDID (optional)</label><input v-model="phone.udid" data-testid="phone-udid" class="form-control mono" placeholder="device serial" maxlength="120" autocomplete="off" spellcheck="false"></div>
+                        <div class="form-group"><label>App package</label><input v-model="phone.package" data-testid="phone-package" class="form-control mono" placeholder="org.telegram.messenger" maxlength="120" autocomplete="off" spellcheck="false"></div>
+                    </div>
+                    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                        <button class="btn btn-primary" data-testid="phone-save" @click="saveCloudPhone" :disabled="!!phone.busy || !phone.config.enabled">{{ phone.busy === 'save' ? 'Saving…' : 'Save gateway' }}</button>
+                        <button class="btn btn-outline" data-testid="phone-check" @click="checkCloudPhone" :disabled="!!phone.busy || !phone.config.configured || !phone.config.enabled">{{ phone.busy === 'check' ? 'Checking…' : 'Check gateway' }}</button>
+                        <button v-if="!phone.connected" class="btn btn-outline" data-testid="phone-connect" @click="connectCloudPhone" :disabled="!!phone.busy || !phone.config.configured || !phone.config.enabled">{{ phone.busy === 'connect' ? 'Connecting…' : 'Connect phone' }}</button>
+                        <button v-else class="btn btn-outline" data-testid="phone-disconnect" @click="disconnectCloudPhone" :disabled="!!phone.busy">Disconnect</button>
+                        <button class="btn btn-danger" data-testid="phone-forget" @click="forgetCloudPhone" :disabled="!!phone.busy || !phone.config.configured">Forget</button>
+                    </div>
+                    <div style="margin-top:14px;">
+                        <div class="status-row"><span class="status-key">Host</span><span class="status-val mono">{{ phone.config.host || '—' }}</span></div>
+                        <div class="status-row"><span class="status-key">Access token</span><span class="status-val">{{ phone.config.has_token ? 'Stored' : 'None' }}</span></div>
+                        <div class="status-row"><span class="status-key">Device</span><span class="status-val">{{ phone.config.device || '—' }}</span></div>
+                        <div class="status-row"><span class="status-key">App</span><span class="status-val mono">{{ phone.config.package || '—' }}</span></div>
+                        <div class="status-row"><span class="status-key">Gateway</span><span class="status-val mono">{{ phone.gateway || 'Not checked' }}</span></div>
+                        <div class="status-row"><span class="status-key">Session</span><span class="status-val">{{ phone.connected ? ('Live since ' + formatTime(phone.config.session.since)) : 'Not connected' }}</span></div>
+                    </div>
+                </div>
+                <div v-if="phone.config.enabled && phone.config.configured" class="card" data-testid="phone-screen-card" style="margin-top:18px;">
+                    <div class="card-header">
+                        <div>
+                            <h3>Live screen</h3>
+                            <p class="muted small" style="margin-top:4px;">Tap to tap and drag to swipe, mapped to the phone's own pixels. The image refreshes about once a second while connected.</p>
+                        </div>
+                        <span class="badge" :class="phone.connected ? 'badge-success' : 'badge-warning'">{{ phone.connected ? (phone.screen ? 'Streaming' : 'Waiting for frame') : 'Connect first' }}</span>
+                    </div>
+                    <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start;">
+                        <div style="flex:0 0 300px;max-width:100%;">
+                            <div style="background:#0b0b0f;border:1px solid var(--border);border-radius:22px;padding:8px;">
+                                <img v-if="phone.screen" data-testid="phone-screen" :src="'data:image/png;base64,' + phone.screen" alt="Cloud phone screen" draggable="false" style="display:block;width:100%;height:auto;border-radius:16px;cursor:crosshair;touch-action:none;user-select:none;-webkit-user-drag:none;" @pointerdown="phonePointerDown" @pointerup="phonePointerUp" @pointercancel="phonePointerCancel">
+                                <div v-else class="empty-state" style="min-height:420px;display:flex;align-items:center;justify-content:center;text-align:center;padding:16px;">
+                                    <span>{{ phone.connected ? 'Waiting for the first frame…' : 'Connect the phone to see its screen.' }}</span>
+                                </div>
+                            </div>
+                            <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;">
+                                <button v-for="key in phone.config.keys" :key="key" :data-testid="'phone-key-' + key" class="btn btn-outline btn-sm" style="flex:1;" @click="pressCloudPhoneKey(key)" :disabled="!phone.connected || !!phone.busy">{{ key }}</button>
+                            </div>
+                        </div>
+                        <div style="flex:1;min-width:240px;">
+                            <div class="form-group">
+                                <label>Type on the phone</label>
+                                <div style="display:flex;gap:8px;">
+                                    <input v-model="phone.text" data-testid="phone-text" class="form-control" :maxlength="phone.config.max_text" placeholder="Message or code" autocomplete="off" spellcheck="false" @keyup.enter="sendCloudPhoneText">
+                                    <button class="btn btn-primary" data-testid="phone-send-text" @click="sendCloudPhoneText" :disabled="!phone.connected || !phone.text.trim() || !!phone.busy">Send</button>
+                                </div>
+                                <p class="muted small" style="margin-top:6px;">Typed a character at a time, exactly as a keyboard would. The text is not stored and only its length is logged.</p>
+                            </div>
+                            <div class="form-group">
+                                <label>App</label>
+                                <div style="display:flex;gap:8px;">
+                                    <input v-model="phone.launchPackage" data-testid="phone-app" class="form-control mono" placeholder="org.telegram.messenger" maxlength="120" autocomplete="off" spellcheck="false">
+                                    <button class="btn btn-outline" data-testid="phone-app-launch" @click="launchCloudPhoneApp" :disabled="!phone.connected || !!phone.busy">Open</button>
+                                    <button class="btn btn-outline" data-testid="phone-app-stop" @click="stopCloudPhoneApp" :disabled="!phone.connected || !!phone.busy">Stop</button>
+                                </div>
+                            </div>
+                            <div class="status-row"><span class="status-key">Frame</span><span class="status-val">{{ phone.screenAt ? formatTime(phone.screenAt) : '—' }}</span></div>
+                            <p v-if="phone.actionError" class="small" style="color:var(--danger);">{{ phone.actionError }}</p>
+                        </div>
+                    </div>
+                </div>
                 <div class="card">
                     <div class="card-header">
                         <div>
-                            <h3>Cloud Phone</h3>
+                            <h3>Recovery vault</h3>
                             <p class="muted small" style="margin-top:4px;">Numbers bought by the Account Factory land here. Store recovery details encrypted so a logged-out account can be recovered even after the number expires.</p>
                         </div>
                         <span class="badge" :class="recovery.error ? 'badge-danger' : 'badge-info'">{{ recovery.error ? 'Needs attention' : 'Encrypted vault' }}</span>
@@ -2208,33 +2304,59 @@
                         <button class="btn btn-outline" @click="toggleCloudBrowserReel" :disabled="!!cloudBrowser.busy || !cloudBrowser.live">{{ cloudBrowser.recording ? 'Stop recording' : 'Record frames' }}</button>
                         <button class="btn btn-outline" @click="downloadCloudBrowserReel" :disabled="!!cloudBrowser.busy || !cloudBrowser.reel_frames">Download reel<span v-if="cloudBrowser.reel_frames"> ({{ cloudBrowser.reel_frames }})</span></button>
                     </div>
-                    <div style="border:1px solid var(--border);border-radius:10px;overflow:hidden;background:var(--surface-2);">
+                    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:8px;">
+                        <button class="btn btn-sm btn-outline" @click="cloudBrowserBack" :disabled="!!cloudBrowser.busy || !cloudBrowser.pageState.can_go_back" title="Back in this tab's history">Back</button>
+                        <button class="btn btn-sm btn-outline" @click="cloudBrowserForward" :disabled="!!cloudBrowser.busy || !cloudBrowser.pageState.can_go_forward" title="Forward in this tab's history">Forward</button>
+                        <button class="btn btn-sm btn-outline" @click="cloudBrowserReload" :disabled="!!cloudBrowser.busy" title="Reload from the network">Reload</button>
+                        <input ref="cloudBrowserAddress" v-model="cloudBrowser.address" class="form-control mono" style="flex:1;min-width:200px;" placeholder="https://web.telegram.org/a/" autocomplete="off" spellcheck="false" @keyup.enter="navigateCloudBrowserPage">
+                        <button class="btn btn-sm btn-outline" @click="navigateCloudBrowserPage" :disabled="!!cloudBrowser.busy || !cloudBrowser.address.trim()">Go</button>
+                    </div>
+                    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:8px;">
+                        <button v-for="page in cloudBrowser.pages" :key="page.target_id" class="btn btn-sm" :class="cloudBrowser.selected === page.target_id ? 'btn-primary' : 'btn-outline'" :title="page.url || ''" @click="selectCloudBrowserPage(page)">
+                            {{ cloudBrowserTabLabel(page) }}<span class="mono" style="margin-left:8px;" title="Close this page" @click.stop="closeCloudBrowserPage(page)">×</span>
+                        </button>
+                        <button class="btn btn-sm btn-outline" title="Type an address to open or navigate" @click="focusCloudBrowserAddress">+</button>
+                    </div>
+                    <div ref="cloudBrowserSurface" tabindex="0" @mousedown="focusCloudBrowserSurface" @keydown="cloudBrowserKeydown" style="border:1px solid var(--border);border-radius:10px;overflow:hidden;background:var(--surface-2);outline:none;">
                         <img v-if="cloudBrowser.view" :src="cloudBrowser.view" alt="Live view of the selected page in the hosted browser" style="display:block;width:100%;height:auto;cursor:crosshair;" @click="cloudBrowserClick" @dblclick="cloudBrowserDoubleClick" @contextmenu.prevent="cloudBrowserRightClick" @wheel.prevent="cloudBrowserScroll">
                         <p v-else class="empty-state" style="margin:0;"><span>{{ cloudBrowser.busy === 'stream' ? 'Opening the live view…' : 'No frame yet — start the live view or take a still.' }}</span></p>
                     </div>
-                    <p class="muted small" style="margin-top:8px;">Clicks land where you click; the browser decides the coordinates from its own viewport. {{ cloudBrowser.watchers > 1 ? cloudBrowser.watchers + ' tabs are watching this view.' : 'Recording keeps recent frames in memory only - the server stores nothing after a restart.' }}</p>
+                    <p class="muted small" style="margin-top:8px;">Clicks land where you click; the browser decides the coordinates from its own viewport. Click the picture once, then type - letters and shortcuts reach the page as you press them. {{ cloudBrowser.watchers > 1 ? cloudBrowser.watchers + ' tabs are watching this view.' : 'Recording keeps recent frames in memory only - the server stores nothing after a restart.' }}</p>
                     <p v-if="cloudBrowser.streamError" class="small" style="color:var(--danger);">{{ cloudBrowser.streamError }}</p>
                     <div class="form-group" style="margin-top:14px;">
-                        <label>Go to</label>
-                        <div style="display:flex;gap:8px;flex-wrap:wrap;">
-                            <input v-model="cloudBrowser.navigateUrl" class="form-control mono" style="flex:1;min-width:220px;" placeholder="https://web.telegram.org/a/" autocomplete="off" spellcheck="false">
-                            <button class="btn btn-outline" @click="navigateCloudBrowserPage" :disabled="!!cloudBrowser.busy">Go</button>
-                        </div>
-                    </div>
-                    <div class="form-group">
                         <label>Type into the focused field</label>
                         <div style="display:flex;gap:8px;flex-wrap:wrap;">
                             <input v-model="cloudBrowser.text" class="form-control" type="password" style="flex:1;min-width:220px;" placeholder="Phone number, code or password" autocomplete="off">
                             <button class="btn btn-outline" @click="typeIntoCloudBrowserPage" :disabled="!!cloudBrowser.busy">Send text</button>
                         </div>
-                        <p class="muted small" style="margin-top:6px;">Cleared from this form as soon as it is sent. Nothing typed here is stored or logged.</p>
+                        <p class="muted small" style="margin-top:6px;">Sent one keystroke at a time, then cleared from this form. Nothing typed here is stored or logged.</p>
+                    </div>
+                    <div class="form-group">
+                        <label>Modifiers for the key buttons</label>
+                        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                            <button v-for="mod in ['Shift', 'Control', 'Alt', 'Meta']" :key="mod" class="btn btn-sm" :class="cloudBrowser.modifiers.includes(mod) ? 'btn-primary' : 'btn-outline'" @click="toggleCloudBrowserModifier(mod)">{{ mod }}</button>
+                        </div>
                     </div>
                     <div class="form-group">
                         <label>Keys the browser accepts</label>
                         <div style="display:flex;gap:8px;flex-wrap:wrap;">
                             <button v-for="key in cloudBrowser.config.keys" :key="key" class="btn btn-outline btn-sm" @click="pressCloudBrowserKey(key)" :disabled="!!cloudBrowser.busy">{{ key }}</button>
                         </div>
-                        <p class="muted small" style="margin-top:6px;">Enter, arrows, space and editing keys. Letters and digits go through the type field so a key press can never carry a secret into the logs.</p>
+                        <p class="muted small" style="margin-top:6px;">Toggled modifiers apply to these buttons. Enter, arrows, space and editing keys; letters and digits travel per keystroke so a key press can never carry a secret into the logs.</p>
+                    </div>
+                    <div style="margin-top:14px;">
+                        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;justify-content:space-between;">
+                            <label style="margin:0;">Downloads on the browser host</label>
+                            <button class="btn btn-sm btn-outline" @click="loadCloudBrowserDownloads" :disabled="!!cloudBrowser.busy">Refresh</button>
+                        </div>
+                        <p v-if="!cloudBrowser.downloads.length" class="muted small" style="margin-top:6px;">Nothing has started in this view. Files save on the browser host - this list only shows what started and finished.</p>
+                        <div v-else style="margin-top:6px;">
+                            <div v-for="item in cloudBrowser.downloads" :key="item.guid + item.at" class="status-row">
+                                <span class="mono small" style="overflow-wrap:anywhere;">{{ item.filename || 'Unnamed file' }}</span>
+                                <span class="muted small">{{ item.host || 'unknown host' }} <span class="badge" :class="item.state === 'completed' ? 'badge-info' : (item.state === 'canceled' ? 'badge-danger' : 'badge-warning')">{{ item.state }}</span></span>
+                            </div>
+                        </div>
+                        <p v-if="cloudBrowser.downloadsError" class="small" style="color:var(--danger);">{{ cloudBrowser.downloadsError }}</p>
                     </div>
                     <div class="form-row" style="align-items:flex-end;">
                         <div class="form-group">
@@ -4111,10 +4233,13 @@
                         {{ channelScraper.loading ? 'Searching…' : 'Find channels and groups' }}
                     </button>
                     <p v-if="channelScraper.summary" style="margin-top: 12px;" data-testid="channel-summary">{{ channelScraper.summary }}</p>
-                    <p v-if="channelScraper.partial" class="muted small" style="margin-top: 8px; color: var(--warning);">The search deadline was reached, so some keywords were skipped. These results are partial — run the remaining keywords again.</p>
+                    <p v-if="channelScraper.partial" class="muted small" style="margin-top: 8px; color: var(--warning);">
+                        The search deadline was reached{{ channelKeywordCoverage ? ' (' + channelKeywordCoverage + ')' : '' }}, so some keywords were skipped. These results are partial — run the remaining keywords again.
+                    </p>
                     <div v-if="channelScraper.diagnostics" class="muted small" data-testid="channel-diagnostics" style="margin-top: 8px; display: grid; gap: 4px;">
                         <div>{{ channelDiagnosticsText }}</div>
                         <div v-if="channelSourceSummary">Sources — {{ channelSourceSummary }}</div>
+                        <div v-if="channelKeywordCoverage">Coverage — {{ channelKeywordCoverage }}</div>
                     </div>
 
                     <div v-if="channelScraper.results.length" style="margin-top: 20px;">
@@ -4135,15 +4260,20 @@
                                         <th style="padding: 8px 12px; text-align: left;">URL</th>
                                         <th style="padding: 8px 12px; text-align: left;">Type</th>
                                         <th style="padding: 8px 12px; text-align: left;">Members</th>
+                                        <th style="padding: 8px 12px; text-align: left;">Matched in</th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     <tr v-for="(c, idx) in channelRows" :key="c.id" style="border-top: 1px solid rgba(255,255,255,0.05);">
                                         <td style="padding: 6px 12px; color: var(--text-dim);">{{ idx + 1 }}</td>
-                                        <td style="padding: 6px 12px;">{{ c.title }} <app-icon v-if="c.verified" name="check" :size="14" style="vertical-align:-2px;color:var(--accent);" title="Verified"></app-icon></td>
+                                        <td style="padding: 6px 12px;">
+                                            {{ c.title }} <app-icon v-if="c.verified" name="check" :size="14" style="vertical-align:-2px;color:var(--accent);" title="Verified"></app-icon>
+                                            <div v-if="c.about" class="muted small" style="max-width: 420px; white-space: normal;">{{ c.about }}</div>
+                                        </td>
                                         <td style="padding: 6px 12px;"><a :href="c.url" target="_blank" rel="noopener noreferrer" style="color: var(--accent);">{{ c.url }}</a></td>
                                         <td style="padding: 6px 12px;">{{ c.type }}</td>
                                         <td style="padding: 6px 12px;">{{ c.members == null ? '—' : c.members }}</td>
+                                        <td style="padding: 6px 12px;" class="muted small">{{ matchedInLabel(c) }}</td>
                                     </tr>
                                 </tbody>
                             </table>
@@ -4607,14 +4737,38 @@
                     <span class="copilot-mark"><app-icon name="copilot" :size="16"></app-icon></span>
                     <div>
                         <strong>Copilot</strong>
-                        <small>{{ copilot.mode === 'work' ? 'Work · auto-runs safe steps, stops at every gate' : 'Ask · drafts and reads, never sends' }}</small>
+                        <small>{{ copilot.engine === 'agent' ? 'Agent · picks tools, stops at every gate' : (copilot.mode === 'work' ? 'Work · auto-runs safe steps, stops at every gate' : 'Ask · drafts and reads, never sends') }}</small>
                     </div>
+                </div>
+                <div class="copilot-engine" role="tablist" aria-label="Copilot engine">
+                    <button type="button" role="tab" :aria-selected="copilot.engine === 'draft' ? 'true' : 'false'"
+                            :class="{ on: copilot.engine === 'draft' }" title="Draft from your words with the built-in rules or your AI provider"
+                            @click="setCopilotEngine('draft')">Draft</button>
+                    <button type="button" role="tab" :aria-selected="copilot.engine === 'agent' ? 'true' : 'false'"
+                            :class="{ on: copilot.engine === 'agent' }" title="Let the model choose tools, skills and connectors — writes stop for approval"
+                            @click="setCopilotEngine('agent')">Agent</button>
                 </div>
                 <button class="icon-btn" @click="toggleCopilot" aria-label="Close Copilot"><app-icon name="close" :size="16"></app-icon></button>
             </header>
 
             <div class="copilot-body" id="copilot-body">
                 <p v-if="copilot.error" class="copilot-error" role="alert">{{ copilot.error }}</p>
+
+                <div v-if="copilot.engine === 'agent' && copilot.agent.reply" class="copilot-agent-reply">
+                    <p class="copilot-label">
+                        {{ copilot.agent.engine === 'guard' ? 'Refused' : copilot.agent.engine === 'model' ? 'Agent' : 'Built-in drafter' }}
+                        <span v-if="copilot.agent.model" class="copilot-muted">{{ copilot.agent.model }}</span>
+                        <span v-if="copilot.agent.stepsUsed" class="copilot-muted">· {{ copilot.agent.stepsUsed }} step(s)</span>
+                    </p>
+                    <p style="margin:0; white-space:pre-wrap; font-size:12.5px;">{{ copilot.agent.reply }}</p>
+                    <ol v-if="copilot.agent.steps.length" class="copilot-steps">
+                        <li v-for="step in copilot.agent.steps" :key="step.index">
+                            <strong style="color:var(--text);">{{ step.tool }}</strong>
+                            <span class="badge" :class="step.status === 'ok' ? 'badge-success' : step.status === 'pending' ? 'badge-info' : 'badge-danger'">{{ step.status }}</span>
+                            <span>{{ step.summary }}</span>
+                        </li>
+                    </ol>
+                </div>
 
                 <template v-if="!copilot.draft">
                     <div v-if="copilot.suggestions.length" class="copilot-suggest">
@@ -4634,7 +4788,10 @@
                             </div>
                         </div>
                     </div>
-                    <div class="copilot-intro">
+                    <div v-if="copilot.engine === 'agent'" class="copilot-intro">
+                        <p><strong>Agent</strong> lets the model choose from {{ copilot.capabilities.tools.length }} workspace tools, {{ copilot.capabilities.skills.length }} skills and {{ copilot.capabilities.connectors.length }} connectors. Reads run inline; a write, skill or connector step comes back as a draft you approve. Account creation, number purchase, auto join and cold outreach stay refused.</p>
+                    </div>
+                    <div v-else class="copilot-intro">
                         <p><strong>Ask</strong> answers from your accounts, automations, connectors and encrypted knowledge, and drafts anything that changes state. <strong>Work</strong> also runs the safe writes — creating or pausing an automation — and still stops at every operator gate. Nothing is sent, bought or joined from here.</p>
                     </div>
                 </template>
@@ -4749,9 +4906,9 @@
                             title="Make this prompt more precise" aria-label="Enhance prompt"><app-icon name="sparkles" :size="17"></app-icon></button>
                     <textarea id="copilot-panel-input" class="copilot-input" rows="2" maxlength="2000"
                               v-model="copilot.instruction" @keydown.ctrl.enter.prevent="submitCopilot"
-                              :placeholder="copilot.mode === 'work' ? 'Describe the job — Work applies what is safe.' : 'Ask for a template, a schedule or an opt-in send…'"></textarea>
+                              :placeholder="copilot.engine === 'agent' ? 'Tell the agent what you want — it picks the tools and stops at every gate.' : (copilot.mode === 'work' ? 'Describe the job — Work applies what is safe.' : 'Ask for a template, a schedule or an opt-in send…')"></textarea>
                     <button type="button" class="btn btn-primary btn-sm" @click="submitCopilot"
-                            :disabled="copilot.loading || !copilot.instruction.trim()">{{ copilot.loading ? '…' : (copilot.mode === 'work' ? 'Work' : 'Ask') }}</button>
+                            :disabled="copilot.loading || !copilot.instruction.trim()">{{ copilot.loading ? '…' : (copilot.engine === 'agent' ? 'Run agent' : (copilot.mode === 'work' ? 'Work' : 'Ask')) }}</button>
                 </div>
                 <input id="copilot-files" type="file" multiple hidden @change="uploadCopilotFiles">
                 <p class="copilot-footnote">Any file can be attached — PDF, Word, PowerPoint, spreadsheets and zips are read as text. Attachments stay in memory for this session. Nothing is sent, bought or joined.</p>
@@ -5544,6 +5701,9 @@
         // with fetch + ReadableStream. The abort handle lives outside Vue's reactive
         // state: a controller proxy would break the underlying connection.
         let _cloudStream = null
+        // Keystrokes must reach the page in the order they were typed. Each one is
+        // its own request, so they are chained rather than fired side by side.
+        let _cloudKeyQueue = Promise.resolve()
         let _mailboxStream = null
         // A page of chat history can carry dozens of photos. The inbox opens one at a time and
         // only for the newest few, so reading a chat never turns into a burst of downloads.
@@ -5797,14 +5957,23 @@
                         form: { name: '', url: '', transport: 'http', token: '', auth_mode: 'token', client_id: '', client_secret: '', scopes: '' },
                     },
                     pendingOAuthReturn: null,
-                    features: { loading: false, automation_enabled: true, factory_enabled: true, cloud_browser_enabled: false, auto_reply_enabled: false, inbox_enabled: false, saving: '' },
+                    features: { loading: false, automation_enabled: true, factory_enabled: true, cloud_browser_enabled: false, cloud_phone_enabled: false, auto_reply_enabled: false, inbox_enabled: false, saving: '' },
                     cloudBrowser: {
                         config: { configured: false, host: '', has_token: false, updated_at: '', enabled: false, encryption_ready: false, keys: [], profiles: [], active: '', max_profiles: 12 },
                         endpoint: '', token: '', name: '', product: '', revision: '',
-                        pages: [], selected: '', url: '', navigateUrl: '', text: '', otpAccount: '',
+                        pages: [], selected: '', url: '', address: '', navigateUrl: '', text: '', otpAccount: '',
+                        pageState: { index: 0, entries: [], url: '', title: '', can_go_back: false, can_go_forward: false },
+                        modifiers: [], downloads: [], downloadsError: '', stateTimer: null,
                         view: '', busy: '', error: '', message: '',
                         live: false, frames: 0, watchers: 0, recording: false, reel_frames: 0, reel_bytes: 0, streamError: '',
                         plan: { id: '', goal: '', page: '', steps: [], next: null, done: false, seconds_left: 0, text: '', error: '' },
+                    },
+                    phone: {
+                        config: { configured: false, host: '', has_token: false, device: '', udid: '', package: '', updated_at: '', enabled: false, encryption_ready: false, keys: [], max_text: 200, session: { connected: false, device: '', since: null } },
+                        endpoint: '', token: '', device: '', udid: '', package: '',
+                        screen: '', screenAt: '', drag: null,
+                        connected: false, gateway: '', text: '', launchPackage: '',
+                        pollTimer: null, busy: '', error: '', message: '', actionError: '',
                     },
                     freeProxies: { count: 5, loading: false },
                     templateEdit: { id: '', name: '', content: '', busy: false },
@@ -6101,8 +6270,10 @@
                     // Copilot (draft-only: never sends)
                     copilot: { instruction: '', loading: false, draft: null, presets: [], error: '', turnId: '', history: [],
                                editing: '', saving: false, formError: '',
-                               open: false, mode: 'ask', suggestions: [], attachments: [], uploading: false,
+                               open: false, mode: 'ask', engine: 'draft', suggestions: [], attachments: [], uploading: false,
                                enhancing: false, enhanced: [], tools: [], toolCount: 0,
+                               agent: { reply: '', steps: [], model: '', engine: '', status: '', stepsUsed: 0 },
+                               capabilities: { tools: [], skills: [], connectors: [] },
                                form: { group: '', title: '', description: '', instruction: '', command: '' } },
 
                     // Auto Reply (inbound; answers only private chats that spoke first)
@@ -6431,7 +6602,7 @@
                         integrations: ['Integrations', 'n8n, MCP and the credentials that connect them.'],
                         accounts: ['Accounts', 'Telegram accounts connected to this workspace.'],
                         contacts: ['Contacts', 'Per-account contact lists with CSV import and export.'],
-                        cloudphone: ['Cloud Phone', 'Encrypted recovery records for numbers and logins.'],
+                        cloudphone: ['Cloud Phone', 'Drive a device you rent, plus encrypted recovery records for numbers and logins.'],
                         cloudbrowser: ['Cloud Browser', 'Drive a hosted browser you own, and hand it a Cloud Phone code.'],
                         proxies: ['Proxies', 'Global and per-account connection routing.'],
                         health: ['Health', 'Connection risk and account reliability.'],
@@ -6522,6 +6693,15 @@
                 },
                 scraperRows() { return this.scraper.results.slice(0, 200) },
                 channelRows() { return this.channelScraper.results.slice(0, 200) },
+                channelKeywordCoverage() {
+                    const d = this.channelScraper.diagnostics || {}
+                    const k = d.keywords
+                    const p = (d.sources && d.sources.previews) || {}
+                    const parts = []
+                    if (k && k.input) parts.push(`${k.queried}/${k.input} keywords searched`)
+                    if (p.requests) parts.push(`member counts filled for ${p.ok}/${p.requests}`)
+                    return parts.join(' · ')
+                },
                 autojoinLinks() {
                     // Unique, non-blank lines; server does authoritative parsing.
                     return [...new Set((this.autojoin.urls || '').split(/\r\n|\r|\n/).map(l => l.trim()).filter(Boolean))];
@@ -6670,7 +6850,8 @@
                     if (tab === 'tasks') this.loadOutreachJobs()
                     if (tab === 'integrations') { this.loadWebhooks(); this.loadIntegrations(); this.loadAiSettings(); this.loadFeatures() }
                     if (tab === 'contacts') { if (!this.contacts.accountId && this.accounts.length) this.contacts.accountId = this.accounts[0].account_id; this.loadContacts() }
-                    if (tab === 'cloudphone') this.loadRecovery()
+                    if (tab === 'cloudphone') { this.loadRecovery(); this.loadCloudPhone() }
+                    else this.stopCloudPhoneScreen()
                     if (tab === 'cloudbrowser') this.loadCloudBrowser()
                     else this.stopCloudBrowserStream()
                     if (tab === 'inbox') {
@@ -6705,7 +6886,7 @@
                     if (this.tab === 'tables') this.loadTables()
                     if (this.tab === 'workflows') this.loadWorkflows()
                     if (this.tab === 'copilot') this.loadCopilotHistory()
-                    if (this.tab === 'cloudphone') this.loadRecovery()
+                    if (this.tab === 'cloudphone') { this.loadRecovery(); this.loadCloudPhone() }
                     if (this.tab === 'scraper' || this.tab === 'adder') this.loadGroups(this.tab)
                     if (['overview', 'tasks', 'automation', 'factory'].includes(this.tab)) this.loadAutomationStatus()
                     this.showToast('Refreshed.')
@@ -6775,6 +6956,13 @@
                     })
                     return {unique, duplicates}
                 },
+                matchedInLabel(row) {
+                    const fields = row.matched_in || [];
+                    const names = { title: 'title', username: 'username', description: 'description' };
+                    const keyword = (row.matched_keywords && row.matched_keywords[0]) || row.matched_keyword || '';
+                    const where = fields.length ? fields.map(f => names[f] || f).join(', ') : 'keyword index';
+                    return keyword ? `${where} · "${keyword}"` : where;
+                },
                 useChannelResultsAsTargets() {
                     const existing = this.parseScrapeTargets(this.scraper.bulkTargets).unique
                     const found = this.channelScraper.results.map(c => c.username ? '@' + c.username : c.url).filter(Boolean)
@@ -6795,24 +6983,77 @@
                             this.showToast('Add at least one http(s) proxy URL, or choose another proxy mode.', true);
                             return;
                         }
-                        const res = await _api.post('/api/scraper/channels', {
-                            account_id: '',
-                            keywords,
-                            country: this.channelScraper.country,
-                            language: this.channelScraper.language,
-                            group_type: this.channelScraper.groupType,
-                            limit: this.channelScraper.limit,
-                            proxy_mode: this.channelScraper.proxyMode,
-                            proxy_urls: this.channelScraper.proxyMode === 'custom' ? proxyUrls : [],
-                        }, {timeout: 120000});
-                        this.channelScraper.results = res.data.results || [];
-                        this.channelScraper.partial = res.data.partial === true;
-                        this.channelScraper.diagnostics = res.data.diagnostics || null;
-                        const total = res.data.total || 0;
+                        // A long keyword list is searched in batches so every batch
+                        // finishes inside the server budget and progress is visible.
+                        const CHUNK = 150;
+                        const batches = [];
+                        for (let i = 0; i < keywords.length; i += CHUNK) batches.push(keywords.slice(i, i + CHUNK));
+                        const merged = new Map();
+                        const totals = {input: 0, queried: 0, skipped: 0, requests: 0, ok: 0, errors: 0,
+                                        previewSkipped: 0, candidates: 0, filtered: {}};
+                        const sourceTotals = {};
+                        let lastDiagnostics = null;
+                        let anyPartial = false;
+                        for (let index = 0; index < batches.length; index += 1) {
+                            if (batches.length > 1) {
+                                this.channelScraper.summary = `Searching batch ${index + 1} of ${batches.length} (${keywords.length} keywords total)…`;
+                            }
+                            const res = await _api.post('/api/scraper/channels', {
+                                account_id: '',
+                                keywords: batches[index],
+                                country: this.channelScraper.country,
+                                language: this.channelScraper.language,
+                                group_type: this.channelScraper.groupType,
+                                limit: this.channelScraper.limit,
+                                proxy_mode: this.channelScraper.proxyMode,
+                                proxy_urls: this.channelScraper.proxyMode === 'custom' ? proxyUrls : [],
+                            }, {timeout: 180000});
+                            const diagnostics = res.data.diagnostics || {};
+                            lastDiagnostics = diagnostics;
+                            anyPartial = anyPartial || res.data.partial === true;
+                            this.mergeChannelResults(merged, res.data.results || []);
+                            const k = diagnostics.keywords || {};
+                            const p = (diagnostics.sources && diagnostics.sources.previews) || {};
+                            totals.input += k.input || batches[index].length;
+                            totals.queried += k.queried || 0;
+                            totals.skipped += k.skipped || 0;
+                            totals.requests += p.requests || 0;
+                            totals.ok += p.ok || 0;
+                            totals.errors += p.errors || 0;
+                            totals.previewSkipped += p.skipped || 0;
+                            totals.candidates += diagnostics.candidates || 0;
+                            Object.entries(diagnostics.filtered || {}).forEach(([name, value]) => {
+                                totals.filtered[name] = (totals.filtered[name] || 0) + (value || 0);
+                            });
+                            Object.entries(diagnostics.sources || {}).forEach(([name, value]) => {
+                                if (!value || name === 'previews') return;
+                                const acc = sourceTotals[name] || (sourceTotals[name] = {requests: 0, ok: 0, errors: 0, items: 0});
+                                acc.requests += value.requests || 0;
+                                acc.ok += value.ok || 0;
+                                acc.errors += value.errors || 0;
+                                acc.items += value.items || 0;
+                                if (value.error) acc.error = value.error;
+                            });
+                        }
+                        const mergedDiagnostics = {
+                            ...(lastDiagnostics || {}),
+                            candidates: totals.candidates,
+                            filtered: totals.filtered,
+                            keywords: {input: totals.input, queried: totals.queried, skipped: totals.skipped},
+                            sources: {
+                                ...sourceTotals,
+                                previews: {requests: totals.requests, ok: totals.ok,
+                                           errors: totals.errors, skipped: totals.previewSkipped},
+                            },
+                        };
+                        const results = [...merged.values()].slice(0, this.channelScraper.limit);
+                        this.channelScraper.results = results;
+                        this.channelScraper.partial = anyPartial || totals.skipped > 0;
+                        this.channelScraper.diagnostics = mergedDiagnostics;
+                        const total = results.length;
                         const source = keywords.length === 1 ? '1 keyword' : `${keywords.length} keywords`;
-                        const diagnostics = res.data.diagnostics || {};
-                        const reason = diagnostics.reason;
-                        const notice = diagnostics.notice;
+                        const reason = lastDiagnostics && lastDiagnostics.reason;
+                        const notice = lastDiagnostics && lastDiagnostics.notice;
                         this.channelScraper.summary = (total
                             ? `Found ${total} public channel${total === 1 ? '' : 's'}/group${total === 1 ? '' : 's'} from ${source}.`
                             : `Found 0 public channels/groups from ${source}.${reason ? ' ' + reason : ''}`)
@@ -6826,9 +7067,34 @@
                         this.channelScraper.loading = false;
                     }
                 },
+                mergeChannelResults(merged, batch) {
+                    batch.forEach(row => {
+                        const key = (row.username || row.url || '').toLowerCase();
+                        if (!key) return;
+                        const existing = merged.get(key);
+                        if (!existing) { merged.set(key, {...row}); return; }
+                        const keywords = new Set([...(existing.matched_keywords || []), ...(row.matched_keywords || [])]);
+                        const fields = new Set([...(existing.matched_in || []), ...(row.matched_in || [])]);
+                        merged.set(key, {
+                            ...existing,
+                            about: existing.about || row.about,
+                            members: existing.members == null ? row.members : existing.members,
+                            type: existing.type || row.type,
+                            matched_keywords: [...keywords],
+                            matched_in: [...fields],
+                        });
+                    });
+                },
                 exportChannelCSV() {
                     const fields = ['title', 'username', 'url', 'type', 'members', 'verified', 'id', 'matched_keyword'];
-                    this.downloadCSV('telegram-channels.csv', [fields, ...this.channelScraper.results.map(c => fields.map(f => c[f]))]);
+                    const header = [...fields, 'about', 'matched_in', 'matched_keywords'];
+                    const body = this.channelScraper.results.map(c => [
+                        ...fields.map(f => c[f]),
+                        c.about || '',
+                        (c.matched_in || []).join(' '),
+                        (c.matched_keywords || []).join(' '),
+                    ]);
+                    this.downloadCSV('telegram-channels.csv', [header, ...body]);
                 },
                 copyChannelUrls() {
                     const urls = this.channelScraper.results.map(c => c.url).join('\n');
@@ -8776,6 +9042,256 @@
                         })
                         .catch(e => this.showToast(e.response?.data?.detail || 'Could not export contacts.', true))
                 },
+                // ---- Cloud Phone device bridge ----
+                applyCloudPhoneConfig(data) {
+                    const config = data && typeof data === 'object' ? data : {}
+                    const session = config.session && typeof config.session === 'object' ? config.session : {}
+                    this.phone.config = {
+                        configured: !!config.configured,
+                        host: config.host || '',
+                        has_token: !!config.has_token,
+                        device: config.device || '',
+                        udid: config.udid || '',
+                        package: config.package || '',
+                        updated_at: config.updated_at || '',
+                        enabled: !!config.enabled,
+                        encryption_ready: !!config.encryption_ready,
+                        keys: Array.isArray(config.keys) ? config.keys : [],
+                        max_text: config.max_text || 200,
+                        session: { connected: !!session.connected, device: session.device || '', since: session.since || null },
+                    }
+                    this.phone.connected = !!session.connected
+                    // Only seed empty fields: a reload must never overwrite what the
+                    // operator is typing into the form.
+                    if (!this.phone.device) this.phone.device = config.device || ''
+                    if (!this.phone.udid) this.phone.udid = config.udid || ''
+                    if (!this.phone.package) this.phone.package = config.package || ''
+                    if (!this.phone.launchPackage) this.phone.launchPackage = config.package || ''
+                },
+                async loadCloudPhone() {
+                    this.phone.error = ''
+                    try {
+                        const { data } = await _api.get('/api/cloud-phone/config')
+                        this.applyCloudPhoneConfig(data)
+                        if (this.phone.connected) this.startCloudPhoneScreen()
+                        else this.stopCloudPhoneScreen()
+                    } catch (e) {
+                        this.phone.error = e.response?.data?.detail || 'Could not load the phone gateway.'
+                    }
+                },
+                async saveCloudPhone() {
+                    const endpoint = this.phone.endpoint.trim()
+                    if (!endpoint) { this.showToast('Enter the WebDriver endpoint of your cloud phone.', true); return }
+                    this.phone.busy = 'save'
+                    this.phone.error = ''
+                    this.phone.actionError = ''
+                    try {
+                        const { data } = await _api.put('/api/cloud-phone/config', {
+                            endpoint, token: this.phone.token, device: this.phone.device.trim(),
+                            udid: this.phone.udid.trim(), package: this.phone.package.trim(), clear: false,
+                        })
+                        this.applyCloudPhoneConfig(data)
+                        this.phone.token = ''
+                        this.phone.endpoint = ''
+                        this.phone.message = 'Gateway saved encrypted.'
+                        this.showToast('Cloud phone gateway saved encrypted.')
+                        await this.checkCloudPhone()
+                    } catch (e) {
+                        this.phone.error = e.response?.data?.detail || 'Could not save the phone gateway.'
+                    } finally {
+                        this.phone.busy = ''
+                    }
+                },
+                async checkCloudPhone() {
+                    this.phone.busy = 'check'
+                    this.phone.actionError = ''
+                    try {
+                        const { data } = await _api.post('/api/cloud-phone/check')
+                        this.phone.gateway = data.ready ? ('Ready' + (data.build ? ' · ' + data.build : '')) : 'Not ready'
+                        this.phone.message = data.ready ? 'The gateway answered and is ready for a session.' : 'The gateway answered but is not ready for a session.'
+                    } catch (e) {
+                        this.phone.gateway = ''
+                        this.phone.actionError = e.response?.data?.detail || 'Could not reach the phone gateway.'
+                    } finally {
+                        this.phone.busy = ''
+                    }
+                },
+                async connectCloudPhone() {
+                    this.phone.busy = 'connect'
+                    this.phone.actionError = ''
+                    try {
+                        const { data } = await _api.post('/api/cloud-phone/connect')
+                        this.applyCloudPhoneConfig(data)
+                        this.phone.message = data.reused ? 'Using the phone session that was already open.' : 'Phone session opened.'
+                        this.showToast('Phone connected.')
+                        this.startCloudPhoneScreen()
+                    } catch (e) {
+                        this.phone.actionError = e.response?.data?.detail || 'Could not connect the phone.'
+                    } finally {
+                        this.phone.busy = ''
+                    }
+                },
+                async disconnectCloudPhone() {
+                    this.phone.busy = 'disconnect'
+                    try {
+                        const { data } = await _api.post('/api/cloud-phone/disconnect')
+                        this.applyCloudPhoneConfig(data)
+                        this.phone.screen = ''
+                        this.phone.screenAt = ''
+                        this.stopCloudPhoneScreen()
+                        this.phone.message = 'Phone session released.'
+                    } catch (e) {
+                        this.phone.actionError = e.response?.data?.detail || 'Could not release the phone session.'
+                    } finally {
+                        this.phone.busy = ''
+                    }
+                },
+                async forgetCloudPhone() {
+                    if (!window.confirm('Forget the stored phone gateway and token?')) return
+                    this.phone.busy = 'forget'
+                    try {
+                        const { data } = await _api.put('/api/cloud-phone/config', { clear: true })
+                        this.applyCloudPhoneConfig(data)
+                        this.phone.device = ''; this.phone.udid = ''; this.phone.package = ''; this.phone.launchPackage = ''
+                        this.phone.screen = ''; this.phone.screenAt = ''; this.phone.gateway = ''
+                        this.stopCloudPhoneScreen()
+                        this.phone.message = 'Gateway and token removed.'
+                    } catch (e) {
+                        this.phone.actionError = e.response?.data?.detail || 'Could not forget the gateway.'
+                    } finally {
+                        this.phone.busy = ''
+                    }
+                },
+                refreshCloudPhoneScreen() {
+                    if (!this.phone.connected) return Promise.resolve()
+                    return _api.get('/api/cloud-phone/screen')
+                        .then(({ data }) => { this.phone.screen = data.image || ''; this.phone.screenAt = data.at || '' })
+                        .catch(e => { this.phone.actionError = e.response?.data?.detail || 'Could not read the phone screen.' })
+                },
+                startCloudPhoneScreen() {
+                    this.stopCloudPhoneScreen()
+                    if (!this.phone.connected) return
+                    this.refreshCloudPhoneScreen()
+                    // A frame a second is enough to follow a login without turning the
+                    // gateway into a video stream.
+                    this.phone.pollTimer = setInterval(() => { if (!document.hidden) this.refreshCloudPhoneScreen() }, 1200)
+                },
+                stopCloudPhoneScreen() {
+                    if (this.phone.pollTimer) { clearInterval(this.phone.pollTimer); this.phone.pollTimer = null }
+                },
+                _phonePoint(event) {
+                    const img = event.currentTarget
+                    const rect = img.getBoundingClientRect()
+                    if (!rect.width || !rect.height) return null
+                    const width = img.naturalWidth || rect.width
+                    const height = img.naturalHeight || rect.height
+                    return {
+                        x: Math.max(0, Math.min(10000, Math.round((event.clientX - rect.left) / rect.width * width))),
+                        y: Math.max(0, Math.min(10000, Math.round((event.clientY - rect.top) / rect.height * height))),
+                    }
+                },
+                phonePointerDown(event) {
+                    if (!this.phone.connected) return
+                    const point = this._phonePoint(event)
+                    if (!point) return
+                    event.preventDefault()
+                    try { event.currentTarget.setPointerCapture(event.pointerId) } catch (e) {}
+                    this.phone.drag = { ...point, at: Date.now() }
+                },
+                phonePointerUp(event) {
+                    const start = this.phone.drag
+                    this.phone.drag = null
+                    if (!start || !this.phone.connected) return
+                    const end = this._phonePoint(event)
+                    if (!end) return
+                    const moved = Math.max(Math.abs(end.x - start.x), Math.abs(end.y - start.y))
+                    if (moved < 24) this.tapCloudPhone(end.x, end.y)
+                    else this.swipeCloudPhone(start.x, start.y, end.x, end.y, Math.min(3000, Math.max(50, Date.now() - start.at)))
+                },
+                phonePointerCancel() { this.phone.drag = null },
+                async tapCloudPhone(x, y) {
+                    if (this.phone.busy) return
+                    this.phone.busy = 'tap'
+                    this.phone.actionError = ''
+                    try {
+                        await _api.post('/api/cloud-phone/tap', { x, y })
+                        setTimeout(() => this.refreshCloudPhoneScreen(), 250)
+                    } catch (e) {
+                        this.phone.actionError = e.response?.data?.detail || 'The tap did not reach the phone.'
+                    } finally {
+                        this.phone.busy = ''
+                    }
+                },
+                async swipeCloudPhone(x1, y1, x2, y2, durationMs) {
+                    if (this.phone.busy) return
+                    this.phone.busy = 'swipe'
+                    this.phone.actionError = ''
+                    try {
+                        await _api.post('/api/cloud-phone/swipe', { x1, y1, x2, y2, duration_ms: durationMs })
+                        setTimeout(() => this.refreshCloudPhoneScreen(), 250)
+                    } catch (e) {
+                        this.phone.actionError = e.response?.data?.detail || 'The swipe did not reach the phone.'
+                    } finally {
+                        this.phone.busy = ''
+                    }
+                },
+                async sendCloudPhoneText() {
+                    const text = this.phone.text
+                    if (!this.phone.connected || !text.trim() || this.phone.busy) return
+                    this.phone.busy = 'text'
+                    this.phone.actionError = ''
+                    try {
+                        await _api.post('/api/cloud-phone/text', { text })
+                        this.phone.text = ''
+                        setTimeout(() => this.refreshCloudPhoneScreen(), 250)
+                    } catch (e) {
+                        this.phone.actionError = e.response?.data?.detail || 'The text did not reach the phone.'
+                    } finally {
+                        this.phone.busy = ''
+                    }
+                },
+                async pressCloudPhoneKey(key) {
+                    if (!this.phone.connected || this.phone.busy) return
+                    this.phone.busy = 'key'
+                    this.phone.actionError = ''
+                    try {
+                        await _api.post('/api/cloud-phone/key', { key })
+                        setTimeout(() => this.refreshCloudPhoneScreen(), 250)
+                    } catch (e) {
+                        this.phone.actionError = e.response?.data?.detail || 'The key press did not reach the phone.'
+                    } finally {
+                        this.phone.busy = ''
+                    }
+                },
+                async launchCloudPhoneApp() {
+                    const package = (this.phone.launchPackage || this.phone.config.package || '').trim()
+                    if (!package) { this.showToast('Enter the app package to open.', true); return }
+                    if (!this.phone.connected || this.phone.busy) return
+                    this.phone.busy = 'launch'
+                    this.phone.actionError = ''
+                    try {
+                        await _api.post('/api/cloud-phone/app/launch', { package })
+                        setTimeout(() => this.refreshCloudPhoneScreen(), 400)
+                    } catch (e) {
+                        this.phone.actionError = e.response?.data?.detail || 'Could not open that app on the phone.'
+                    } finally {
+                        this.phone.busy = ''
+                    }
+                },
+                async stopCloudPhoneApp() {
+                    const package = (this.phone.launchPackage || this.phone.config.package || '').trim()
+                    if (!package) { this.showToast('Enter the app package to stop.', true); return }
+                    if (!this.phone.connected || this.phone.busy) return
+                    this.phone.busy = 'stop'
+                    this.phone.actionError = ''
+                    try {
+                        await _api.post('/api/cloud-phone/app/stop', { package })
+                    } catch (e) {
+                        this.phone.actionError = e.response?.data?.detail || 'Could not stop that app on the phone.'
+                    } finally {
+                        this.phone.busy = ''
+                    }
+                },
                 // ---- Cloud Phone recovery vault ----
                 async loadRecovery() {
                     this.recovery.loading = true
@@ -8865,6 +9381,10 @@
                     this.cloudBrowser.pages = []
                     this.cloudBrowser.selected = ''
                     this.cloudBrowser.view = ''
+                    this.cloudBrowser.address = ''
+                    this.cloudBrowser.pageState = { index: 0, entries: [], url: '', title: '', can_go_back: false, can_go_forward: false }
+                    this.cloudBrowser.downloads = []
+                    this.cloudBrowser.downloadsError = ''
                     this.cloudBrowser.product = ''
                     this.cloudBrowser.revision = ''
                     this.cloudBrowser.message = ''
@@ -9054,6 +9574,8 @@
                             this.stopCloudBrowserStream()
                             this.cloudBrowser.selected = ''
                             this.cloudBrowser.view = ''
+                            this.cloudBrowser.address = ''
+                            this.cloudBrowser.pageState = { index: 0, entries: [], url: '', title: '', can_go_back: false, can_go_forward: false }
                         }
                         await this.loadCloudBrowserPages()
                     } catch (e) {
@@ -9070,11 +9592,17 @@
                     this.cloudBrowser.frames = 0
                     this.cloudBrowser.reel_frames = 0
                     this.cloudBrowser.streamError = ''
-                    this.cloudBrowser.navigateUrl = page.url && page.url !== 'about:blank' ? page.url : ''
+                    const address = page.url && page.url !== 'about:blank' ? page.url : ''
+                    this.cloudBrowser.address = address
+                    this.cloudBrowser.navigateUrl = address
+                    this.cloudBrowser.pageState = { index: 0, entries: [], url: address, title: page.title || '', can_go_back: false, can_go_forward: false }
                     // Moving to another page should not silently drop the view the
                     // operator already asked for.
                     if (wasLive) this.startCloudBrowserStream()
-                    else this.refreshCloudBrowserView()
+                    else {
+                        this.loadCloudBrowserState()
+                        this.refreshCloudBrowserView()
+                    }
                 },
                 async refreshCloudBrowserView() {
                     if (!this.cloudBrowser.selected) return
@@ -9089,7 +9617,7 @@
                     }
                 },
                 async navigateCloudBrowserPage() {
-                    const url = this.cloudBrowser.navigateUrl.trim()
+                    const url = this.cloudBrowser.address.trim()
                     if (!/^https?:\/\//i.test(url)) {
                         this.showToast('Enter the full https:// address to go to.', true)
                         return
@@ -9097,6 +9625,7 @@
                     this.cloudBrowser.busy = 'navigate'
                     try {
                         await _api.post(`/api/cloud-browser/pages/${encodeURIComponent(this.cloudBrowser.selected)}/navigate`, { url })
+                        await this.loadCloudBrowserState()
                         await this.refreshCloudBrowserView()
                         await this.loadCloudBrowserPages()
                     } catch (e) {
@@ -9111,7 +9640,7 @@
                     this.cloudBrowser.text = ''
                     this.cloudBrowser.busy = 'type'
                     try {
-                        const { data } = await _api.post(`/api/cloud-browser/pages/${encodeURIComponent(this.cloudBrowser.selected)}/type`, { text })
+                        const { data } = await _api.post(`/api/cloud-browser/pages/${encodeURIComponent(this.cloudBrowser.selected)}/keys`, { text })
                         this.showToast(`Sent ${data.characters} characters to the page.`)
                         await this.refreshCloudBrowserView()
                     } catch (e) {
@@ -9120,10 +9649,11 @@
                         this.cloudBrowser.busy = ''
                     }
                 },
-                async pressCloudBrowserKey(key) {
+                async pressCloudBrowserKey(key, modifiers) {
+                    const comboModifiers = modifiers === undefined ? this.cloudBrowser.modifiers.join(',') : modifiers
                     this.cloudBrowser.busy = 'key'
                     try {
-                        await _api.post(`/api/cloud-browser/pages/${encodeURIComponent(this.cloudBrowser.selected)}/key`, { key })
+                        await _api.post(`/api/cloud-browser/pages/${encodeURIComponent(this.cloudBrowser.selected)}/key`, { key, modifiers: comboModifiers })
                         await this.refreshCloudBrowserView()
                     } catch (e) {
                         this.showToast(e.response?.data?.detail || 'Could not send that key.', true)
@@ -9168,6 +9698,7 @@
                     this.cloudBrowser.busy = 'stream'
                     this.cloudBrowser.streamError = ''
                     this.cloudBrowser.live = true
+                    this.startCloudBrowserStatePolling()
                     try {
                         const { data: { session } } = await _supabase.auth.getSession()
                         if (!session?.access_token) throw new Error('Sign in to continue')
@@ -9211,6 +9742,7 @@
                             this.cloudBrowser.live = false
                             this.cloudBrowser.recording = false
                             this.cloudBrowser.busy = ''
+                            this.stopCloudBrowserStatePolling()
                         }
                     }
                 },
@@ -9222,6 +9754,137 @@
                     this.cloudBrowser.live = false
                     this.cloudBrowser.recording = false
                     this.cloudBrowser.watchers = 0
+                    this.stopCloudBrowserStatePolling()
+                },
+                startCloudBrowserStatePolling() {
+                    this.stopCloudBrowserStatePolling()
+                    this.loadCloudBrowserState()
+                    this.loadCloudBrowserDownloads()
+                    this.cloudBrowser.stateTimer = setInterval(() => {
+                        if (!this.cloudBrowser.selected) {
+                            this.stopCloudBrowserStatePolling()
+                            return
+                        }
+                        this.loadCloudBrowserState()
+                    }, 2000)
+                },
+                stopCloudBrowserStatePolling() {
+                    if (this.cloudBrowser.stateTimer) {
+                        clearInterval(this.cloudBrowser.stateTimer)
+                        this.cloudBrowser.stateTimer = null
+                    }
+                },
+                async loadCloudBrowserState() {
+                    const target = this.cloudBrowser.selected
+                    if (!target) return
+                    try {
+                        const { data } = await _api.get(`/api/cloud-browser/pages/${encodeURIComponent(target)}/state`)
+                        if (this.cloudBrowser.selected !== target) return
+                        this.cloudBrowser.pageState = {
+                            index: data.index || 0,
+                            entries: Array.isArray(data.entries) ? data.entries : [],
+                            url: data.url || '',
+                            title: data.title || '',
+                            can_go_back: !!data.can_go_back,
+                            can_go_forward: !!data.can_go_forward,
+                        }
+                        // A poll must not overwrite an address the operator is editing.
+                        const input = this.$refs.cloudBrowserAddress
+                        const active = typeof document !== 'undefined' ? document.activeElement : null
+                        if (!input || active !== input) this.cloudBrowser.address = data.url || this.cloudBrowser.address
+                    } catch (e) {
+                        // A page that closed under the view is reported once, not every two seconds.
+                    }
+                },
+                async _cloudBrowserHistory(action) {
+                    if (!this.cloudBrowser.selected) return
+                    this.cloudBrowser.busy = 'history'
+                    try {
+                        await _api.post(`/api/cloud-browser/pages/${encodeURIComponent(this.cloudBrowser.selected)}/${action}`)
+                        await this.loadCloudBrowserState()
+                        if (!this.cloudBrowser.live) await this.refreshCloudBrowserView()
+                        await this.loadCloudBrowserPages()
+                    } catch (e) {
+                        this.showToast(e.response?.data?.detail || 'That navigation did not reach the browser.', true)
+                    } finally {
+                        this.cloudBrowser.busy = ''
+                    }
+                },
+                cloudBrowserBack() { return this._cloudBrowserHistory('back') },
+                cloudBrowserForward() { return this._cloudBrowserHistory('forward') },
+                cloudBrowserReload() { return this._cloudBrowserHistory('reload') },
+                cloudBrowserTabLabel(page) {
+                    const title = (page.title || '').trim()
+                    if (title) return title.length > 28 ? title.slice(0, 27) + '…' : title
+                    try { return new URL(page.url).hostname || 'Untitled page' } catch (_) { return 'Untitled page' }
+                },
+                focusCloudBrowserAddress() {
+                    this.$nextTick(() => this.$refs.cloudBrowserAddress?.focus())
+                },
+                focusCloudBrowserSurface() {
+                    this.$nextTick(() => this.$refs.cloudBrowserSurface?.focus())
+                },
+                toggleCloudBrowserModifier(mod) {
+                    const current = this.cloudBrowser.modifiers
+                    this.cloudBrowser.modifiers = current.includes(mod) ? current.filter(item => item !== mod) : current.concat(mod)
+                },
+                _queueCloudBrowserInput(send) {
+                    _cloudKeyQueue = _cloudKeyQueue.then(send).catch(() => {})
+                },
+                sendCloudBrowserKeys(text) {
+                    if (!text || !this.cloudBrowser.selected) return
+                    const target = this.cloudBrowser.selected
+                    this._queueCloudBrowserInput(async () => {
+                        if (this.cloudBrowser.selected !== target) return
+                        try {
+                            await _api.post(`/api/cloud-browser/pages/${encodeURIComponent(target)}/keys`, { text })
+                        } catch (e) {
+                            this.showToast(e.response?.data?.detail || 'That keystroke did not reach the browser.', true)
+                        }
+                    })
+                },
+                sendCloudBrowserCombo(key, modifiers) {
+                    if (!key || !this.cloudBrowser.selected) return
+                    const target = this.cloudBrowser.selected
+                    this._queueCloudBrowserInput(async () => {
+                        if (this.cloudBrowser.selected !== target) return
+                        try {
+                            await _api.post(`/api/cloud-browser/pages/${encodeURIComponent(target)}/key`, { key, modifiers })
+                        } catch (e) {
+                            this.showToast(e.response?.data?.detail || 'That key did not reach the browser.', true)
+                        }
+                    })
+                },
+                cloudBrowserKeydown(event) {
+                    if (!this.cloudBrowser.selected) return
+                    const named = ['Enter', 'Tab', 'Escape', 'Backspace', 'Delete', 'Home', 'End', 'PageUp', 'PageDown', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']
+                    const modifiers = []
+                    if (event.shiftKey) modifiers.push('Shift')
+                    if (event.ctrlKey) modifiers.push('Control')
+                    if (event.altKey) modifiers.push('Alt')
+                    if (event.metaKey) modifiers.push('Meta')
+                    const key = event.key
+                    if (named.includes(key) || /^F([1-9]|1[0-2])$/.test(key)) {
+                        event.preventDefault()
+                        this.sendCloudBrowserCombo(key, modifiers.join(','))
+                        return
+                    }
+                    if (typeof key === 'string' && key.length === 1) {
+                        event.preventDefault()
+                        if (modifiers.length > 1) return
+                        // Shift is already in the character; the others are shortcuts.
+                        if (modifiers.some(mod => mod !== 'Shift')) this.sendCloudBrowserCombo(key, modifiers.join(','))
+                        else this.sendCloudBrowserKeys(key)
+                    }
+                },
+                async loadCloudBrowserDownloads() {
+                    this.cloudBrowser.downloadsError = ''
+                    try {
+                        const { data } = await _api.get('/api/cloud-browser/downloads')
+                        this.cloudBrowser.downloads = Array.isArray(data.downloads) ? data.downloads : []
+                    } catch (e) {
+                        this.cloudBrowser.downloadsError = e.response?.data?.detail || 'Could not read the download list.'
+                    }
                 },
                 _cloudBrowserPoint(event) {
                     const rect = event.target.getBoundingClientRect()
@@ -9972,6 +10635,7 @@
                         this.features.automation_enabled = !!data.automation_enabled
                         this.features.factory_enabled = !!data.factory_enabled
                         this.features.cloud_browser_enabled = !!data.cloud_browser_enabled
+                        this.features.cloud_phone_enabled = !!data.cloud_phone_enabled
                         this.features.auto_reply_enabled = !!data.auto_reply_enabled
                         this.features.inbox_enabled = !!data.inbox_enabled
                     } catch (e) {
@@ -10327,6 +10991,7 @@
                     this.loadCopilotAttachments()
                     this.loadCopilotPresets()
                     this.loadCopilotTools()
+                    if (this.copilot.engine === 'agent') this.loadCopilotCapabilities()
                 },
 
                 async loadCopilotTools() {
@@ -10344,6 +11009,25 @@
                 setCopilotMode(mode) {
                     this.copilot.mode = mode === 'work' ? 'work' : 'ask'
                     try { localStorage.setItem('ot_copilot_mode', this.copilot.mode) } catch (e) {}
+                },
+
+                setCopilotEngine(engine) {
+                    this.copilot.engine = engine === 'agent' ? 'agent' : 'draft'
+                    if (this.copilot.engine === 'agent') this.loadCopilotCapabilities()
+                    try { localStorage.setItem('ot_copilot_engine', this.copilot.engine) } catch (e) {}
+                },
+
+                async loadCopilotCapabilities() {
+                    try {
+                        const { data } = await _api.get('/api/copilot/agent/capabilities')
+                        this.copilot.capabilities = {
+                            tools: data.tools || [],
+                            skills: data.skills || [],
+                            connectors: data.connectors || [],
+                        }
+                    } catch (e) {
+                        this.copilot.capabilities = { tools: [], skills: [], connectors: [] }
+                    }
                 },
 
                 async loadCopilotSuggestions() {
@@ -10418,7 +11102,37 @@
                 },
 
                 submitCopilot() {
-                    return this.draftCopilot()
+                    return this.copilot.engine === 'agent' ? this.runCopilotAgent() : this.draftCopilot()
+                },
+
+                async runCopilotAgent() {
+                    const prompt = this.copilot.instruction.trim()
+                    if (!prompt || this.copilot.loading) return
+                    this.copilot.loading = true
+                    this.copilot.error = ''
+                    this.copilot.draft = null
+                    this.copilot.agent = { reply: '', steps: [], model: '', engine: '', status: '', stepsUsed: 0 }
+                    try {
+                        const { data } = await _api.post('/api/copilot/agent', {
+                            prompt,
+                            mode: this.copilot.mode,
+                        }, { timeout: 120000 })
+                        this.copilot.agent = {
+                            reply: data.reply || '',
+                            steps: data.steps || [],
+                            model: data.model || '',
+                            engine: data.engine || '',
+                            status: data.status || '',
+                            stepsUsed: data.steps_used || 0,
+                        }
+                        this.copilot.draft = data.draft || null
+                        this.copilot.turnId = data.turn_id || ''
+                        this.loadCopilotHistory()
+                    } catch (e) {
+                        this.copilot.error = e.response?.data?.detail || 'The agent could not finish that request.'
+                    } finally {
+                        this.copilot.loading = false
+                    }
                 },
 
                 useCopilotSuggestion(instruction) {
@@ -10619,6 +11333,7 @@
                     this.copilot.draft = null
                     this.copilot.error = ''
                     this.copilot.enhanced = []
+                    this.copilot.agent = { reply: '', steps: [], model: '', engine: '', status: '', stepsUsed: 0 }
                 },
 
                 async applyCopilotDraft() {
@@ -12489,6 +13204,7 @@
                     if (savedWidth >= 196 && savedWidth <= 420) this.sidebarWidth = savedWidth
                     this.inboxLastRead = localStorage.getItem('ot_inbox_read') || ''
                     if (localStorage.getItem('ot_copilot_mode') === 'work') this.copilot.mode = 'work'
+                    if (localStorage.getItem('ot_copilot_engine') === 'agent') this.copilot.engine = 'agent'
                 } catch (e) {}
                 this.captureOAuthReturn()
                 this.initAuth()
@@ -12501,6 +13217,7 @@
                 this.authRevision++
                 this.disconnectStatusSocket()
                 this.stopCloudBrowserStream()
+                this.stopCloudPhoneScreen()
                 clearInterval(this.dashboardPoll)
                 clearInterval(this.jobsPoll)
                 clearTimeout(this.automation.poll)

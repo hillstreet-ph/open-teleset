@@ -31,7 +31,13 @@ from pydantic import BaseModel, Field, field_validator
 
 import browser_agent
 from log_manager import log_manager
-from open_teleset.cdp_client import KEY_REJECTED_MESSAGE, CdpClient, CdpError, pressable_keys
+from open_teleset.cdp_client import (
+    KEY_REJECTED_MESSAGE,
+    CdpClient,
+    CdpError,
+    parse_combo,
+    pressable_keys,
+)
 from open_teleset.operator_store import (
     feature_enabled,
     read_secret,
@@ -51,6 +57,7 @@ FRAME_INTERVAL = 0.5
 LIVE_IDLE_SECONDS = 60
 STREAM_HEARTBEAT_SECONDS = 15
 MAX_SUBSCRIBERS = 4
+MAX_DOWNLOAD_EVENTS = 20
 REEL_MAX_FRAMES = 300
 REEL_MAX_BYTES = 8 * 1024 * 1024
 FRAME_QUALITY = 60
@@ -195,6 +202,13 @@ def _host(url: str) -> str:
         return ""
 
 
+def _as_int(value, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _validate_endpoint(url: str) -> str:
     cleaned = url.strip()
     if not cleaned:
@@ -256,6 +270,8 @@ class _Session:
         self.reel_bytes = 0
         self.recording = False
         self.closed = False
+        self.downloads: list[dict] = []
+        self._download_files: dict[str, dict] = {}
         self._last_frame = 0.0
         self._idle: asyncio.Task | None = None
 
@@ -286,6 +302,43 @@ class _Session:
         self.reel_bytes += len(raw)
         while len(self.reel) > REEL_MAX_FRAMES or self.reel_bytes > REEL_MAX_BYTES:
             self.reel_bytes -= len(self.reel.pop(0))
+
+    async def on_download_will_begin(self, params: dict, session_id: str) -> None:
+        guid = str(params.get("guid") or "")
+        # Only the hostname is kept: a download URL can carry a token or a path
+        # the operator should not see echoed back by the panel.
+        self._download_files[guid] = {
+            "filename": str(params.get("suggestedFilename") or ""),
+            "host": _host(str(params.get("url") or "")),
+        }
+        self._record_download(guid, "started", 0, 0)
+
+    async def on_download_progress(self, params: dict, session_id: str) -> None:
+        guid = str(params.get("guid") or "")
+        state = str(params.get("state") or "")
+        label = {"completed": "completed", "canceled": "canceled"}.get(state, "progress")
+        self._record_download(
+            guid,
+            label,
+            _as_int(params.get("receivedBytes")),
+            _as_int(params.get("totalBytes")),
+        )
+        if label in ("completed", "canceled"):
+            self._download_files.pop(guid, None)
+
+    def _record_download(self, guid: str, state: str, received: int, total: int) -> None:
+        meta = self._download_files.get(guid, {})
+        self.downloads.append({
+            "guid": guid,
+            "filename": meta.get("filename", ""),
+            "host": meta.get("host", ""),
+            "state": state,
+            "received": received,
+            "total": total,
+            "at": datetime.now(UTC).isoformat(),
+        })
+        if len(self.downloads) > MAX_DOWNLOAD_EVENTS:
+            del self.downloads[:-MAX_DOWNLOAD_EVENTS]
 
     def add_subscriber(self) -> asyncio.Queue:
         if len(self.subscribers) >= MAX_SUBSCRIBERS:
@@ -380,6 +433,14 @@ async def _live_session(operator: str, target_id: str) -> _Session:
                 raise HTTPException(502, str(exc)) from None
             session = _Session(operator, client, target_id, session_id)
             _sessions[operator] = session
+            client.subscribe("Browser.downloadWillBegin", session.on_download_will_begin)
+            client.subscribe("Browser.downloadProgress", session.on_download_progress)
+            try:
+                await client.allow_downloads(target_id)
+            except CdpError:
+                # A browser (or vendor) without the command still streams; the
+                # panel just lists no downloads.
+                pass
         return session
 
 
@@ -686,6 +747,49 @@ async def navigate_page(target_id: str, body: NavigateInput, request: Request):
     return {"success": True}
 
 
+@router.get("/api/cloud-browser/pages/{target_id}/state")
+async def page_state(target_id: str, request: Request):
+    operator = _operator(request)
+    _enabled()
+    async with _client_for(operator) as client:
+        try:
+            return await client.history(target_id)
+        except CdpError as exc:
+            raise HTTPException(502, str(exc)) from None
+
+
+async def _history_action(target_id: str, request: Request, action: str) -> dict:
+    operator = _operator(request)
+    _enabled()
+    async with _client_for(operator) as client:
+        try:
+            if action == "back":
+                await client.go_back(target_id)
+            elif action == "forward":
+                await client.go_forward(target_id)
+            else:
+                await client.reload(target_id)
+        except CdpError as exc:
+            raise HTTPException(502, str(exc)) from None
+    log_manager.add_log("Cloud Browser", _label(operator), f"Used the browser's {action} control", "info")
+    return {"success": True}
+
+
+@router.post("/api/cloud-browser/pages/{target_id}/back")
+async def page_back(target_id: str, request: Request):
+    return await _history_action(target_id, request, "back")
+
+
+@router.post("/api/cloud-browser/pages/{target_id}/forward")
+async def page_forward(target_id: str, request: Request):
+    return await _history_action(target_id, request, "forward")
+
+
+@router.post("/api/cloud-browser/pages/{target_id}/reload")
+async def page_reload(target_id: str, request: Request):
+    return await _history_action(target_id, request, "reload")
+
+
 @router.post("/api/cloud-browser/pages/{target_id}/screenshot")
 async def page_screenshot(target_id: str, request: Request):
     """A single frame, for when the live view is not open."""
@@ -719,19 +823,46 @@ async def type_into_page(target_id: str, body: TypeInput, request: Request):
     return {"success": True, "characters": len(body.text)}
 
 
+class KeysInput(BaseModel):
+    text: str = Field(min_length=1, max_length=400)
+
+
+@router.post("/api/cloud-browser/pages/{target_id}/keys")
+async def type_keystrokes_into_page(target_id: str, body: KeysInput, request: Request):
+    operator = _operator(request)
+    _enabled()
+    async with _client_for(operator) as client:
+        try:
+            await client.type_keystrokes(target_id, body.text)
+        except CdpError as exc:
+            raise HTTPException(502, str(exc)) from None
+    log_manager.add_log("Cloud Browser", _label(operator), f"Typed {len(body.text)} characters into a page", "info")
+    return {"success": True, "characters": len(body.text)}
+
+
 class KeyInput(BaseModel):
     key: str = Field(min_length=1, max_length=10)
+    modifiers: str = Field(default="", max_length=40)
 
 
 @router.post("/api/cloud-browser/pages/{target_id}/key")
 async def press_key(target_id: str, body: KeyInput, request: Request):
     operator = _operator(request)
     _enabled()
-    if body.key not in pressable_keys():
+    combo = f"{body.modifiers}+{body.key}" if body.modifiers else ""
+    if combo:
+        try:
+            parse_combo(combo)
+        except CdpError:
+            raise HTTPException(400, KEY_REJECTED_MESSAGE) from None
+    elif body.key not in pressable_keys():
         raise HTTPException(400, KEY_REJECTED_MESSAGE)
     async with _client_for(operator) as client:
         try:
-            await client.press_key(target_id, body.key)
+            if combo:
+                await client.press_combo(target_id, combo)
+            else:
+                await client.press_key(target_id, body.key)
         except CdpError as exc:
             raise HTTPException(502, str(exc)) from None
     log_manager.add_log("Cloud Browser", _label(operator), f"Sent {body.key}", "info")
@@ -898,6 +1029,17 @@ async def discard_reel(target_id: str, request: Request):
         session.reel_bytes = 0
         session.recording = False
     return {"success": True, **_live_state(operator)}
+
+
+@router.get("/api/cloud-browser/downloads")
+async def list_downloads(request: Request):
+    """What the browser host started and finished; nothing here is a file on this server."""
+    operator = _operator(request)
+    _enabled()
+    session = _sessions.get(operator)
+    if session is None or session.client.is_closed:
+        return {"downloads": []}
+    return {"downloads": list(session.downloads)}
 
 
 @router.post("/api/cloud-browser/live/close")

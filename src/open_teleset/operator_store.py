@@ -83,6 +83,8 @@ DEFAULT_FEATURES = {
     "factory_enabled": True,
     # Ships dark: it only does something once the operator points it at a hosted browser.
     "cloud_browser_enabled": False,
+    # Ships dark: it drives a device that costs money by the hour.
+    "cloud_phone_enabled": False,
     # Ships dark: it sends messages on a real account, so it stays off until switched on.
     "auto_reply_enabled": False,
     # Ships dark: it holds a live connection per account, so it stays off until switched on.

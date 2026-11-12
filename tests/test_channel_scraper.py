@@ -97,6 +97,11 @@ async def test_web_fallback_drops_previews_that_miss_the_budget(monkeypatch):
 
     monkeypatch.setattr(ops, "_SEARCH_SOURCES", (("fake", discover),))
     monkeypatch.setattr(ops, "_tme_preview", preview)
+
+    async def no_lyzem(session, keyword, want, proxy=None, group_type="all"):
+        return []
+
+    monkeypatch.setattr(ops, "_lyzem_rows", no_lyzem)
     request = ops.ChannelScrapeRequest(keywords=["alpha"])
 
     started = time.monotonic()
