@@ -8,6 +8,7 @@ never written to logs.
 import asyncio
 import base64
 import binascii
+import html
 import ipaddress
 import re
 import time
@@ -30,6 +31,16 @@ MTPROXY_SOURCES = (
         "id": "vanced",
         "label": "vanced.to/telegram",
         "url": "https://vanced.to/telegram",
+    },
+    {
+        "id": "tse_proxy",
+        "label": "telegramsearchengine.com/proxy",
+        "url": "https://telegramsearchengine.com/proxy",
+    },
+    {
+        "id": "proxymtproto",
+        "label": "t.me/s/ProXyMTproto",
+        "url": "https://t.me/s/ProXyMTproto",
     },
 )
 
@@ -91,7 +102,10 @@ def parse_tg_links(text):
     """Extract usable MTProto endpoints from a list file or an HTML page."""
     entries = []
     seen = set()
-    for match in _LINK.finditer(unquote(text)):
+    # Telegram's own web preview escapes the query separator as ``&amp;``, so
+    # entity decoding has to happen before the query string is split.
+    decoded = unquote(html.unescape(unquote(text)))
+    for match in _LINK.finditer(decoded):
         query = parse_qs(match.group(1))
         host = _valid_host((query.get("server") or [""])[0])
         secret = normalize_secret((query.get("secret") or [""])[0])

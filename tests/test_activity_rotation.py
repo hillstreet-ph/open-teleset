@@ -181,7 +181,13 @@ async def test_public_channel_scraper_enriches_dedupes_filters_limits(monkeypatc
     async def no_lyzem(session, keyword, want, proxy=None, group_type="all"):
         return []
 
+    async def no_tse(session, keyword, want, proxy=None, group_type="all", category=""):
+        return []
+
     monkeypatch.setattr(ops, "_lyzem_rows", no_lyzem)
+    # The structured directory is queried outside _SEARCH_SOURCES, so it needs
+    # its own stub or the test would read the live site.
+    monkeypatch.setattr(ops, "_tse_rows", no_tse)
 
     country = await ops.scrape_channels(ops.ChannelScrapeRequest(keywords=["casino"], country="ph"))
     assert country["mode"] == "public"
