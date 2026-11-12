@@ -891,8 +891,10 @@ def _keyword_matches(text, keyword: str) -> bool:
 
 
 # Topic vocabulary for the finder's Category filter. A row matches when any
-# term appears in its title, username or public description, using the same
-# phrase/word rules as keyword matching.
+# term appears in its title, username or public description. Category matching
+# stays phrase-precise on purpose: keyword matching expands phrases into their
+# words, which would drag "Online English lessons" into a casino search through
+# the "online casino" term.
 _CATEGORY_TERMS = {
     "casino": (
         "casino", "kasino", "igaming", "i-gaming", "online casino", "live casino",
@@ -904,6 +906,17 @@ _CATEGORY_TERMS = {
 }
 
 
+def _category_term_matches(text, term: str) -> bool:
+    """Whole-term match; digit-bearing brands may sit inside a username."""
+    haystack = _normalise_text(text)
+    if not haystack or not term:
+        return False
+    if not any(char.isdigit() for char in term):
+        return bool(_re.search(
+            rf"(?<![a-z0-9]){_re.escape(term)}(?![a-z0-9])", haystack))
+    return term in haystack
+
+
 def _category_matches(title, username, about, category):
     """Matched category terms, empty when the row is outside the category."""
     terms = _CATEGORY_TERMS.get(category, ())
@@ -911,8 +924,9 @@ def _category_matches(title, username, about, category):
         return []
     hits = []
     for term in terms:
-        if (_keyword_matches(title, term) or _keyword_matches(username, term)
-                or _keyword_matches(about, term)):
+        if (_category_term_matches(title, term)
+                or _category_term_matches(username, term)
+                or _category_term_matches(about, term)):
             hits.append(term)
     return hits
 
@@ -1311,6 +1325,10 @@ async def _scrape_channels_tgstat(request: ChannelScrapeRequest, token, picker=N
     stats = {"requests": 0, "ok": 0, "errors": 0, "items": 0,
              "rejected_filters": 0, "error": ""}
     filtered = {"type": 0, "country": 0, "category": 0, "members": 0}
+    # Filters run after TGStat answers, so fetching only `limit` rows would let a
+    # rejected row occupy a slot that a qualifying row behind it deserved.
+    fetch_limit = (100 if request.category != "all" or request.min_members
+                   else request.limit)
     seen: set = set()
     results: list = []
     async with aiohttp.ClientSession(headers=_BROWSER_HEADERS) as session:
@@ -1318,12 +1336,12 @@ async def _scrape_channels_tgstat(request: ChannelScrapeRequest, token, picker=N
             stats["requests"] += 1
             proxy = picker.pick()
             infos, ok, error = await _tgstat_search(
-                session, token, keyword, peer_type, iso_country, request.limit,
+                session, token, keyword, peer_type, iso_country, fetch_limit,
                 language_code, proxy=proxy)
             if not ok and (iso_country or language_code) and not _tgstat_error_is_fatal(error):
                 stats["requests"] += 1
                 infos, ok, error = await _tgstat_search(
-                    session, token, keyword, peer_type, "", request.limit, "",
+                    session, token, keyword, peer_type, "", fetch_limit, "",
                     proxy=picker.pick())
                 if ok:
                     stats["rejected_filters"] += 1
@@ -1332,7 +1350,7 @@ async def _scrape_channels_tgstat(request: ChannelScrapeRequest, token, picker=N
                 picker.fallbacks += 1
                 stats["requests"] += 1
                 infos, ok, error = await _tgstat_search(
-                    session, token, keyword, peer_type, "", request.limit, "")
+                    session, token, keyword, peer_type, "", fetch_limit, "")
             stats["ok" if ok else "errors"] += 1
             stats["items"] += len(infos)
             if not ok and error and not stats["error"]:
@@ -1781,6 +1799,12 @@ async def _scrape_channels_web(request: ChannelScrapeRequest, picker=None):
             entry["title"] = info["title"] or entry["title"]
             if info.get("about"):
                 entry["about"] = info["about"]
+        # The preview is the authoritative metadata, so the category decision
+        # has to be made again now that it may have replaced title/description.
+        if request.category != "all" and not _category_matches(
+                entry["title"], entry["username"], entry["about"], request.category):
+            filtered["category"] += 1
+            continue
         if request.group_type != "all" and entry["type"] != request.group_type:
             filtered["type"] += 1
             continue
@@ -1919,6 +1943,22 @@ async def _scrape_channels_web(request: ChannelScrapeRequest, picker=None):
     }
 
 
+async def _chat_description(client, chat, username: str) -> str:
+    """Public description for the category check; empty when Telegram hides it."""
+    try:
+        if isinstance(chat, types.Chat):
+            full = await client(functions.messages.GetFullChatRequest(chat_id=chat.id))
+        else:
+            full = await client(functions.channels.GetFullChannelRequest(channel=username))
+    except errors.FloodWaitError as exc:
+        raise HTTPException(status_code=429,
+                            detail=f"Telegram rate limit reached — retry in {exc.seconds}s") from None
+    except errors.RPCError:
+        return ""
+    full_chat = getattr(full, "full_chat", None)
+    return getattr(full_chat, "about", "") or ""
+
+
 @telegram_ops_router.post("/api/scraper/channels")
 async def scrape_channels(request: ChannelScrapeRequest):
     """Discover public Telegram channels/groups by keyword.
@@ -1951,6 +1991,8 @@ async def scrape_channels(request: ChannelScrapeRequest):
     language_code = resolve_language(request.language)
     seen: set = set()
     results: list = []
+    filtered = {"type": 0, "country": 0, "category": 0, "members": 0}
+    descriptions: dict = {}
     deadline = time.monotonic() + KEYWORD_SEARCH_BUDGET
     partial = False
     for keyword in request.keywords:
@@ -1979,18 +2021,30 @@ async def scrape_channels(request: ChannelScrapeRequest):
             else:
                 continue
             if request.group_type != "all" and kind != request.group_type:
+                filtered["type"] += 1
                 continue
             title = getattr(chat, "title", "") or ""
             haystack = f"{title} {username}".lower()
             if (country_tokens or iso_country) and not country_matches(
                     haystack, country_tokens, iso_country):
+                filtered["country"] += 1
                 continue
             if request.category != "all" and not _category_matches(
                     title, username, "", request.category):
-                continue
+                # The directory entity carries no description, so a neutral
+                # title/username still needs the public description before the
+                # row is counted as outside the category.
+                if chat_id not in descriptions:
+                    descriptions[chat_id] = await _chat_description(
+                        client, chat, username)
+                if not _category_matches(
+                        title, username, descriptions[chat_id], request.category):
+                    filtered["category"] += 1
+                    continue
             members = getattr(chat, "participants_count", None)
             if request.min_members and (members is None
                                         or members <= request.min_members):
+                filtered["members"] += 1
                 continue
             seen.add(chat_id)
             results.append({
@@ -2001,11 +2055,29 @@ async def scrape_channels(request: ChannelScrapeRequest):
                 "type": kind,
                 "members": members,
                 "verified": bool(getattr(chat, "verified", False)),
+                "about": descriptions.get(chat_id, ""),
                 "matched_keyword": keyword,
             })
             if len(results) >= request.limit:
                 break
 
+    if results:
+        reason = ""
+    elif filtered["country"]:
+        reason = ("Candidates were found but the country filter removed all of them. "
+                  "Clear the country filter to see them.")
+    elif filtered["category"]:
+        reason = ("Candidates were found but the category filter removed all of them. "
+                  "Choose All categories to see them.")
+    elif filtered["members"]:
+        reason = ("Candidates were found but the member filter removed all of them. "
+                  "Lower the member threshold or set it to 0 to see them.")
+    elif filtered["type"]:
+        reason = ("Candidates were found but the type filter removed all of them. "
+                  "Choose All to see them.")
+    else:
+        reason = ("Telegram's directory returned no public channels for these keywords. "
+                  "Broaden the keywords or clear the country filter.")
     log_manager.add_log(
         "ChannelScraper", account_id,
         f"Found {len(results)} channels/groups for {len(request.keywords)} keyword(s)"
@@ -2036,11 +2108,10 @@ async def scrape_channels(request: ChannelScrapeRequest):
                 "applied": "terms" if request.category != "all" else "none",
             },
             "members": {"above": request.min_members},
+            "filtered": filtered,
             "proxies": {"mode": request.proxy_mode, "available": 0, "used": False, "fallbacks": 0},
             "sources": {"account": {"requests": len(request.keywords), "ok": 1 if results else 0}},
-            "reason": "" if results else (
-                "Telegram's directory returned no public channels for these keywords. "
-                "Broaden the keywords or clear the country filter."),
+            "reason": reason,
         },
     }
 

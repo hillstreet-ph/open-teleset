@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+from types import SimpleNamespace
 
 import pytest
 
@@ -1084,3 +1085,157 @@ async def test_tgstat_reason_names_the_member_filter_when_it_removes_every_row(m
 
     assert result["total"] == 0
     assert "member filter" in result["diagnostics"]["reason"].lower()
+
+
+# ---------- Category matching must stay phrase-precise ----------
+
+
+def test_category_ignores_component_words_of_multiword_terms():
+    """A row that only shares a single word with a two-word term is out."""
+    assert ops._category_matches("Online English lessons", "engclass", "", "casino") == []
+    assert ops._category_matches("Live Music Concerts", "livemusic", "", "casino") == []
+    assert ops._category_matches("Video Game News", "gamewire", "", "casino") == []
+    assert ops._category_matches("Color Photography", "colourshot", "", "casino") == []
+
+
+def test_category_still_matches_real_gambling_phrases():
+    """Whole phrases and standalone single-word terms keep matching."""
+    assert ops._category_matches("Online casino promotions", "phcasino", "", "casino")
+    assert ops._category_matches("Slots and jackpots", "spins", "", "casino")
+    assert ops._category_matches("", "bet365ph", "Daily live casino dealers", "casino")
+    assert ops._category_matches("", "pggaming", "color game tips", "casino")
+
+
+def test_category_phrase_needs_word_boundaries():
+    """Short and embedded terms must not fire inside unrelated words."""
+    assert ops._category_matches("Bingoton news", "bingoton", "", "casino") == []
+    assert ops._category_matches("Pokemon fan club", "pokefan", "", "casino") == []
+
+
+# ---------- Category is rechecked after the preview replaces metadata ----------
+
+
+@pytest.mark.asyncio
+async def test_preview_metadata_cannot_escape_the_category_filter(monkeypatch):
+    """lyzem can label a row casino while the t.me preview says otherwise."""
+    monkeypatch.setattr(ops.aiohttp, "ClientSession", FakeSession)
+    monkeypatch.setattr(ops.log_manager, "add_log", lambda *args, **kwargs: None)
+
+    async def lyzem(session, keyword, want, proxy=None, group_type="all"):
+        return [{"username": "relabelled", "title": "PH Casino news",
+                 "about": "casino roundup", "type": "channel"}]
+
+    async def preview(session, username, proxy=None):
+        info = hit(username, title="Forex PH", members=5000)
+        info["about"] = "EURUSD setups"
+        return info
+
+    monkeypatch.setattr(ops, "_lyzem_rows", lyzem)
+    monkeypatch.setattr(ops, "_SEARCH_SOURCES", ())
+    monkeypatch.setattr(ops, "_tme_preview", preview)
+
+    result = await ops._scrape_channels_web(
+        ops.ChannelScrapeRequest(keywords=["casino"], category="casino"))
+
+    assert result["total"] == 0
+    assert result["diagnostics"]["filtered"]["category"] == 1
+    assert "category filter" in result["diagnostics"]["reason"]
+
+
+# ---------- Account path: description lookup and exclusion counters ----------
+
+
+def _account_chat(username, title, members, broadcast=True):
+    return ops.types.Channel(
+        id=abs(hash(username)) % 100000, title=title, username=username,
+        photo=None, date=None, broadcast=broadcast, megagroup=not broadcast,
+        participants_count=members)
+
+
+def _full_channel(about):
+    return SimpleNamespace(full_chat=SimpleNamespace(about=about))
+
+
+@pytest.mark.asyncio
+async def test_account_search_reads_the_description_before_rejecting_a_category(monkeypatch):
+    """A neutral title with a gambling description is still an iGaming channel."""
+    chat = _account_chat("neutral_ph", "Daily Digest", 800)
+    descriptions = {"neutral_ph": "Best online casino and slots in PH"}
+
+    class Found:
+        chats = [chat]
+
+    class Client:
+        async def __call__(self, request):
+            if isinstance(request, ops.functions.channels.GetFullChannelRequest):
+                return _full_channel(descriptions.get(request.channel, ""))
+            return Found()
+
+    async def get_client(account_id):
+        return Client()
+
+    monkeypatch.setattr(ops.account_manager, "get_client", get_client)
+    monkeypatch.setattr(ops.log_manager, "add_log", lambda *args, **kwargs: None)
+
+    result = await ops.scrape_channels(ops.ChannelScrapeRequest(
+        account_id="ui-one", keywords=["casino"], category="casino"))
+
+    assert [row["username"] for row in result["results"]] == ["neutral_ph"]
+    assert result["results"][0]["about"] == "Best online casino and slots in PH"
+
+
+@pytest.mark.asyncio
+async def test_account_search_reports_exclusion_counts(monkeypatch):
+    chats = [_account_chat("casino_big", "Casino PH", 5000),
+             _account_chat("forex_big", "Forex PH", 4000),
+             _account_chat("casino_small", "Casino Small PH", 100)]
+    descriptions = {"forex_big": "EURUSD trading setups"}
+    found_chats = list(chats)
+
+    class Found:
+        chats = found_chats
+
+    class Client:
+        async def __call__(self, request):
+            if isinstance(request, ops.functions.channels.GetFullChannelRequest):
+                return _full_channel(descriptions.get(request.channel, ""))
+            return Found()
+
+    async def get_client(account_id):
+        return Client()
+
+    monkeypatch.setattr(ops.account_manager, "get_client", get_client)
+    monkeypatch.setattr(ops.log_manager, "add_log", lambda *args, **kwargs: None)
+
+    result = await ops.scrape_channels(ops.ChannelScrapeRequest(
+        account_id="ui-one", keywords=["casino"], category="casino", min_members=100))
+
+    assert [row["username"] for row in result["results"]] == ["casino_big"]
+    filtered = result["diagnostics"]["filtered"]
+    assert filtered["category"] == 1
+    assert filtered["members"] == 1
+
+
+@pytest.mark.asyncio
+async def test_tgstat_fetches_past_the_result_limit_before_filtering(monkeypatch):
+    """A small limit must not hide the qualifying rows behind rejected ones."""
+    monkeypatch.setattr(ops.aiohttp, "ClientSession", FakeSession)
+    monkeypatch.setattr(ops.log_manager, "add_log", lambda *args, **kwargs: None)
+    forex = hit("forex_first", members=9000)
+    forex["about"] = "EURUSD setups"
+    casino = hit("casino_second", members=5000)
+    casino["about"] = "Daily slots and jackpots"
+
+    async def search(session, token, keyword, peer_type, country_code, limit,
+                     language="", proxy=None):
+        rows = [forex, casino]
+        return rows[:min(limit, len(rows))], True, ""
+
+    monkeypatch.setattr(ops, "_tgstat_search", search)
+    request = ops.ChannelScrapeRequest(
+        keywords=["casino"], category="casino", limit=1)
+
+    result = await ops._scrape_channels_tgstat(request, "token")
+
+    assert [item["username"] for item in result["results"]] == ["casino_second"]
+    assert result["diagnostics"]["filtered"]["category"] == 1
