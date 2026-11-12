@@ -1036,3 +1036,51 @@ async def test_account_search_applies_category_and_member_filters(monkeypatch):
         category="casino", min_members=100))
 
     assert [row["username"] for row in result["results"]] == ["casino_ph"]
+
+
+@pytest.mark.asyncio
+async def test_tgstat_applies_category_and_member_filters(monkeypatch):
+    monkeypatch.setattr(ops.aiohttp, "ClientSession", FakeSession)
+    monkeypatch.setattr(ops.log_manager, "add_log", lambda *args, **kwargs: None)
+
+    big = hit("casino_big", members=5000)
+    big["about"] = "Daily slots and jackpots"
+    forex = hit("forex_big", members=4000)
+    forex["about"] = "EURUSD setups"
+    small = hit("casino_small", members=100)
+    small["about"] = "Online casino chat"
+
+    async def search(session, token, keyword, peer_type, country_code, limit,
+                     language="", proxy=None):
+        return [big, forex, small], True, ""
+
+    monkeypatch.setattr(ops, "_tgstat_search", search)
+    request = ops.ChannelScrapeRequest(
+        keywords=["casino"], category="casino", min_members=100)
+
+    result = await ops._scrape_channels_tgstat(request, "token")
+
+    assert [item["username"] for item in result["results"]] == ["casino_big"]
+    diagnostics = result["diagnostics"]
+    assert diagnostics["filtered"]["category"] == 1
+    assert diagnostics["filtered"]["members"] == 1
+    assert diagnostics["category"] == {"input": "casino", "applied": "terms"}
+    assert diagnostics["members"] == {"above": 100}
+
+
+@pytest.mark.asyncio
+async def test_tgstat_reason_names_the_member_filter_when_it_removes_every_row(monkeypatch):
+    monkeypatch.setattr(ops.aiohttp, "ClientSession", FakeSession)
+    monkeypatch.setattr(ops.log_manager, "add_log", lambda *args, **kwargs: None)
+
+    async def search(session, token, keyword, peer_type, country_code, limit,
+                     language="", proxy=None):
+        return [hit("tiny_casino", members=100)], True, ""
+
+    monkeypatch.setattr(ops, "_tgstat_search", search)
+    request = ops.ChannelScrapeRequest(keywords=["casino"], min_members=100)
+
+    result = await ops._scrape_channels_tgstat(request, "token")
+
+    assert result["total"] == 0
+    assert "member filter" in result["diagnostics"]["reason"].lower()

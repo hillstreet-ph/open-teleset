@@ -1310,6 +1310,7 @@ async def _scrape_channels_tgstat(request: ChannelScrapeRequest, token, picker=N
     picker = _picker_for(request, picker)
     stats = {"requests": 0, "ok": 0, "errors": 0, "items": 0,
              "rejected_filters": 0, "error": ""}
+    filtered = {"type": 0, "country": 0, "category": 0, "members": 0}
     seen: set = set()
     results: list = []
     async with aiohttp.ClientSession(headers=_BROWSER_HEADERS) as session:
@@ -1371,10 +1372,20 @@ async def _scrape_channels_tgstat(request: ChannelScrapeRequest, token, picker=N
                 if key in seen:
                     continue
                 if request.group_type != "all" and info["type"] != request.group_type:
+                    filtered["type"] += 1
                     continue
                 if text_tokens and not any(
                         token in (info["title"] + " " + info["username"]).lower()
                         for token in text_tokens):
+                    filtered["country"] += 1
+                    continue
+                if request.category != "all" and not _category_matches(
+                        info["title"], info["username"], info.get("about", ""), request.category):
+                    filtered["category"] += 1
+                    continue
+                if request.min_members and (info["members"] is None
+                                            or info["members"] <= request.min_members):
+                    filtered["members"] += 1
                     continue
                 seen.add(key)
                 info["matched_keyword"] = keyword
@@ -1397,6 +1408,12 @@ async def _scrape_channels_tgstat(request: ChannelScrapeRequest, token, picker=N
         elif stats["rejected_filters"]:
             reason = ("TGStat rejected the country or language filter and still found no "
                       "matches. Broaden the keywords or clear the filter.")
+        elif filtered["category"]:
+            reason = ("TGStat answered but the category filter removed every match. "
+                      "Choose All categories to see them.")
+        elif filtered["members"]:
+            reason = ("TGStat answered but the member filter removed every match. "
+                      "Lower the member threshold or set it to 0 to see them.")
         else:
             reason = ("TGStat answered but matched no channels. Broaden the keywords or "
                       "clear the country/language filter.")
@@ -1427,7 +1444,13 @@ async def _scrape_channels_tgstat(request: ChannelScrapeRequest, token, picker=N
                 "applied": ("filter" if language_code and not stats["rejected_filters"]
                             else "none"),
             },
+            "category": {
+                "input": request.category,
+                "applied": "terms" if request.category != "all" else "none",
+            },
+            "members": {"above": request.min_members},
             "proxies": proxy_diagnostics(request.proxy_mode, picker),
+            "filtered": filtered,
             "sources": {"tgstat": stats},
             "reason": reason,
         },
