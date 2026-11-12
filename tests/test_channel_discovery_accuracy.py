@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -1419,3 +1420,142 @@ async def test_tse_rows_are_used_when_lyzem_is_empty(monkeypatch):
     assert row["username"] == "phcasinoagents"
     assert row["members"] == 4200
     assert row["source"] == "telegramsearchengine"
+
+
+@pytest.mark.asyncio
+async def test_tse_retries_each_significant_word_when_the_phrase_is_too_narrow(monkeypatch):
+    """The directory matches every word, so a phrase like "casino agent
+    philippines" answers nothing. Each meaningful word is queried instead and
+    the rows are unioned before the local relevance check."""
+    monkeypatch.setattr(ops.aiohttp, "ClientSession", FakeSession)
+    monkeypatch.setattr(ops.log_manager, "add_log", lambda *args, **kwargs: None)
+
+    queries = []
+
+    async def no_lyzem(session, keyword, want, proxy=None, group_type="all"):
+        return []
+
+    async def tse(session, keyword, want, proxy=None, group_type="all",
+                  category="all"):
+        queries.append(keyword)
+        if keyword != "casino":
+            return []
+        return [{"username": "phcasinoagents", "title": "PH Casino Agents",
+                 "about": "Casino agent community", "type": "group",
+                 "members": 4200}]
+
+    async def no_preview(session, username, proxy=None):
+        return None
+
+    monkeypatch.setattr(ops, "_lyzem_rows", no_lyzem)
+    monkeypatch.setattr(ops, "_tse_rows", tse)
+    monkeypatch.setattr(ops, "_tme_preview", no_preview)
+    monkeypatch.setattr(ops, "_SEARCH_SOURCES", ())
+
+    result = await ops._scrape_channels_web(
+        ops.ChannelScrapeRequest(keywords=["casino agent philippines"],
+                                 country="Philippines"))
+
+    assert queries[:4] == ["casino agent philippines", "casino", "agent",
+                           "philippines"]
+    assert [row["username"] for row in result["results"]] == ["phcasinoagents"]
+
+
+@pytest.mark.asyncio
+async def test_a_directory_row_that_only_advertises_the_keyword_is_dropped(monkeypatch):
+    """Directory descriptions carry paid ad text ("#1 crypto casino"), so a
+    keyword that appears only there is an advertisement, not the topic."""
+    monkeypatch.setattr(ops.aiohttp, "ClientSession", FakeSession)
+    monkeypatch.setattr(ops.log_manager, "add_log", lambda *args, **kwargs: None)
+
+    async def no_lyzem(session, keyword, want, proxy=None, group_type="all"):
+        return []
+
+    async def tse(session, keyword, want, proxy=None, group_type="all",
+                  category="all"):
+        return [
+            {"username": "goreunit", "title": "@goreunit",
+             "about": "Osint & Updates. Rainbet.com #1 non-kyc crypto casino",
+             "type": "channel", "members": 63400},
+            {"username": "lemoncasino", "title": "@lemoncasino",
+             "about": "Daily offers", "type": "channel", "members": 21343},
+        ]
+
+    async def no_preview(session, username, proxy=None):
+        return None
+
+    monkeypatch.setattr(ops, "_lyzem_rows", no_lyzem)
+    monkeypatch.setattr(ops, "_tse_rows", tse)
+    monkeypatch.setattr(ops, "_tme_preview", no_preview)
+    monkeypatch.setattr(ops, "_SEARCH_SOURCES", ())
+
+    result = await ops._scrape_channels_web(
+        ops.ChannelScrapeRequest(keywords=["casino"]))
+
+    assert [row["username"] for row in result["results"]] == ["lemoncasino"]
+
+
+@pytest.mark.asyncio
+async def test_directory_rows_that_fail_relevance_are_reported_as_keyword_drops(monkeypatch):
+    """A directory answers loose word matches, so nothing verifies.
+
+    The empty state has to name the keyword check. The live
+    "casino agent philippines" run used to answer "clear the country filter"
+    even though that filter had removed a single row.
+    """
+    monkeypatch.setattr(ops.aiohttp, "ClientSession", FakeSession)
+    monkeypatch.setattr(ops.log_manager, "add_log", lambda *args, **kwargs: None)
+
+    async def no_lyzem(session, keyword, want, proxy=None, group_type="all"):
+        return []
+
+    async def tse(session, keyword, want, proxy=None, group_type="all",
+                  category="all"):
+        return [{"username": "goreunit", "title": "@goreunit",
+                 "about": "Rainbet.com #1 non-kyc crypto casino",
+                 "type": "channel", "members": 63400}]
+
+    async def source(session, keyword, want, proxy=None):
+        return ["mismatch_channel"]
+
+    async def no_preview(session, username, proxy=None):
+        return None
+
+    monkeypatch.setattr(ops, "_lyzem_rows", no_lyzem)
+    monkeypatch.setattr(ops, "_tse_rows", tse)
+    monkeypatch.setattr(ops, "_SEARCH_SOURCES", (("source", source),))
+    monkeypatch.setattr(ops, "_tme_preview", no_preview)
+
+    result = await ops._scrape_channels_web(
+        ops.ChannelScrapeRequest(keywords=["casino agent philippines"],
+                                 country="Philippines"))
+
+    diagnostics = result["diagnostics"]
+    assert result["total"] == 0
+    assert diagnostics["filtered"]["keyword"] == 1
+    assert diagnostics["filtered"]["country"] == 0
+    assert "matched the keywords" in diagnostics["reason"].lower()
+    assert "country filter" not in diagnostics["reason"].lower()
+
+
+@pytest.mark.asyncio
+async def test_tse_reads_further_pages_until_it_has_enough_rows(monkeypatch):
+    pages = []
+
+    async def fake_request(session, method, url, **kwargs):
+        page = int((kwargs.get("params") or {})["page"])
+        pages.append(page)
+        items = [
+            {"username": f"casino{(page - 1) * 50 + index}", "name": "Casino",
+             "type": "channel", "subscriberCount": 1000}
+            for index in range(50)
+        ]
+        payload = {"total": 150, "totalPages": 3, "items": items}
+        return 200, json.dumps(payload).encode()
+
+    monkeypatch.setattr(ops, "_request", fake_request)
+
+    rows = await ops._tse_rows(None, "casino", 120)
+
+    assert pages == [1, 2, 3]
+    assert len(rows) == 120

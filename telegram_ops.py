@@ -1378,6 +1378,7 @@ _SEARCH_SOURCES = (
 # engine result page and does not need a t.me preview round trip.
 _TSE_SEARCH_URL = "https://telegramsearchengine.com/api/directory"
 _TSE_TIMEOUT = 12
+_TSE_MAX_PAGES = 3
 
 
 def _parse_tse_items(payload, want):
@@ -1417,8 +1418,12 @@ def _parse_tse_items(payload, want):
 
 async def _tse_rows(session, keyword, want, proxy=None, group_type="all",
                     category="all"):
-    """Structured directory search. `search` is strict AND, so callers retry
-    with the keyword head when a long phrase returns nothing."""
+    """Structured directory search over up to `_TSE_MAX_PAGES` pages.
+
+    `search` is strict AND, so callers also query a keyword word by word. The
+    directory answers at most 50 rows per page even when a bigger limit is
+    asked for, so a broad word needs another page or two to fill `want`.
+    """
     params = {
         "search": keyword,
         "limit": str(min(max(int(want), 10), 100)),
@@ -1428,17 +1433,41 @@ async def _tse_rows(session, keyword, want, proxy=None, group_type="all",
         params["type"] = group_type
     if category and category != "all":
         params["category"] = category
-    status, body = await _request(
-        session, "GET", _TSE_SEARCH_URL, params=params, proxy=proxy,
-        timeout=_TSE_TIMEOUT, headers={"Accept": "application/json"},
-    )
-    if status != 200:
-        raise aiohttp.ClientConnectionError(f"search source returned HTTP {status}")
-    try:
-        payload = json.loads(body.decode("utf-8", "replace"))
-    except (ValueError, UnicodeDecodeError):
-        raise aiohttp.ClientConnectionError("directory answered with unreadable JSON")
-    return _parse_tse_items(payload, want)
+    rows, pages = [], 1
+    for page in range(1, _TSE_MAX_PAGES + 1):
+        params["page"] = str(page)
+        try:
+            status, body = await _request(
+                session, "GET", _TSE_SEARCH_URL, params=params, proxy=proxy,
+                timeout=_TSE_TIMEOUT, headers={"Accept": "application/json"},
+            )
+        except (aiohttp.ClientError, asyncio.TimeoutError):
+            if page == 1:
+                raise
+            break
+        if status != 200:
+            if page == 1:
+                raise aiohttp.ClientConnectionError(
+                    f"search source returned HTTP {status}")
+            break
+        try:
+            payload = json.loads(body.decode("utf-8", "replace"))
+        except (ValueError, UnicodeDecodeError):
+            if page == 1:
+                raise aiohttp.ClientConnectionError(
+                    "directory answered with unreadable JSON")
+            break
+        if page == 1:
+            total_pages = payload.get("totalPages") if isinstance(payload, dict) else None
+            if isinstance(total_pages, int) and not isinstance(total_pages, bool):
+                pages = max(1, min(total_pages, _TSE_MAX_PAGES))
+        seen = {row["username"].lower() for row in rows}
+        fresh = [row for row in _parse_tse_items(payload, want)
+                 if row["username"].lower() not in seen]
+        rows.extend(fresh)
+        if len(rows) >= want or not fresh or page >= pages:
+            break
+    return rows[:want]
 
 
 async def _tme_preview(session, username, proxy=None):
@@ -1946,37 +1975,63 @@ async def _scrape_channels_web(request: ChannelScrapeRequest, picker=None):
 
             lyzem matches loosely (an `igaming group` query answers with any
             group), so the directory is only a candidate supplier. The local
-            relevance rule decides what is kept.
+            relevance rule decides what is kept. telegramsearchengine also puts
+            paid ad copy in the description ("#1 non-kyc crypto casino"), so a
+            keyword that appears only there is an advertisement: its title or
+            username has to carry the topic.
             """
             kept = []
             for row in rows:
+                about = ("" if row.get("source") == "telegramsearchengine"
+                         else row.get("about", ""))
                 matched, _fields = _match_fields(
-                    row["title"], row["username"], row.get("about", ""), index)
+                    row["title"], row["username"], about, index)
                 if matched:
                     kept.append(row)
             return kept
 
         async def tse(keyword, proxy):
-            """Directory search with a broad retry when the phrase is too narrow."""
+            """Directory search, one query per meaningful word.
+
+            The directory matches every word of `search`, so a phrase like
+            "casino agent philippines" answers nothing while each of its words
+            answers plenty. The phrase is tried first because it is the most
+            precise; only when it is empty are the meaningful words queried,
+            and their rows are unioned before the local relevance check.
+            """
             stats["telegramsearchengine"]["requests"] += 1
             try:
                 rows = await _tse_rows(
                     session, keyword, want_per_keyword, proxy=proxy,
                     group_type=request.group_type, category=request.category)
                 if not rows:
-                    head = _keyword_significant(keyword)
-                    if head and head[0] != _normalise_text(keyword):
-                        rows = await _tse_rows(
-                            session, head[0], want_per_keyword, proxy=proxy,
+                    phrase = _normalise_text(keyword)
+                    terms = [term for term in _keyword_significant(keyword)
+                             if term != phrase][:3]
+                    for term in terms:
+                        stats["telegramsearchengine"]["requests"] += 1
+                        rows += await _tse_rows(
+                            session, term, want_per_keyword, proxy=proxy,
                             group_type=request.group_type,
                             category=request.category)
             except Exception:
                 # A discovery source must never fail the run.
                 stats["telegramsearchengine"]["errors"] += 1
                 return []
+            unique, seen_rows = [], set()
             for row in rows:
+                key = str(row.get("username") or "").lower()
+                if not key or key in seen_rows:
+                    continue
+                seen_rows.add(key)
                 row.setdefault("source", "telegramsearchengine")
-            rows = verified(rows)
+                unique.append(row)
+            rows = verified(unique)
+            # Rows the directory returned but the relevance check rejected are
+            # keyword drops, not country or category drops. Counting them keeps
+            # the empty-state advice honest: "clear the country filter" must only
+            # appear when the country filter really removed every candidate.
+            filtered["keyword"] += len(unique) - len(rows)
             if rows:
                 stats["telegramsearchengine"]["ok"] += 1
                 stats["telegramsearchengine"]["items"] += len(rows)

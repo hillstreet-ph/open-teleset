@@ -6790,6 +6790,7 @@
                     if (alive) parts.push(`member counts filled for ${p.ok || 0}/${alive} live`)
                     const dropped = []
                     if (f.dead) dropped.push(`${f.dead} dead link${f.dead === 1 ? '' : 's'}`)
+                    if (f.keyword) dropped.push(`${f.keyword} off-keyword`)
                     if (f.country) dropped.push(`${f.country} off-country`)
                     if (f.type) dropped.push(`${f.type} wrong type`)
                     if (f.category) dropped.push(`${f.category} outside the category`)
