@@ -809,6 +809,25 @@ def _clean_text(value, limit=400):
     return text[:limit]
 
 
+def _tme_contact_page(html: str, username: str) -> bool:
+    """True for t.me's generic page served for a deleted or renamed channel.
+
+    Telegram answers HTTP 200 for an unknown username with the placeholder
+    title `Telegram: Contact @<username>` and no member count. Without this
+    check those dead rows stayed in the results with an empty member count.
+    """
+    title_m = _OG_TITLE_RE.search(html or "")
+    if not title_m:
+        return False
+    title = _clean_text(unescape(title_m.group(1))).lower()
+    return title == f"telegram: contact @{username.lower()}"
+
+
+# Returned by _tme_preview for a username Telegram says does not exist, so the
+# caller can drop the row instead of mistaking it for a transient preview miss.
+_TME_DEAD = object()
+
+
 def _parse_tme_preview(html: str, username: str):
     """Parse a public t.me/<username> preview page.
 
@@ -1115,9 +1134,15 @@ async def _tme_preview(session, username, proxy=None):
             session, "GET", f"https://t.me/{username}", proxy=proxy, timeout=10)
     except (aiohttp.ClientError, asyncio.TimeoutError):
         return None
+    if status == 404:
+        return _TME_DEAD
     if status != 200:
         return None
-    return _parse_tme_preview(body.decode("utf-8", "replace"), username)
+    html = body.decode("utf-8", "replace")
+    info = _parse_tme_preview(html, username)
+    if info is None and _tme_contact_page(html, username):
+        return _TME_DEAD
+    return info
 
 
 # TGStat directory API — reliable account-free search (keyword over title and
@@ -1435,8 +1460,9 @@ async def _scrape_channels_public(request: ChannelScrapeRequest):
 
 _PUBLIC_SEARCH_BUDGET = 90.0   # seconds; keywords are queried in parallel up to 16 at once
 _PUBLIC_SEARCH_CONCURRENCY = 16
-_PUBLIC_PREVIEW_BUDGET = 20.0  # seconds; t.me previews only fill member counts
-_PUBLIC_PREVIEW_MAX = 120      # preview pages fetched at most per run (t.me throttles bursts)
+_PUBLIC_PREVIEW_BUDGET = 35.0  # seconds; scales with the ceiling below
+_PUBLIC_PREVIEW_MAX = 120      # floor: preview pages fetched at most per run
+_PUBLIC_PREVIEW_CEILING = 360  # cap: follows the result limit up to this many
 _PUBLIC_PREVIEW_CONCURRENCY = 6
 _PUBLIC_PREVIEW_FAILURES = 20  # consecutive preview failures before the run stops asking
 _PUBLIC_CANDIDATE_MAX = 20000  # candidates held at most, regardless of the result ceiling
@@ -1521,8 +1547,8 @@ async def _scrape_channels_web(request: ChannelScrapeRequest, picker=None):
              for name, _source in _SEARCH_SOURCES}
     # lyzem is queried on its own path, not inside the generic source race.
     stats.setdefault("lyzem", {"requests": 0, "ok": 0, "errors": 0, "items": 0})
-    preview_stats = {"requests": 0, "ok": 0, "errors": 0, "skipped": 0}
-    filtered = {"type": 0, "country": 0}
+    preview_stats = {"requests": 0, "ok": 0, "errors": 0, "skipped": 0, "dead": 0}
+    filtered = {"type": 0, "country": 0, "dead": 0}
 
     def remember(username, keyword, row=None):
         key = username.lower()
@@ -1540,18 +1566,46 @@ async def _scrape_channels_web(request: ChannelScrapeRequest, picker=None):
     async with aiohttp.ClientSession(headers=_BROWSER_HEADERS) as session:
         country_hint = country_tokens[0] if country_tokens else ""
 
+        def country_query(keyword):
+            """Carry the country inside the lyzem query.
+
+            lyzem matches every term against the channel's title, username and
+            description, so a country-qualified query returns pages that name
+            the country. Searching the bare keyword and filtering afterwards
+            threw away almost the whole index (`casino` + Philippines: 58 rows,
+            none naming the country).
+            """
+            if not country_hint:
+                return keyword
+            lowered = keyword.lower()
+            if any(token in lowered for token in country_tokens):
+                return keyword
+            if iso_country:
+                pattern = rf"(?<![a-z0-9]){_re.escape(iso_country.lower())}(?![a-z0-9])"
+                if _re.search(pattern, lowered):
+                    return keyword
+            return f"{keyword} {country_hint}".strip()
+
+        async def lyzem(query, proxy):
+            stats["lyzem"]["requests"] += 1
+            try:
+                return await _lyzem_rows(
+                    session, query, want_per_keyword, proxy=proxy,
+                    group_type=request.group_type)
+            except (aiohttp.ClientError, asyncio.TimeoutError):
+                stats["lyzem"]["errors"] += 1
+                return []
+
         async def discover(keyword):
             if len(seen) >= candidate_cap:
                 return
             proxy = picker.pick()
-            rows = []
-            stats["lyzem"]["requests"] += 1
-            try:
-                rows = await _lyzem_rows(
-                    session, keyword, want_per_keyword, proxy=proxy,
-                    group_type=request.group_type)
-            except (aiohttp.ClientError, asyncio.TimeoutError):
-                stats["lyzem"]["errors"] += 1
+            qualified = country_query(keyword)
+            rows = await lyzem(qualified, proxy)
+            if not rows and qualified != keyword:
+                # A country-qualified query can starve where no page names
+                # both terms; retry the bare keyword before the generic race.
+                rows = await lyzem(keyword, proxy)
             if rows:
                 stats["lyzem"]["ok"] += 1
                 stats["lyzem"]["items"] += len(rows)
@@ -1610,12 +1664,14 @@ async def _scrape_channels_web(request: ChannelScrapeRequest, picker=None):
         entries.sort(key=_rank_result, reverse=True)
         # Generic candidates exist only through a preview, so they get first call
         # on the budget; structured rows already carry type and description.
+        preview_cap = min(max(request.limit, _PUBLIC_PREVIEW_MAX),
+                          _PUBLIC_PREVIEW_CEILING)
         preview_targets = [username for username, _keyword
-                           in candidates[:_PUBLIC_PREVIEW_MAX // 2]]
+                           in candidates[:preview_cap // 2]]
         reserved = {username.lower() for username in preview_targets}
         preview_targets += [entry["username"] for entry in entries
                             if entry["username"].lower() not in reserved]
-        preview_targets = preview_targets[:_PUBLIC_PREVIEW_MAX]
+        preview_targets = preview_targets[:preview_cap]
         preview_stats["skipped"] = max(
             0, len(candidates) + len(entries) - len(preview_targets))
 
@@ -1629,6 +1685,9 @@ async def _scrape_channels_web(request: ChannelScrapeRequest, picker=None):
                     return username, None
                 preview_stats["requests"] += 1
                 info = await _tme_preview(session, username, proxy=picker.pick())
+                if info is _TME_DEAD:
+                    preview_stats["dead"] += 1
+                    return username, _TME_DEAD
                 if not info:
                     preview_stats["errors"] += 1
                     if (preview_stats["errors"] >= _PUBLIC_PREVIEW_FAILURES
@@ -1657,6 +1716,9 @@ async def _scrape_channels_web(request: ChannelScrapeRequest, picker=None):
     results: list = []
     for entry in entries:
         info = previews.get(entry["username"].lower())
+        if info is _TME_DEAD:
+            filtered["dead"] += 1
+            continue
         if info:
             entry["type"] = info["type"]
             entry["members"] = info["members"]
@@ -1686,6 +1748,9 @@ async def _scrape_channels_web(request: ChannelScrapeRequest, picker=None):
         if key in structured_names:
             continue
         info = previews.get(key)
+        if info is _TME_DEAD:
+            filtered["dead"] += 1
+            continue
         if not info:
             continue  # without a preview there is no public type to trust
         if request.group_type != "all" and info["type"] != request.group_type:
