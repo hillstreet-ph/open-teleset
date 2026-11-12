@@ -660,6 +660,11 @@
         .attach-name { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .attach-remove { flex: 0 0 auto; width: 22px; height: 22px; border-radius: 50%; border: 0; background: rgba(255,255,255,0.12); color: var(--text-secondary); cursor: pointer; line-height: 1; }
         .attach-remove:hover { background: var(--danger); color: #fff; }
+        .attach-saved { margin-top: 10px; }
+        .attach-saved small { color: var(--text-dim); }
+        .attach-add { flex: 0 0 auto; width: 22px; height: 22px; border-radius: 50%; border: 0; background: var(--accent-soft); color: var(--accent); cursor: pointer; line-height: 1; font-weight: 700; }
+        .attach-add:hover:not(:disabled) { background: var(--accent); color: #fff; }
+        .attach-add:disabled { opacity: .4; cursor: not-allowed; }
         .send-preview { margin: 16px 0; padding: 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--canvas-soft); }
         .send-preview-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 10px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-dim); }
         .send-preview-head span { text-transform: none; letter-spacing: 0; font-size: 11.5px; color: var(--text-dim); }
@@ -4510,6 +4515,19 @@
                                     <button class="attach-remove" type="button" @click="removeBulkMedia(item.id)" :aria-label="'Remove ' + item.name">×</button>
                                 </div>
                             </div>
+                            <div v-if="bulksend.library.length" class="attach-saved">
+                                <small>Saved files — attach one to reuse it later:</small>
+                                <div class="attach-grid">
+                                    <div v-for="item in bulksend.library" :key="'saved-' + item.id" class="attach-chip">
+                                        <img v-if="item.kind === 'image'" :src="item.url" :alt="item.name">
+                                        <span v-else class="attach-icon">{{ item.kind === 'video' ? '▶' : (item.kind === 'audio' ? '♪' : '📄') }}</span>
+                                        <span class="attach-name" :title="item.name">{{ item.name }}</span>
+                                        <button class="attach-add" type="button" @click="reuseBulkMedia(item)"
+                                                :disabled="bulksend.media.length >= 10" :aria-label="'Attach ' + item.name">+</button>
+                                        <button class="attach-remove" type="button" @click="removeBulkMedia(item.id)" :aria-label="'Delete saved file ' + item.name">×</button>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                     <div class="form-group">
@@ -6545,6 +6563,7 @@
                         delay: 45,
                         loading: false,
                         media: [],
+                        library: [],
                         uploading: false,
                         dragActive: false,
                         resultMsg: '',
@@ -6799,8 +6818,17 @@
                     return parts.join(' · ')
                 },
                 autojoinLinks() {
-                    // Unique, non-blank lines; server does authoritative parsing.
-                    return [...new Set((this.autojoin.urls || '').split(/\r\n|\r|\n/).map(l => l.trim()).filter(Boolean))];
+                    // Pasted text is often prose with links inside it, so pull the
+                    // links out of each line; a line without one stays a bare entry
+                    // (@username or invite hash). The server still parses authoritatively.
+                    const linkRe = /(?<![A-Za-z0-9_.-])(?:https?:\/\/)?(?:t(?:elegram)?\.me|telegram\.dog)\/(?:s\/|joinchat\/|\+)?[A-Za-z0-9_-]*/gi;
+                    const found = [];
+                    String(this.autojoin.urls || '').split(/\r\n|\r|\n/).forEach(line => {
+                        const links = line.match(linkRe);
+                        if (links) links.forEach(link => found.push(link.replace(/[),.;:!?\]]+$/, '')));
+                        else if (line.trim()) found.push(line.trim());
+                    });
+                    return [...new Set(found.filter(Boolean))];
                 },
                 autojoinValidLinks() {
                     const RESERVED = new Set(['s','share','joinchat','addstickers','addtheme',
@@ -7416,6 +7444,7 @@
                             form.append('file', file);
                             const res = await _api.post('/api/bulk/media', form);
                             this.bulksend.media.push(res.data.media);
+                            this.bulksend.library = this.bulksend.library.filter(item => item.id !== res.data.media.id);
                         }
                         if (files.length > room) this.showToast('Only the first 10 attachments were added.', true);
                     } catch (e) {
@@ -7424,8 +7453,28 @@
                         this.bulksend.uploading = false;
                     }
                 },
+                async loadBulkMedia() {
+                    // Uploads survive a reload, so the operator can reuse a file
+                    // without uploading it again.
+                    try {
+                        const res = await _api.get('/api/bulk/media');
+                        const attached = new Set(this.bulksend.media.map(item => item.id));
+                        this.bulksend.library = (res.data?.media || []).filter(item => !attached.has(item.id));
+                    } catch (e) {
+                        // The library is a convenience; sending still works without it.
+                    }
+                },
+                reuseBulkMedia(item) {
+                    if (this.bulksend.media.length >= 10) {
+                        this.showToast('At most 10 attachments per send.', true);
+                        return;
+                    }
+                    this.bulksend.media.push(item);
+                    this.bulksend.library = this.bulksend.library.filter(entry => entry.id !== item.id);
+                },
                 async removeBulkMedia(id) {
                     this.bulksend.media = this.bulksend.media.filter(item => item.id !== id);
+                    this.bulksend.library = this.bulksend.library.filter(item => item.id !== id);
                     try {
                         await _api.delete(`/api/bulk/media/${id}`);
                     } catch (e) {
@@ -8130,6 +8179,7 @@
                         this.spendOAuthReturn()
                         this.loadDashboardData()
                         this.loadOutreachJobs()
+                        this.loadBulkMedia()
                         this.connectStatusSocket(revision)
                     } catch (error) {
                         if (revision !== this.authRevision) return
@@ -8168,6 +8218,7 @@
                     this.adder.requestId = ''; this.bulksend.requestId = '';
                     this.adder.loading = false; this.bulksend.loading = false;
                     this.adder.resultMsg = ''; this.bulksend.resultMsg = ''; this.bulksend.results = [];
+                    this.bulksend.media = []; this.bulksend.library = [];
 
                     this.accounts = []; this.proxies = []; this.logs = []
                     this.globalProxy = null; this.health = {}; this.stats = {}

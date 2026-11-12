@@ -35,6 +35,10 @@ recipient under a trusted content type. Downloads are served with
 `X-Content-Type-Options: nosniff`; images, video and audio inline, documents as
 an attachment.
 
+Uploads outlive the page: the **Saved files** row lists everything the operator
+already uploaded, and one click attaches a file to the current send without
+uploading it again. Deleting a saved file removes the stored bytes.
+
 With a file attached, Telegram treats the text as a caption: 1,024 characters,
 not 4,096. A message may be empty when a file is attached. The form shows a
 combined preview — the selected files rendered with the caption beneath, as one
