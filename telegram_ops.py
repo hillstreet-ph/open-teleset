@@ -365,7 +365,7 @@ async def _resolve_target_entity(client, target):
         raise
 
 
-RECENT_POSTER_SCAN_MAX = 5000
+RECENT_POSTER_SCAN_MAX = 10000
 
 
 def scrape_member_notice(member_count=None):
@@ -397,7 +397,7 @@ async def collect_scrape_members(client, entity, limit):
 
     users, seen = [], set()
     scan_limit = RECENT_POSTER_SCAN_MAX if not limit else min(
-        max(limit * 4, 200), RECENT_POSTER_SCAN_MAX)
+        max(limit * 8, 500), RECENT_POSTER_SCAN_MAX)
     async for message in client.iter_messages(entity, limit=scan_limit):
         sender = getattr(message, "sender", None)
         if sender is None:
@@ -582,6 +582,7 @@ async def list_account_groups(request: GroupListRequest):
 _TME_USERNAME_RE = _re.compile(r"(?:https?://)?t\.me/(?:s/)?([A-Za-z]\w{3,31})\b", _re.I)
 _BING_WRAPPED_RE = _re.compile(r"[?&]u=a1([A-Za-z0-9_-]{8,})")
 _OG_TITLE_RE = _re.compile(r'<meta property="og:title" content="([^"]*)"', _re.I)
+_OG_DESC_RE = _re.compile(r'<meta property="og:description" content="([^"]*)"', _re.I)
 _EXTRA_RE = _re.compile(r'<div class="tgme_page_extra">([^<]*)</div>', _re.I)
 _BROWSER_HEADERS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"}
@@ -802,11 +803,19 @@ async def _request(session, method, url, *, proxy=None, timeout=12, **kwargs):
         return resp.status, await resp.read()
 
 
+def _clean_text(value, limit=400):
+    """Unescape one line of page text and collapse its whitespace."""
+    text = _re.sub(r"\s+", " ", unescape(value or "")).strip()
+    return text[:limit]
+
+
 def _parse_tme_preview(html: str, username: str):
     """Parse a public t.me/<username> preview page.
 
-    Returns {username,title,type,members} for a public channel/supergroup, or
-    None for a user, bot, private, or invalid page (no subscribers/members).
+    Returns {username,title,type,members,about} for a public channel/supergroup,
+    or None for a user, bot, private, or invalid page (no subscribers/members).
+    ``about`` is the public description, which is what keyword and country
+    matching reads beyond the title.
     """
     extra_m = _EXTRA_RE.search(html)
     extra = (extra_m.group(1) if extra_m else "").lower()
@@ -818,6 +827,8 @@ def _parse_tme_preview(html: str, username: str):
         return None
     title_m = _OG_TITLE_RE.search(html)
     title = unescape(title_m.group(1)) if title_m else username
+    desc_m = _OG_DESC_RE.search(html)
+    about = _clean_text(desc_m.group(1)) if desc_m else ""
     members = None
     head = extra.split("subscriber")[0].split("member")[0]
     digits = _re.sub(r"[^\d]", "", head)
@@ -826,7 +837,78 @@ def _parse_tme_preview(html: str, username: str):
             members = int(digits)
         except ValueError:
             members = None
-    return {"username": username, "title": title, "type": kind, "members": members}
+    return {"username": username, "title": title, "type": kind,
+            "members": members, "about": about}
+
+
+def _normalise_text(value) -> str:
+    return " ".join((value or "").lower().split())
+
+
+def _keyword_tokens(keyword: str):
+    """The phrase plus its own words, so a long keyword still matches its parts."""
+    phrase = _normalise_text(keyword)
+    if not phrase:
+        return []
+    tokens = [phrase]
+    tokens.extend(word for word in phrase.split() if len(word) >= 3)
+    return list(dict.fromkeys(tokens))
+
+
+def _keyword_matches(text, keyword: str) -> bool:
+    """True when the keyword phrase or one of its words appears in the text."""
+    haystack = _normalise_text(text)
+    if not haystack or not keyword:
+        return False
+    for term in _keyword_tokens(keyword):
+        if len(term) <= 3:
+            if _re.search(rf"(?<![a-z0-9]){_re.escape(term)}(?![a-z0-9])", haystack):
+                return True
+        elif term in haystack:
+            return True
+    return False
+
+
+def _keyword_index(keywords):
+    """Prepare one alternation over every keyword phrase and word.
+
+    A long keyword list turns a per-row loop into millions of substring scans,
+    so the terms are compiled once and each field is scanned once. Terms keep
+    their owning keyword so a hit still reports which keyword matched.
+    """
+    terms: dict = {}
+    for position, keyword in enumerate(keywords):
+        for term in _keyword_tokens(keyword):
+            terms.setdefault(term, []).append(position)
+    parts = []
+    for term in sorted(terms, key=len, reverse=True):
+        escaped = _re.escape(term)
+        if len(term) <= 3:
+            parts.append(rf"(?<![a-z0-9]){escaped}(?![a-z0-9])")
+        else:
+            parts.append(escaped)
+    pattern = _re.compile("|".join(parts)) if parts else None
+    return keywords, terms, pattern
+
+
+def _match_fields(title, username, about, index):
+    """Return (matched keywords, field names) for one channel or group."""
+    keywords, terms, pattern = index
+    hits: set = set()
+    fields = []
+    for name, value in (("title", title), ("username", username),
+                        ("description", about)):
+        haystack = _normalise_text(value)
+        if not haystack or pattern is None:
+            continue
+        found = False
+        for match in pattern.finditer(haystack):
+            for position in terms.get(match.group(0), ()):
+                hits.add(position)
+                found = True
+        if found:
+            fields.append(name)
+    return [keywords[position] for position in sorted(hits)], fields
 
 
 def _decode_bing_target(value: str) -> str:
@@ -918,6 +1000,87 @@ async def _brave_usernames(session, keyword, want, proxy=None):
 
 # Lyzem links its own channel on every result page; it is never a match.
 _LYZEM_NOISE = {"lyzemcom"}
+
+_LYZEM_ROW_RE = _re.compile(r'<li class="search-result">(.*?)</li>', _re.S)
+_LYZEM_TITLE_RE = _re.compile(r'class="search-result-title"[^>]*>(.*?)</p>', _re.S)
+_LYZEM_DESCR_RE = _re.compile(r'class="search-result-descr"[^>]*>(.*?)</p>', _re.S)
+_LYZEM_KIND_RE = _re.compile(
+    r'<div class="search-result-type-wrapper[^"]*"[^>]*\btitle="(channel|group|bot)"',
+    _re.I)
+_LYZEM_KIND_SPAN_RE = _re.compile(
+    r'<div class="search-group">\s*<span>\s*(channel|group|bot)\s*</span>', _re.I)
+_LYZEM_LINK_RE = _re.compile(r'https://t\.me/([A-Za-z]\w{3,31})')
+_LYZEM_TYPE_FILTER = {"channel": "channels", "group": "groups"}
+_TAG_RE = _re.compile(r"<[^>]+>")
+
+
+def _lyzem_text(match) -> str:
+    return _clean_text(unescape(_TAG_RE.sub(" ", match.group(1)))) if match else ""
+
+
+def _parse_lyzem_rows(html, want):
+    """Read lyzem's structured result rows: public link, title, description, type.
+
+    lyzem indexes Telegram's own public preview, so these rows already say
+    whether a target is a channel or a group and what its description is. That
+    lets discovery match keywords and countries without a t.me round trip,
+    which is what the preview budget could not keep up with.
+    """
+    rows, seen = [], set()
+    for block in _LYZEM_ROW_RE.findall(html or ""):
+        kind_m = _LYZEM_KIND_RE.search(block) or _LYZEM_KIND_SPAN_RE.search(block)
+        if not kind_m:
+            continue
+        kind = kind_m.group(1).lower()
+        if kind not in ("channel", "group"):
+            continue  # bots and unknown targets are never scrape targets
+        link_m = _LYZEM_LINK_RE.search(block)
+        if not link_m:
+            continue
+        username = link_m.group(1)
+        key = username.lower()
+        if key in _TME_RESERVED or key in _LYZEM_NOISE or key in seen:
+            continue
+        seen.add(key)
+        rows.append({
+            "username": username,
+            "title": _lyzem_text(_LYZEM_TITLE_RE.search(block)) or username,
+            "about": _lyzem_text(_LYZEM_DESCR_RE.search(block)),
+            "type": kind,
+        })
+        if len(rows) >= want:
+            break
+    return rows
+
+
+async def _lyzem_rows(session, keyword, want, proxy=None, group_type="all"):
+    """Structured lyzem search, paging until the wanted rows or ten pages."""
+    params = {"q": keyword, "f": _LYZEM_TYPE_FILTER.get(group_type, "all")}
+    per_page = next((size for size in (100, 50, 25, 10) if size <= max(10, want)), 10)
+    params["per-page"] = str(per_page)
+    max_pages = min(10, max(1, -(-want // per_page)))
+    rows, seen = [], set()
+    for page in range(1, max_pages + 1):
+        if page > 1:
+            params["p"] = str(page)
+        status, body = await _request(
+            session, "GET", "https://lyzem.com/search",
+            params=params, proxy=proxy, timeout=10,
+            headers={"Accept": "text/html,application/xhtml+xml",
+                     "Accept-Language": "en-US,en;q=0.9"},
+        )
+        if status != 200:
+            raise aiohttp.ClientConnectionError(f"search source returned HTTP {status}")
+        page_rows = _parse_lyzem_rows(body.decode("utf-8", "replace"), want)
+        for row in page_rows:
+            key = row["username"].lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(row)
+        if len(rows) >= want or not page_rows:
+            break
+    return rows[:want]
 
 
 async def _lyzem_usernames(session, keyword, want, proxy=None):
@@ -1070,9 +1233,14 @@ async def _gather_keywords(keywords, worker, budget, concurrency=5):
 
 
 def _rank_result(info):
-    keyword = (info.get("matched_keyword") or "").lower()
+    """Best first: more keyword hits, more matched fields, title before members."""
+    matched = info.get("matched_keywords") or (
+        [info["matched_keyword"]] if info.get("matched_keyword") else [])
+    fields = info.get("matched_in") or []
     title = (info.get("title") or "").lower()
-    return (bool(keyword and keyword in title), info.get("members") or 0)
+    in_title = sum(1 for keyword in matched if keyword and keyword.lower() in title)
+    return (len(matched), len(fields), in_title, "title" in fields,
+            info.get("members") or 0)
 
 
 async def _scrape_channels_tgstat(request: ChannelScrapeRequest, token, picker=None):
@@ -1265,13 +1433,24 @@ async def _scrape_channels_public(request: ChannelScrapeRequest):
     return fallback
 
 
-_PUBLIC_SEARCH_BUDGET = 55.0  # seconds; leaves room for previews inside the client timeout
-_PUBLIC_PREVIEW_BUDGET = 40.0  # seconds
-_PUBLIC_CANDIDATE_MAX = 600   # preview pages fetched at most, regardless of the result ceiling
+_PUBLIC_SEARCH_BUDGET = 90.0   # seconds; keywords are queried in parallel up to 16 at once
+_PUBLIC_SEARCH_CONCURRENCY = 16
+_PUBLIC_PREVIEW_BUDGET = 20.0  # seconds; t.me previews only fill member counts
+_PUBLIC_PREVIEW_MAX = 120      # preview pages fetched at most per run (t.me throttles bursts)
+_PUBLIC_PREVIEW_CONCURRENCY = 6
+_PUBLIC_PREVIEW_FAILURES = 20  # consecutive preview failures before the run stops asking
+_PUBLIC_CANDIDATE_MAX = 20000  # candidates held at most, regardless of the result ceiling
+_SOURCE_GRACE = 1.0            # seconds the losing sources may still add candidates
 
 
-async def _first_source_candidates(session, keyword, want, proxy, stats):
-    """Race the public search sources; return the first non-empty candidate list."""
+async def _first_source_candidates(session, keyword, want, proxy, stats, skip=(), grace=_SOURCE_GRACE):
+    """Race the public search sources and merge every answer inside a short grace window.
+
+    The first source to answer provides the candidates, but the sources still in
+    flight are given a short window to add theirs instead of being cancelled:
+    each one indexes a different slice of Telegram, so first-wins silently lost
+    recall whenever a fast but thin source won the race.
+    """
     async def run(name, source):
         stats[name]["requests"] += 1
         try:
@@ -1280,91 +1459,186 @@ async def _first_source_candidates(session, keyword, want, proxy, stats):
             stats[name]["errors"] += 1
             return []
 
-    tasks = {asyncio.create_task(run(name, source)): name for name, source in _SEARCH_SOURCES}
+    def collect(tasks_done):
+        for task in tasks_done:
+            names = task.result()
+            if not names:
+                continue
+            stats[tasks[task]]["items"] += len(names)
+            stats[tasks[task]]["ok"] += 1
+            found.extend(names)
+
+    tasks = {asyncio.create_task(run(name, source)): name
+             for name, source in _SEARCH_SOURCES if name not in skip}
     pending = set(tasks)
     found: list = []
     try:
         while pending and not found:
             done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
-            for task in done:
-                names = task.result()
-                if names and not found:
-                    stats[tasks[task]]["items"] += len(names)
-                    stats[tasks[task]]["ok"] += 1
-                    found = names
+            collect(done)
+        if found and pending:
+            more, pending = await asyncio.wait(pending, timeout=grace)
+            collect(more)
     finally:
         for task in pending:
             task.cancel()
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
-    return found
+    unique, seen_names = [], set()
+    for name in found:
+        key = name.lower()
+        if key in seen_names:
+            continue
+        seen_names.add(key)
+        unique.append(name)
+    return unique[:want]
 
 
 async def _scrape_channels_web(request: ChannelScrapeRequest, picker=None):
-    """Account-free fallback: public web search + public t.me preview pages.
+    """Account-free discovery: structured public search, then web search fallback.
 
-    Several public search sources are raced per keyword, then every candidate is
-    verified against its public t.me preview. No credentials are used; results
-    depend on those sources not rate-limiting the server. The diagnostic fields
-    explain an empty run instead of silently reporting zero.
+    lyzem indexes Telegram's public previews, so it answers with the link, the
+    title, the description and the channel/group label in one request. That is
+    what keyword and country matching read, and it no longer depends on a t.me
+    preview per candidate (which the server's IP could not keep up with).
+    Every other public source is still raced as a fallback, and results are
+    de-duplicated across keywords and sources.
     """
     picker = _picker_for(request, picker)
     iso_country, country_tokens = resolve_country(request.country)
     language_code = resolve_language(request.language)
-    want_candidates = min(request.limit * 3, _PUBLIC_CANDIDATE_MAX)
+    index = _keyword_index(request.keywords)
+    candidate_cap = min(max(request.limit * 20, 2000), _PUBLIC_CANDIDATE_MAX)
+    # A short keyword list may page lyzem for depth; a long list gets one page
+    # each so the search budget covers as many keywords as possible.
+    want_per_keyword = (min(max(request.limit, 25), 1000)
+                        if len(request.keywords) <= 8
+                        else min(max(request.limit, 25), 100))
     seen: set = set()
-    candidates: list = []
+    candidates: list = []          # (username, keyword) needing a t.me preview
+    structured: dict = {}          # username.lower() -> row with title and description
     stats = {name: {"requests": 0, "ok": 0, "errors": 0, "items": 0}
              for name, _source in _SEARCH_SOURCES}
-    preview_stats = {"requests": 0, "ok": 0, "errors": 0}
+    # lyzem is queried on its own path, not inside the generic source race.
+    stats.setdefault("lyzem", {"requests": 0, "ok": 0, "errors": 0, "items": 0})
+    preview_stats = {"requests": 0, "ok": 0, "errors": 0, "skipped": 0}
     filtered = {"type": 0, "country": 0}
+
+    def remember(username, keyword, row=None):
+        key = username.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        if row is None:
+            candidates.append((username, keyword))
+            return
+        entry = dict(row)
+        entry["username"] = username
+        entry["matched_keyword"] = keyword
+        structured[key] = entry
 
     async with aiohttp.ClientSession(headers=_BROWSER_HEADERS) as session:
         country_hint = country_tokens[0] if country_tokens else ""
 
         async def discover(keyword):
+            if len(seen) >= candidate_cap:
+                return
             proxy = picker.pick()
+            rows = []
+            stats["lyzem"]["requests"] += 1
+            try:
+                rows = await _lyzem_rows(
+                    session, keyword, want_per_keyword, proxy=proxy,
+                    group_type=request.group_type)
+            except (aiohttp.ClientError, asyncio.TimeoutError):
+                stats["lyzem"]["errors"] += 1
+            if rows:
+                stats["lyzem"]["ok"] += 1
+                stats["lyzem"]["items"] += len(rows)
+                for row in rows:
+                    remember(row["username"], keyword, row)
+                    if len(seen) >= candidate_cap:
+                        break
+                return
             query = f"{keyword} {country_hint}".strip() if country_hint else keyword
             names = await _first_source_candidates(
-                session, query, want_candidates, proxy, stats)
+                session, query, want_per_keyword, proxy, stats, skip=("lyzem",))
             if not names and country_hint:
                 # Engines that require every term can starve a country-qualified
                 # query; retry the bare keyword before calling the run empty.
                 names = await _first_source_candidates(
-                    session, keyword, want_candidates, proxy, stats)
+                    session, keyword, want_per_keyword, proxy, stats, skip=("lyzem",))
             if not names and proxy:
                 # If the proxy itself is dead, retry the race directly once.
                 picker.fallbacks += 1
                 names = await _first_source_candidates(
-                    session, query, want_candidates, None, stats)
-            return names
+                    session, query, want_per_keyword, None, stats, skip=("lyzem",))
+            for username in names:
+                remember(username, keyword)
+                if len(seen) >= candidate_cap:
+                    break
 
-        per_keyword, skipped = await _gather_keywords(
-            request.keywords, discover, _PUBLIC_SEARCH_BUDGET, concurrency=6)
-        for keyword, usernames in per_keyword:
-            if not usernames:
+        _, skipped = await _gather_keywords(
+            request.keywords, discover, _PUBLIC_SEARCH_BUDGET,
+            concurrency=_PUBLIC_SEARCH_CONCURRENCY)
+
+        entries: list = []
+        for row in structured.values():
+            if request.group_type != "all" and row["type"] != request.group_type:
+                filtered["type"] += 1
                 continue
-            for username in usernames:
-                key = username.lower()
-                if key in seen:
-                    continue
-                seen.add(key)
-                candidates.append((username, keyword))
+            haystack = f"{row['title']} {row['username']} {row['about']}".lower()
+            if (country_tokens or iso_country) and not country_matches(
+                    haystack, country_tokens, iso_country):
+                filtered["country"] += 1
+                continue
+            matched, fields = _match_fields(
+                row["title"], row["username"], row["about"], index)
+            if not matched:
+                matched = [row["matched_keyword"]]
+            entries.append({
+                "username": row["username"],
+                "title": row["title"],
+                "about": row["about"],
+                "type": row["type"],
+                "members": None,
+                "matched_keywords": matched,
+                "matched_in": fields,
+                "source": "lyzem",
+            })
 
-        semaphore = asyncio.Semaphore(10)
+        entries.sort(key=_rank_result, reverse=True)
+        # Generic candidates exist only through a preview, so they get first call
+        # on the budget; structured rows already carry type and description.
+        preview_targets = [username for username, _keyword
+                           in candidates[:_PUBLIC_PREVIEW_MAX // 2]]
+        reserved = {username.lower() for username in preview_targets}
+        preview_targets += [entry["username"] for entry in entries
+                            if entry["username"].lower() not in reserved]
+        preview_targets = preview_targets[:_PUBLIC_PREVIEW_MAX]
+        preview_stats["skipped"] = max(
+            0, len(candidates) + len(entries) - len(preview_targets))
 
-        async def enrich(username, keyword):
+        semaphore = asyncio.Semaphore(_PUBLIC_PREVIEW_CONCURRENCY)
+        stop = asyncio.Event()
+
+        async def enrich(username):
             async with semaphore:
+                if stop.is_set():
+                    preview_stats["skipped"] += 1
+                    return username, None
                 preview_stats["requests"] += 1
                 info = await _tme_preview(session, username, proxy=picker.pick())
                 if not info:
                     preview_stats["errors"] += 1
-                    return None
+                    if (preview_stats["errors"] >= _PUBLIC_PREVIEW_FAILURES
+                            and preview_stats["errors"] > preview_stats["ok"] * 2):
+                        stop.set()  # the server is rate limiting; stop asking
+                    return username, None
                 preview_stats["ok"] += 1
-                info["matched_keyword"] = keyword
-                return info
+                return username, info
 
-        tasks = [asyncio.create_task(enrich(u, k)) for u, k in candidates]
+        tasks = [asyncio.create_task(enrich(username)) for username in preview_targets]
         done, pending = (await asyncio.wait(tasks, timeout=_PUBLIC_PREVIEW_BUDGET)
                          if tasks else (set(), set()))
         for task in pending:
@@ -1372,21 +1646,60 @@ async def _scrape_channels_web(request: ChannelScrapeRequest, picker=None):
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
 
-    results: list = []
+    previews = {}
     for task in tasks:
         if task not in done or task.cancelled() or task.exception() is not None:
             continue
-        info = task.result()
-        if not info:
+        username, info = task.result()
+        if info:
+            previews[username.lower()] = info
+
+    results: list = []
+    for entry in entries:
+        info = previews.get(entry["username"].lower())
+        if info:
+            entry["type"] = info["type"]
+            entry["members"] = info["members"]
+            entry["title"] = info["title"] or entry["title"]
+            if info.get("about"):
+                entry["about"] = info["about"]
+        if request.group_type != "all" and entry["type"] != request.group_type:
+            filtered["type"] += 1
             continue
+        results.append({
+            "id": entry["username"],
+            "title": entry["title"],
+            "username": entry["username"],
+            "url": f"https://t.me/{entry['username']}",
+            "type": entry["type"],
+            "members": entry["members"],
+            "verified": False,
+            "about": entry["about"],
+            "matched_keyword": entry["matched_keywords"][0],
+            "matched_keywords": entry["matched_keywords"],
+            "matched_in": entry["matched_in"],
+        })
+
+    structured_names = {entry["username"].lower() for entry in entries}
+    for username, keyword in candidates:
+        key = username.lower()
+        if key in structured_names:
+            continue
+        info = previews.get(key)
+        if not info:
+            continue  # without a preview there is no public type to trust
         if request.group_type != "all" and info["type"] != request.group_type:
             filtered["type"] += 1
             continue
-        haystack = (info["title"] + " " + info["username"]).lower()
+        haystack = f"{info['title']} {info['username']} {info.get('about', '')}".lower()
         if (country_tokens or iso_country) and not country_matches(
                 haystack, country_tokens, iso_country):
             filtered["country"] += 1
             continue
+        matched, fields = _match_fields(
+            info["title"], info["username"], info.get("about", ""), index)
+        if not matched:
+            matched = [keyword]
         results.append({
             "id": info["username"],
             "title": info["title"],
@@ -1395,37 +1708,40 @@ async def _scrape_channels_web(request: ChannelScrapeRequest, picker=None):
             "type": info["type"],
             "members": info["members"],
             "verified": False,
-            "matched_keyword": info["matched_keyword"],
+            "about": info.get("about", ""),
+            "matched_keyword": matched[0],
+            "matched_keywords": matched,
+            "matched_in": fields,
         })
 
     results.sort(key=_rank_result, reverse=True)
     results = results[:request.limit]
-    partial = bool(skipped or pending)
+    partial = bool(skipped)
     reason = ""
     if not results:
         attempted = sum(source["requests"] for source in stats.values())
         answered = sum(source["ok"] for source in stats.values())
         errored = sum(source["errors"] for source in stats.values())
-        if not candidates and errored and not answered:
+        if not seen and errored and not answered:
             reason = ("Every public search source refused or timed out for this server "
                       f"({errored} of {attempted} requests). Set TGSTAT_TOKEN for reliable "
                       "search, or choose an HTTP proxy.")
-        elif not candidates:
+        elif not seen:
             reason = ("Public search returned no t.me links for these keywords. Try broader "
                       "keywords or set TGSTAT_TOKEN for directory search.")
-        elif preview_stats["requests"] and preview_stats["ok"] == 0:
-            reason = "Candidate links were found but the t.me previews failed. Retry in a moment."
         elif filtered["country"]:
             reason = ("Candidates were found but the country filter removed all of them. "
                       "Clear the country filter to see them.")
         elif filtered["type"]:
             reason = ("Candidates were found but the type filter removed all of them. "
                       "Choose All to see them.")
+        elif preview_stats["requests"] and preview_stats["ok"] == 0:
+            reason = "Candidate links were found but the t.me previews failed. Retry in a moment."
         else:
             reason = "Candidates were found but none of them is a public channel or group."
     log_manager.add_log(
         "ChannelScraper", "public",
-        f"Found {len(results)} channels/groups from {len(candidates)} candidate(s) for "
+        f"Found {len(results)} channels/groups from {len(seen)} candidate(s) for "
         f"{len(request.keywords)} keyword(s)"
         + ("; results are partial because a budget ran out" if partial else ""),
         "success",
@@ -1446,7 +1762,12 @@ async def _scrape_channels_web(request: ChannelScrapeRequest, picker=None):
             },
             "language": {"input": request.language, "code": language_code, "applied": "none"},
             "proxies": proxy_diagnostics(request.proxy_mode, picker),
-            "candidates": len(candidates),
+            "candidates": len(seen),
+            "keywords": {
+                "input": len(request.keywords),
+                "queried": len(request.keywords) - len(skipped),
+                "skipped": len(skipped),
+            },
             "filtered": filtered,
             "sources": {**stats, "previews": preview_stats},
             "reason": reason,

@@ -32,15 +32,19 @@ def isolated_store(tmp_path, monkeypatch):
 def test_feature_toggles_default_on_and_persist():
     assert operator_store.get_features() == {
         "automation_enabled": True, "factory_enabled": True, "cloud_browser_enabled": False,
+        "cloud_phone_enabled": False,
         "auto_reply_enabled": False, "inbox_enabled": False,
     }
     updated = operator_store.set_features({"factory_enabled": False, "cloud_browser_enabled": True,
+                                           "cloud_phone_enabled": True,
                                            "auto_reply_enabled": True, "inbox_enabled": True})
     assert updated == {"automation_enabled": True, "factory_enabled": False, "cloud_browser_enabled": True,
+                       "cloud_phone_enabled": True,
                        "auto_reply_enabled": True, "inbox_enabled": True}
     assert operator_store.feature_enabled("factory") is False
     assert operator_store.feature_enabled("automation") is True
     assert operator_store.feature_enabled("cloud_browser") is True
+    assert operator_store.feature_enabled("cloud_phone") is True
     assert operator_store.feature_enabled("auto_reply") is True
     assert operator_store.feature_enabled("inbox") is True
 

@@ -32,6 +32,11 @@ def hit(username, kind="channel", members=10, title=None):
     }
 
 
+async def no_lyzem(session, keyword, want, proxy=None, group_type="all"):
+    """Fail the structured index so a test exercises the generic source race."""
+    return []
+
+
 # ---------- country / language resolution ----------
 
 
@@ -271,6 +276,7 @@ async def test_web_search_uses_the_first_source_that_answers(monkeypatch):
         return hit(username, title="Found Channel")
 
     monkeypatch.setattr(ops, "_SEARCH_SOURCES", (("slow", slow), ("fast", fast)))
+    monkeypatch.setattr(ops, "_lyzem_rows", no_lyzem)
     monkeypatch.setattr(ops, "_tme_preview", preview)
     request = ops.ChannelScrapeRequest(
         keywords=["casino"], proxy_mode="custom",
@@ -301,6 +307,7 @@ async def test_web_search_qualifies_the_query_with_country_and_falls_back(monkey
         return hit(username, title="PH Casino")
 
     monkeypatch.setattr(ops, "_SEARCH_SOURCES", (("source", source),))
+    monkeypatch.setattr(ops, "_lyzem_rows", no_lyzem)
     monkeypatch.setattr(ops, "_tme_preview", preview)
     request = ops.ChannelScrapeRequest(keywords=["casino"], country="Philippines")
 
@@ -319,6 +326,7 @@ async def test_web_search_zero_results_names_the_real_cause(monkeypatch):
         raise ops.aiohttp.ClientConnectionError("refused")
 
     monkeypatch.setattr(ops, "_SEARCH_SOURCES", (("refused", refused),))
+    monkeypatch.setattr(ops, "_lyzem_rows", no_lyzem)
     request = ops.ChannelScrapeRequest(keywords=["casino"])
 
     result = await ops._scrape_channels_web(request)
@@ -341,6 +349,7 @@ async def test_web_search_reports_filters_that_removed_every_candidate(monkeypat
         return hit(username, title="Russian Casino")
 
     monkeypatch.setattr(ops, "_SEARCH_SOURCES", (("source", source),))
+    monkeypatch.setattr(ops, "_lyzem_rows", no_lyzem)
     monkeypatch.setattr(ops, "_tme_preview", preview)
     request = ops.ChannelScrapeRequest(keywords=["casino"], country="Philippines")
 
@@ -367,6 +376,7 @@ async def test_public_discovery_reports_whether_a_token_is_configured(monkeypatc
         return hit(username)
 
     monkeypatch.setattr(ops, "_SEARCH_SOURCES", (("source", source),))
+    monkeypatch.setattr(ops, "_lyzem_rows", no_lyzem)
     monkeypatch.setattr(ops, "_tme_preview", preview)
 
     result = await ops._scrape_channels_public(ops.ChannelScrapeRequest(keywords=["casino"]))
@@ -496,3 +506,237 @@ async def test_public_fallback_reason_mentions_both_failures(monkeypatch):
     reason = result["diagnostics"]["reason"]
     assert "subscription" in reason.lower()
     assert "public search" in reason.lower()
+
+
+# ---------- rich results: description, structured sources, deeper scans ----------
+
+
+def test_preview_reads_the_public_description():
+    html = (
+        '<meta property="og:title" content="PH Casino Hub">'
+        '<meta property="og:description" content="Sabong &amp; casino picks\n for the Philippines">'
+        '<div class="tgme_page_extra">12 345 subscribers</div>'
+    )
+
+    info = ops._parse_tme_preview(html, "phcasino")
+
+    assert info["about"] == "Sabong & casino picks for the Philippines"
+    assert info["type"] == "channel" and info["members"] == 12345
+
+
+def test_keyword_matching_reads_phrases_and_word_tokens():
+    assert ops._keyword_matches("casino hub ph", "casino philippines")
+    assert ops._keyword_matches("best sabong tips", "sabong")
+    assert not ops._keyword_matches("russian casino", "sabong")
+    # A two-letter token must stand alone, so "usadeals" is not a PH match.
+    assert ops._keyword_matches("PH casino", "ph")
+    assert not ops._keyword_matches("usadeals", "ph")
+
+
+def test_match_fields_names_every_field_the_keyword_hit():
+    index = ops._keyword_index(["sabong", "casino philippines"])
+
+    matched, fields = ops._match_fields(
+        "Casino Hub", "phcasino", "Sabong picks for the Philippines", index)
+
+    assert matched == ["sabong", "casino philippines"]
+    assert fields == ["title", "username", "description"]
+
+
+def test_lyzem_rows_parse_titles_descriptions_and_types():
+    html = (
+        '<li class="search-result">'
+        '<div class="search-result-type-wrapper" data-profile-link="https://t.me/phcasino" title="channel">'
+        '<div class="search-group"><span>channel</span></div></div>'
+        '<div class="search-result-info"><p class="search-result-title">'
+        '<a href="https://t.me/phcasino">PH Casino Hub</a></p>'
+        '<p class="search-result-descr"><a href="https://t.me/phcasino">'
+        'Sabong and casino picks for the Philippines</a></p></div></li>'
+        '<li class="search-result">'
+        '<div class="search-result-type-wrapper" data-profile-link="https://t.me/sabonggroup" title="group">'
+        '<div class="search-group"><span>group</span></div></div>'
+        '<div class="search-result-info"><p class="search-result-title">'
+        '<a href="https://t.me/sabonggroup">Sabong Talk</a></p>'
+        '<p class="search-result-descr"><a href="https://t.me/sabonggroup">Daily fights</a></p></div></li>'
+        '<li class="search-result">'
+        '<div class="search-result-type-wrapper" data-profile-link="https://t.me/lyzembot" title="bot">'
+        '<div class="search-group"><span>bot</span></div></div>'
+        '<div class="search-result-info"><p class="search-result-title">'
+        '<a href="https://t.me/lyzembot">Lyzem</a></p><p class="search-result-descr">'
+        '<a href="https://t.me/lyzembot">bot</a></p></div></li>'
+        '<li class="search-result">'
+        '<div class="search-result-type-wrapper" data-profile-link="https://t.me/lyzemcom" title="channel">'
+        '<div class="search-group"><span>channel</span></div></div>'
+        '<div class="search-result-info"><p class="search-result-title">'
+        '<a href="https://t.me/lyzemcom">Lyzem News</a></p><p class="search-result-descr">'
+        '<a href="https://t.me/lyzemcom">noise</a></p></div></li>'
+    )
+
+    rows = ops._parse_lyzem_rows(html, 10)
+
+    assert [row["username"] for row in rows] == ["phcasino", "sabonggroup"]
+    assert rows[0]["title"] == "PH Casino Hub"
+    assert rows[0]["about"] == "Sabong and casino picks for the Philippines"
+    assert rows[0]["type"] == "channel"
+    assert rows[1]["type"] == "group"
+
+
+@pytest.mark.asyncio
+async def test_lyzem_rows_honour_the_type_filter(monkeypatch):
+    seen = {}
+
+    async def fake_request(session, method, url, **kwargs):
+        seen.update(kwargs.get("params") or {})
+        return 200, b"<html></html>"
+
+    monkeypatch.setattr(ops, "_request", fake_request)
+
+    await ops._lyzem_rows(None, "casino", 100, group_type="group")
+
+    assert seen["f"] == "groups"
+    assert seen["q"] == "casino"
+    assert seen["per-page"] == "100"
+
+
+@pytest.mark.asyncio
+async def test_web_search_keeps_structured_rows_when_previews_fail(monkeypatch):
+    monkeypatch.setattr(ops.aiohttp, "ClientSession", FakeSession)
+    monkeypatch.setattr(ops.log_manager, "add_log", lambda *args, **kwargs: None)
+
+    async def rows(session, keyword, want, proxy=None, group_type="all"):
+        return [{"username": "phcasino", "title": "Casino Hub",
+                 "about": "Sabong and casino picks for the Philippines", "type": "channel"}]
+
+    async def no_preview(session, username, proxy=None):
+        return None
+
+    monkeypatch.setattr(ops, "_lyzem_rows", rows)
+    monkeypatch.setattr(ops, "_tme_preview", no_preview)
+    monkeypatch.setattr(ops, "_SEARCH_SOURCES", ())
+
+    result = await ops._scrape_channels_web(
+        ops.ChannelScrapeRequest(keywords=["sabong"], country="Philippines"))
+
+    assert result["total"] == 1
+    row = result["results"][0]
+    assert row["username"] == "phcasino" and row["type"] == "channel"
+    assert row["members"] is None
+    assert row["matched_keywords"] == ["sabong"]
+    assert "description" in row["matched_in"]
+    assert result["diagnostics"]["sources"]["previews"]["errors"] == 1
+
+
+@pytest.mark.asyncio
+async def test_web_search_country_filter_reads_the_description(monkeypatch):
+    monkeypatch.setattr(ops.aiohttp, "ClientSession", FakeSession)
+    monkeypatch.setattr(ops.log_manager, "add_log", lambda *args, **kwargs: None)
+
+    async def rows(session, keyword, want, proxy=None, group_type="all"):
+        return [{"username": "rucasino", "title": "Casino Hub",
+                 "about": "Casino offers for Russian players", "type": "channel"}]
+
+    async def no_preview(session, username, proxy=None):
+        return None
+
+    monkeypatch.setattr(ops, "_lyzem_rows", rows)
+    monkeypatch.setattr(ops, "_tme_preview", no_preview)
+    monkeypatch.setattr(ops, "_SEARCH_SOURCES", ())
+
+    result = await ops._scrape_channels_web(
+        ops.ChannelScrapeRequest(keywords=["casino"], country="Philippines"))
+
+    assert result["total"] == 0
+    assert result["diagnostics"]["filtered"]["country"] == 1
+
+
+@pytest.mark.asyncio
+async def test_source_race_merges_answers_instead_of_first_wins(monkeypatch):
+    async def fast(session, keyword, want, proxy=None):
+        return ["first_channel"]
+
+    async def nearly_as_fast(session, keyword, want, proxy=None):
+        await asyncio.sleep(0.05)
+        return ["second_channel"]
+
+    monkeypatch.setattr(ops, "_SEARCH_SOURCES",
+                        (("fast", fast), ("nearly_as_fast", nearly_as_fast)))
+    stats = {"fast": {"requests": 0, "ok": 0, "errors": 0, "items": 0},
+             "nearly_as_fast": {"requests": 0, "ok": 0, "errors": 0, "items": 0}}
+
+    names = await ops._first_source_candidates(None, "casino", 10, None, stats)
+
+    assert set(names) == {"first_channel", "second_channel"}
+    assert stats["nearly_as_fast"]["items"] == 1
+
+
+def test_lyzem_rows_read_the_wrapper_kind_attribute():
+    """lyzem renders channels with a title attribute instead of a group label."""
+    html = (
+        '<li class="search-result">'
+        '<div class="search-result-type-wrapper " title="channel">'
+        '<div class="search-channel"><span>channel</span></div></div>'
+        '<div class="search-result-info"><p class="search-result-title">'
+        '<a href="https://t.me/trusted_4g24">VVIP CASINO</a></p>'
+        '<p class="search-result-descr"><a href="https://t.me/trusted_4g24">'
+        'Berlesen Di PHILIPPINES ONLINE CASINO</a></p></div></li>'
+    )
+
+    rows = ops._parse_lyzem_rows(html, 10)
+
+    assert [row["username"] for row in rows] == ["trusted_4g24"]
+    assert rows[0]["type"] == "channel"
+    assert "PHILIPPINES" in rows[0]["about"]
+
+
+@pytest.mark.asyncio
+async def test_web_search_reports_keyword_coverage(monkeypatch):
+    monkeypatch.setattr(ops.aiohttp, "ClientSession", FakeSession)
+    monkeypatch.setattr(ops.log_manager, "add_log", lambda *args, **kwargs: None)
+
+    async def rows(session, keyword, want, proxy=None, group_type="all"):
+        if keyword == "sabong":
+            return [{"username": "sabongph", "title": "Sabong PH",
+                     "about": "daily fights", "type": "group"}]
+        return []
+
+    async def no_preview(session, username, proxy=None):
+        return None
+
+    monkeypatch.setattr(ops, "_lyzem_rows", rows)
+    monkeypatch.setattr(ops, "_tme_preview", no_preview)
+    monkeypatch.setattr(ops, "_SEARCH_SOURCES", ())
+
+    result = await ops._scrape_channels_web(
+        ops.ChannelScrapeRequest(keywords=["sabong", "casino", "perya"]))
+
+    coverage = result["diagnostics"]["keywords"]
+    assert coverage == {"input": 3, "queried": 3, "skipped": 0}
+
+
+@pytest.mark.asyncio
+async def test_previews_stop_after_the_server_rate_limits(monkeypatch):
+    monkeypatch.setattr(ops.aiohttp, "ClientSession", FakeSession)
+    monkeypatch.setattr(ops.log_manager, "add_log", lambda *args, **kwargs: None)
+
+    async def rows(session, keyword, want, proxy=None, group_type="all"):
+        return [{"username": f"casino{i}", "title": f"Casino {i}",
+                 "about": "", "type": "channel"} for i in range(80)]
+
+    calls = {"n": 0}
+
+    async def refused(session, username, proxy=None):
+        calls["n"] += 1
+        return None
+
+    monkeypatch.setattr(ops, "_lyzem_rows", rows)
+    monkeypatch.setattr(ops, "_tme_preview", refused)
+    monkeypatch.setattr(ops, "_SEARCH_SOURCES", ())
+
+    result = await ops._scrape_channels_web(
+        ops.ChannelScrapeRequest(keywords=["casino"], limit=80))
+
+    previews = result["diagnostics"]["sources"]["previews"]
+    assert previews["requests"] < 80
+    assert previews["skipped"] >= 1
+    assert result["total"] == 80  # structured rows still count without a preview
+

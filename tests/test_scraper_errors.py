@@ -354,3 +354,17 @@ async def test_large_member_limit_raises_the_recent_poster_scan_ceiling(monkeypa
     assert client.history_limit == ops.RECENT_POSTER_SCAN_MAX
     assert ops.RECENT_POSTER_SCAN_MAX > 1000
 
+
+@pytest.mark.asyncio
+async def test_recent_poster_scan_reads_deeper_than_the_visible_limit(monkeypatch):
+    """Non-admin targets only expose posters, so the scan must outrun the limit."""
+    entity = types.Channel(id=9, title="Hidden", photo=types.ChatPhotoEmpty(), date=None)
+    client = NonAdminClient(entity, [SimpleNamespace(sender=types.User(id=11, first_name="Ana"))])
+    monkeypatch.setattr(ops.account_manager, "get_client", AsyncMock(return_value=client))
+
+    await ops.scrape_members(
+        ops.ScrapeRequest(account_id="account", target="@hidden_members", limit=500))
+
+    assert client.history_limit >= 4000
+    assert client.history_limit <= ops.RECENT_POSTER_SCAN_MAX
+
