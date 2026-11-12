@@ -42,11 +42,14 @@ from outreach_policy import (
 from telegram_ops import (
     AddMembersRequest,
     BulkSendRequest,
+    JOINABLE_ENTITIES,
     JoinChannelsRequest,
     _enforce_outreach,
     _parse_join_target,
     _resolve_target_entity,
     account_manager,
+    confirm_membership,
+    joined_channel,
     matches_activity,
     outreach_policy,
 )
@@ -1153,6 +1156,18 @@ class JobWorker:
                     payload["account"] = chosen
                     db.execute("UPDATE items SET payload=? WHERE job=? AND seq=?",
                                (self.store.pack(payload), job_id, seq))
+        def record_membership(channel, confirmed):
+            if confirmed:
+                _clear_join_restriction(chosen, join_scope)
+                self.store.outcome(job_id, seq, "completed", delay=delay)
+            elif confirmed is False and getattr(channel, "join_request", False):
+                # The join was filed as a request; admins must approve it.
+                self.store.outcome(job_id, seq, "skipped", "join_request_pending", delay=delay)
+            elif confirmed is False:
+                self.store.outcome(job_id, seq, "failed", "join_not_confirmed", delay=delay)
+            else:
+                self.store.outcome(job_id, seq, "failed", "join_unverified", delay=delay)
+
         try:
             # The operator who queued the job must still have administrator access.
             await _load_profile(operator)
@@ -1161,10 +1176,12 @@ class JobWorker:
                 self.store.waiting(job_id, "account_unavailable", 30)
                 return
             if kind == "invite":
-                await asyncio.wait_for(
+                updates = await asyncio.wait_for(
                     client(functions.messages.ImportChatInviteRequest(value)), TELEGRAM_SEND_TIMEOUT)
-                _clear_join_restriction(chosen, join_scope)
-                self.store.outcome(job_id, seq, "completed", delay=delay)
+                channel = joined_channel(None, updates)
+                confirmed = (await confirm_membership(client, channel)
+                             if channel is not None else True)
+                record_membership(channel, confirmed)
             else:
                 try:
                     entity = await asyncio.wait_for(
@@ -1173,10 +1190,23 @@ class JobWorker:
                     self.store.outcome(job_id, seq, "skipped", "target_unresolvable", delay=delay)
                     self._finish_join_if_done(job_id, operator)
                     return
-                await asyncio.wait_for(
-                    client(functions.channels.JoinChannelRequest(entity)), TELEGRAM_SEND_TIMEOUT)
-                _clear_join_restriction(chosen, join_scope)
-                self.store.outcome(job_id, seq, "completed", delay=delay)
+                if not isinstance(entity, JOINABLE_ENTITIES):
+                    self.store.outcome(job_id, seq, "skipped", "target_not_joinable", delay=delay)
+                    self._finish_join_if_done(job_id, operator)
+                    return
+                try:
+                    updates = await asyncio.wait_for(
+                        client(functions.channels.JoinChannelRequest(entity)), TELEGRAM_SEND_TIMEOUT)
+                except TypeError:
+                    # Telethon cannot turn this target into an input channel. It
+                    # is a property of the link, so only that link is skipped —
+                    # never the run.
+                    self.store.outcome(job_id, seq, "skipped", "target_not_joinable", delay=delay)
+                    self._finish_join_if_done(job_id, operator)
+                    return
+                channel = joined_channel(entity, updates)
+                confirmed = await confirm_membership(client, channel)
+                record_membership(channel, confirmed)
         except errors.UserAlreadyParticipantError:
             # Membership proves the account can join right now, whatever wait an
             # earlier attempt recorded for this method.
@@ -1204,9 +1234,11 @@ class JobWorker:
             self.store.restrict_account(job_id, chosen, reason)
             self.store.outcome(job_id, seq, "pending", reason,
                                job_state=None if rotation else "paused")
+        except errors.InviteRequestSentError:
+            # Telegram accepted the request; an admin must approve the join.
+            self.store.outcome(job_id, seq, "skipped", "join_request_pending", delay=delay)
         except (errors.InviteHashExpiredError, errors.InviteHashInvalidError,
-                errors.InviteRequestSentError, errors.UsernameInvalidError,
-                errors.UsernameNotOccupiedError) as exc:
+                errors.UsernameInvalidError, errors.UsernameNotOccupiedError) as exc:
             self.store.outcome(job_id, seq, "failed", type(exc).__name__, delay=delay)
         except TimeoutError:
             # A join may have completed server-side; retrying is safe because an
@@ -1218,7 +1250,7 @@ class JobWorker:
         except asyncio.CancelledError:
             self.store.outcome(job_id, seq, "pending", "worker_interrupted")
             raise
-        except (OSError, RuntimeError, TypeError) as exc:
+        except (OSError, RuntimeError) as exc:
             self.store.outcome(job_id, seq, "pending", type(exc).__name__,
                                job_state="paused")
         self._finish_join_if_done(job_id, operator)

@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
-from telethon import errors
+from telethon import errors, functions, types
 
 import telegram_ops as ops
 
@@ -14,10 +14,27 @@ def _no_sleep(monkeypatch):
     monkeypatch.setattr(ops.asyncio, "sleep", AsyncMock())
 
 
-def join_client(side_effect=None):
-    """A callable Telethon-style client: client(request) joins; .get_entity resolves."""
-    client = AsyncMock(side_effect=side_effect)
-    client.get_entity = AsyncMock(side_effect=lambda v: SimpleNamespace(id=1, username=str(v)))
+def join_client(side_effect=None, join_request=False, membership_error=None):
+    """A callable Telethon-style client: client(request) joins; .get_entity resolves.
+
+    Telegram is the only authority on membership, so the fake answers the join
+    RPC and then the separate getParticipant probe.
+    """
+    channel = types.Channel(id=1, title='Synthetic', photo=types.ChatPhotoEmpty(),
+                            date=None, username='synthetic', join_request=join_request)
+
+    async def respond(request):
+        if isinstance(request, functions.channels.GetParticipantRequest):
+            if membership_error is not None:
+                raise membership_error
+            return SimpleNamespace(participant=types.ChannelParticipantCreator(
+                user_id=1, admin_rights=types.ChatAdminRights()))
+        if side_effect is not None:
+            raise side_effect
+        return SimpleNamespace(chats=[channel], updates=[])
+
+    client = AsyncMock(side_effect=respond)
+    client.get_entity = AsyncMock(return_value=channel)
     return client
 
 
@@ -68,8 +85,12 @@ async def test_joins_public_and_invite(monkeypatch):
         account_id="acct", urls=["https://t.me/examplechan", "https://t.me/+InviteHash12"], delay=30))
     assert res["success"] and res["joined"] == 2 and res["failed"] == 0 and res["skipped"] == 0
     # Public resolves an entity first; invite joins by hash without get_entity.
+    # Each of the two joins is followed by one membership probe.
     client.get_entity.assert_awaited_once()
-    assert client.call_count == 2
+    assert client.call_count == 4
+    probes = [c for c in client.call_args_list
+              if isinstance(c.args[0], functions.channels.GetParticipantRequest)]
+    assert len(probes) == 2
 
 
 @pytest.mark.asyncio
@@ -79,6 +100,47 @@ async def test_already_member_counts_as_joined(monkeypatch):
     res = await ops.join_channels(ops.JoinChannelsRequest(
         account_id="acct", urls=["https://t.me/+InviteHash12"], delay=30))
     assert res["joined"] == 1 and res["results"][0]["already"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_join_telegram_did_not_record_is_failed_not_reported_as_joined(monkeypatch):
+    client = join_client(membership_error=errors.UserNotParticipantError(None))
+    monkeypatch.setattr(ops.account_manager, "get_client", AsyncMock(return_value=client))
+    res = await ops.join_channels(ops.JoinChannelsRequest(
+        account_id="acct", urls=["https://t.me/s5philippines"], delay=30))
+    assert res["joined"] == 0 and res["failed"] == 1
+    assert res["results"][0]["error"] == "join_not_confirmed"
+
+
+@pytest.mark.asyncio
+async def test_an_approval_required_channel_reports_the_pending_request(monkeypatch):
+    client = join_client(join_request=True,
+                         membership_error=errors.UserNotParticipantError(None))
+    monkeypatch.setattr(ops.account_manager, "get_client", AsyncMock(return_value=client))
+    res = await ops.join_channels(ops.JoinChannelsRequest(
+        account_id="acct", urls=["https://t.me/approvalonly"], delay=30))
+    assert res["joined"] == 0 and res["skipped"] == 1
+    assert res["results"][0]["skipped"] == "join_request_pending"
+
+
+@pytest.mark.asyncio
+async def test_an_invite_request_sent_is_reported_as_pending_approval(monkeypatch):
+    client = join_client(side_effect=errors.InviteRequestSentError(None))
+    monkeypatch.setattr(ops.account_manager, "get_client", AsyncMock(return_value=client))
+    res = await ops.join_channels(ops.JoinChannelsRequest(
+        account_id="acct", urls=["https://t.me/+InviteHash12"], delay=30))
+    assert res["joined"] == 0 and res["skipped"] == 1
+    assert res["results"][0]["skipped"] == "join_request_pending"
+
+
+@pytest.mark.asyncio
+async def test_an_unexpected_error_is_not_echoed_as_a_class_name(monkeypatch):
+    client = join_client(side_effect=TypeError("Cannot cast Chat to any kind of InputChannel."))
+    monkeypatch.setattr(ops.account_manager, "get_client", AsyncMock(return_value=client))
+    res = await ops.join_channels(ops.JoinChannelsRequest(
+        account_id="acct", urls=["https://t.me/legacychat"], delay=30))
+    assert res["failed"] == 1
+    assert res["results"][0]["error"] == "join_failed"
 
 
 @pytest.mark.asyncio

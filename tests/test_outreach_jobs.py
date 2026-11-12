@@ -1209,10 +1209,19 @@ def _join_request(**overrides):
 def _join_client(monkeypatch, env, rpc=None):
     client = AsyncMock()
     client.get_me.return_value = types.User(id=999)
-    client.get_entity.return_value = types.Channel(
-        id=555, title='Synthetic', photo=types.ChatPhotoEmpty(), date=None)
-    if rpc is not None:
-        client.side_effect = rpc
+    channel = types.Channel(id=555, title='Synthetic', photo=types.ChatPhotoEmpty(), date=None)
+    client.get_entity.return_value = channel
+
+    async def respond(request):
+        # Membership is only ever reported from Telegram's own answer.
+        if isinstance(request, jobs.functions.channels.GetParticipantRequest):
+            return SimpleNamespace(participant=types.ChannelParticipantCreator(
+                user_id=999, admin_rights=types.ChatAdminRights()))
+        if rpc is not None:
+            raise rpc
+        return SimpleNamespace(chats=[channel], updates=[])
+
+    client.side_effect = respond
     monkeypatch.setattr(jobs.account_manager, 'get_client', AsyncMock(return_value=client))
     return client
 
@@ -1234,7 +1243,8 @@ async def test_a_public_join_is_not_blocked_by_an_invite_hash_flood(env, monkeyp
     await env.worker.tick()
     result = env.store.snapshot(job, 'owner')
     assert result['state'] == 'completed' and result['completed'] == 1
-    assert type(client.call_args.args[0]).__name__ == 'JoinChannelRequest'
+    assert any(type(call.args[0]).__name__ == 'JoinChannelRequest'
+               for call in client.call_args_list)
 
 
 @pytest.mark.asyncio
