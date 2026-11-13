@@ -48,6 +48,7 @@ from telegram_ops import (
     _parse_join_target,
     _resolve_target_entity,
     account_manager,
+    button_markup,
     confirm_membership,
     joined_channel,
     matches_activity,
@@ -437,6 +438,8 @@ class JobStore:
                         "rotation_mode": config.get("rotation_mode", "single"),
                         "accounts": states, "blocked_accounts": blocked,
                         "restricted_accounts": config.get("restricted_accounts") or {},
+                        "verify_only": bool(config.get("verify_only")),
+                        "source_job": config.get("source_job") or "",
                         "results": list(reversed(results)), "created": row["created"],
                         "started": row["started"], "finished": row["finished"]}
         if release:
@@ -562,6 +565,59 @@ class JobStore:
             db.execute("UPDATE jobs SET payload=?,state='queued',reason='',retry_at=0 WHERE id=?",
                        (self.pack(config), job))
         return self.snapshot(job, operator)
+
+    def verify_joins(self, job, operator):
+        """Queue a membership re-check for the links this run reported as joined.
+
+        Telegram is the only authority on membership, and a join recorded by an
+        older build was never probed. The check is a separate owner-scoped job so
+        it is paced like any other join instead of blocking the request.
+        """
+        owner = hash_identifier(operator)
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT * FROM jobs WHERE id=? AND owner=?", (job, owner)).fetchone()
+            if not row:
+                raise HTTPException(404, "Job not found")
+            if row["kind"] != "auto_join":
+                raise HTTPException(400, "Only Auto Join runs can have their links checked")
+            now = time.time()
+            for other in db.execute("SELECT id,payload,state,created FROM jobs WHERE owner=? AND kind='auto_join' "
+                                    "ORDER BY created DESC LIMIT 40", (owner,)):
+                if self.unpack(other["payload"]).get("source_job") != job:
+                    continue
+                if other["state"] not in TERMINAL:
+                    return other["id"]
+                if now - other["created"] < 600:
+                    raise HTTPException(429, "Membership check ran in the last 10 minutes")
+                break
+            targets = []
+            for item in db.execute("SELECT payload FROM items WHERE job=? AND state='completed' ORDER BY seq", (job,)):
+                target = self.unpack(item["payload"])["target"]
+                parsed = _parse_join_target(target)
+                # An invite hash can only be re-tested by importing it again.
+                if parsed and parsed[0] == "public":
+                    targets.append(target)
+            if not targets:
+                raise HTTPException(409, "This run has no confirmed public links to check")
+            config = self.unpack(row["payload"])
+            check = str(uuid4())
+            check_config = {"operator": operator,
+                            "account_id": config.get("account_id", ""),
+                            "account_ids": config.get("account_ids") or [],
+                            "rotation_mode": config.get("rotation_mode", "single"),
+                            "delay": config.get("delay", 45),
+                            "sender_identities": config.get("sender_identities") or {},
+                            "verify_only": True, "source_job": job}
+            db.execute("INSERT INTO jobs(id,owner,request_id,fingerprint,kind,payload,state,created) "
+                       "VALUES(?,?,?,?,?,?,?,?)",
+                       (check, owner, f"verify:{job}:{check}", f"verify:{job}", "auto_join",
+                        self.pack(check_config), "queued", now))
+            account = config.get("account_id") or (config.get("account_ids") or [""])[0]
+            for seq, target in enumerate(targets):
+                db.execute("INSERT INTO items(job,seq,payload,state,reason) VALUES(?,?,?,?,?)",
+                           (check, seq, self.pack({"target": target, "account": account}), "pending", ""))
+        return check
 
     def recover(self):
         with self.db() as db:
@@ -975,13 +1031,15 @@ class JobWorker:
                         raise OutreachDenied("invitation_not_completed")
                     return result
                 text = config["messages"].get(target, config["message"])
+                markup = button_markup(config.get("buttons"))
+                extra = {"buttons": markup} if markup else {}
                 attachments = config.get("media_paths") or []
                 if attachments:
                     payload = attachments[0] if len(attachments) == 1 else attachments
                     return await asyncio.wait_for(
-                        client.send_file(entity, payload, caption=text or None), TELEGRAM_SEND_TIMEOUT)
+                        client.send_file(entity, payload, caption=text or None, **extra), TELEGRAM_SEND_TIMEOUT)
                 return await asyncio.wait_for(
-                    client.send_message(entity, text), TELEGRAM_SEND_TIMEOUT)
+                    client.send_message(entity, text, **extra), TELEGRAM_SEND_TIMEOUT)
 
             from outreach_client import ConsentTelegramClient
             await dispatch_outreach(action=job["kind"], subject=peer, account_id=account,
@@ -1194,6 +1252,13 @@ class JobWorker:
                     self.store.outcome(job_id, seq, "skipped", "target_not_joinable", delay=delay)
                     self._finish_join_if_done(job_id, operator)
                     return
+                if config.get("verify_only"):
+                    # Only Telegram's probe counts. A missing membership falls
+                    # through to a real join; that RPC is idempotent.
+                    if await confirm_membership(client, entity):
+                        self.store.outcome(job_id, seq, "completed", delay=delay)
+                        self._finish_join_if_done(job_id, operator)
+                        return
                 try:
                     updates = await asyncio.wait_for(
                         client(functions.channels.JoinChannelRequest(entity)), TELEGRAM_SEND_TIMEOUT)
@@ -1340,6 +1405,12 @@ async def get_job(job_id: str, request: Request):
 async def recheck_job(job_id: str, request: Request):
     """Operator assertion that the account is usable again; clears stale waits."""
     return store.recheck(job_id, owner(request))
+
+
+@router.post("/api/outreach/jobs/{job_id}/verify-joins", status_code=202)
+async def verify_joins(job_id: str, request: Request):
+    """Queue a Telegram membership probe for every link this run reported joined."""
+    return {"id": store.verify_joins(job_id, owner(request))}
 
 
 @router.post("/api/outreach/jobs/{job_id}/{action}")

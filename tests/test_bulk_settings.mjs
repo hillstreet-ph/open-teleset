@@ -28,10 +28,13 @@ test('unreachable, opted-out and non-consenting recipients are labelled as skips
   // Member-add destination failures still pause for review.
   assert.match(waitHelpers.outreachReason('ChatWriteForbiddenError'), /paused/);
 });
+const bulkButtons = vm.runInNewContext(
+  `({${html.slice(html.indexOf('bulkButtons() {'), html.indexOf('workflowLinks() {'))}})`).bulkButtons;
 function harness(post) {
   return { accessReady: true, authRevision: 1, outreachJobs: [], loadOutreachJobs() {}, apiErrorText, bulksend: { accountId: 'account', accountIds: [], rotationMode: 'single', perAccountLimit: 0,
-    consentConfirmed: true, delay: 0, message: 'test', messages: {}, media: [], uploading: false, dragActive: false,
+    consentConfirmed: true, delay: 0, message: 'test', messages: {}, media: [], buttons: [], uploading: false, dragActive: false,
     filterBots: true, activityFilter: 'all', targets: Array.from({length: 30}, (_,i)=>String(i+1)).join('\n') },
+    get bulkButtons() { return bulkButtons.call(this); },
     runBulkSend: vm.runInNewContext(`({${method}}).runBulkSend`, { _api: { post }, crypto: { randomUUID } }) };
 }
 test('form submits over 20 recipients with zero delay and no approval', async () => {

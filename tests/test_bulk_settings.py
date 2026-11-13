@@ -90,3 +90,30 @@ async def test_zero_delay_still_obeys_telegram_cooldown(policy):
         await policy_module.dispatch_outreach(action='personal_send', subject='111', account_id='account',
             approval_id=None, delay=0, send=send)
     send.assert_not_called()
+
+
+def test_cta_button_text_is_trimmed_and_urls_kept():
+    request = ops.BulkSendRequest(account_id='account', message='hello', targets=['111'],
+        buttons=[{'text': '  Open  ', 'url': ' https://example.com/deal '}])
+    assert [(b.text, b.url) for b in request.buttons] == [('Open', 'https://example.com/deal')]
+    assert ops.BulkSendRequest(account_id='account', message='hello', targets=['111']).buttons == []
+
+
+@pytest.mark.parametrize('buttons', [
+    [{'text': '   ', 'url': 'https://example.com'}],
+    [{'text': 'Open', 'url': 'javascript:alert(1)'}],
+    [{'text': 'Open', 'url': 't.me/example'}],
+    [{'text': 'Open', 'url': 'https://example.com/' + 'a' * 2048}],
+    [{'text': 'Open', 'url': 'https://'}],
+    [{'text': f'B{i}', 'url': 'https://example.com'} for i in range(4)],
+])
+def test_invalid_cta_buttons_are_refused(buttons):
+    with pytest.raises(ValidationError):
+        ops.BulkSendRequest(account_id='account', message='hello', targets=['111'], buttons=buttons)
+
+
+def test_button_markup_builds_telegram_url_buttons():
+    markup = ops.button_markup([{'text': 'Open', 'url': 'https://example.com'}])
+    assert markup[0].text == 'Open'
+    assert markup[0].type.url == 'https://example.com'
+    assert ops.button_markup([]) is None

@@ -183,6 +183,34 @@ class AddMembersRequest(BaseModel):
         return self.account_ids if self.rotation_mode == "round_robin" else [self.account_id]
 
 
+class SendButton(BaseModel):
+    text: str = Field(min_length=1, max_length=64)
+    url: str = Field(min_length=1, max_length=2048)
+
+    @model_validator(mode="after")
+    def _clean(self):
+        self.text = self.text.strip()
+        self.url = self.url.strip()
+        if not self.text:
+            raise ValueError("A button needs a label")
+        parts = urlsplit(self.url)
+        if parts.scheme not in ("http", "https") or not parts.netloc:
+            raise ValueError("Button links must start with http:// or https://")
+        return self
+
+
+MAX_SEND_BUTTONS = 3
+
+
+def button_markup(buttons):
+    """Telethon inline URL buttons from dicts (job config) or SendButton models."""
+    if not buttons:
+        return None
+    from telethon.tl.custom import Button
+    return [Button.url(b["text"] if isinstance(b, dict) else b.text,
+                       b["url"] if isinstance(b, dict) else b.url) for b in buttons]
+
+
 class BulkSendRequest(BaseModel):
     account_id: str = ""
     message: str = Field(default="", max_length=4096)
@@ -198,11 +226,14 @@ class BulkSendRequest(BaseModel):
     per_account_limit: int = Field(default=0, ge=0, strict=True)  # 0 = unlimited
     consent_confirmed: bool = Field(default=False, strict=True)
     media_ids: List[str] = Field(default_factory=list)  # operator-owned uploads
+    buttons: List[SendButton] = Field(default_factory=list)  # CTA links under the message
 
     @model_validator(mode="after")
     def validate_accounts(self):
         if len(self.media_ids) > bulk_media.MAX_ITEMS:
             raise ValueError(f"At most {bulk_media.MAX_ITEMS} attachments per send")
+        if len(self.buttons) > MAX_SEND_BUTTONS:
+            raise ValueError(f"At most {MAX_SEND_BUTTONS} link buttons per send")
         normalized = {}
         targets = {t.strip().lower().lstrip("@") for t in self.targets}
         for key, value in self.messages.items():
@@ -2768,11 +2799,15 @@ async def bulk_send_personal(request: BulkSendRequest, http_request: Request = N
         elif (not message_text.strip() and any(t not in request.messages for t in targets)) or len(message_text) > 4096:
             raise HTTPException(status_code=400, detail="A valid message or renderable template is required")
 
+        markup = button_markup(request.buttons)
+        # Plain sends keep their exact call shape; only buttoned sends add the kwarg.
+        extra = {"buttons": markup} if markup else {}
+
         async def deliver(client, entity, text):
             if media_paths:
                 payload = media_paths[0] if len(media_paths) == 1 else media_paths
-                return await client.send_file(entity, payload, caption=text or None)
-            return await client.send_message(entity, text)
+                return await client.send_file(entity, payload, caption=text or None, **extra)
+            return await client.send_message(entity, text, **extra)
 
         results = []
         sent = 0

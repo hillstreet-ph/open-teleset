@@ -49,6 +49,30 @@ Successful queue messages contribute exactly once to the Stats tab through a
 transactional completion ledger. Invalid recipients fail individually so later
 recipients can continue. Template retries reuse the originally frozen content.
 
+## Membership check
+
+A recorded "joined" means the join call returned without error. Telegram can
+still drop the account later — the channel may enforce a join request, the
+account may be removed, or an older build may have recorded a join it never
+confirmed. **Check memberships** on a completed Auto Join run asks Telegram
+directly.
+
+- The button only appears on an Auto Join run with at least one completed
+  recipient.
+- It queues a separate owner-scoped job of the same kind, marked `verify_only`
+  and tied to the source run by `source_job`. It is paced by the source run's
+  delay and shows up in the tracker as *Membership check*, counting recipients
+  as *Member* rather than *Joined*.
+- Only public links (`t.me/username`, `@username`) are re-probed, because
+  `GetParticipantRequest` works on a resolved entity. Invite hashes are not
+  checked; importing them again would consume an invite.
+- A recipient Telegram confirms counts as a member. One it disconfirms falls
+  through to a real join, which is idempotent — so the check also repairs runs
+  whose joins silently went missing.
+- Re-running within 10 minutes returns 429 rather than hammering Telegram. A
+  check still queued or running is returned instead of duplicated. A run with
+  no confirmed public links returns 409.
+
 ## Runtime and recovery
 
 `outreach_jobs.py` provides one dispatcher started/stopped by the dashboard
@@ -93,3 +117,10 @@ restriction pause, uncertain delivery, duplicate aliases, existing membership,
 mid-run opt-outs, revoked operator access, offline waits and single-worker
 locking. Browser tests cover new submissions, timeout retry, stale responses
 after logout and edited-input conflicts. All Telegram traffic uses fixtures.
+
+Membership checks are covered from both sides: `tests/test_join_jobs.py` proves
+the `verify_only` job re-probes Telegram instead of importing the link again,
+and `tests/test_verify_joins.mjs` slices the dashboard method out of the page to
+assert the POST, the confirmation, the busy guard and the *Member* labels. The
+headless pass in `ui_verify_joins.mjs` runs the real dashboard against a seeded
+completed run and asserts Telegram's confirmation reaches the tracker.

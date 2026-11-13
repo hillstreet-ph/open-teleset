@@ -1312,3 +1312,11 @@ def test_recheck_is_rate_limited_and_owner_scoped(env):
     assert missing.value.status_code == 404
     env.clock[0] += 61
     assert env.store.recheck(job, 'owner')['state'] == 'queued'
+
+
+@pytest.mark.asyncio
+async def test_cta_buttons_ride_on_durable_sends(env):
+    env.submit(buttons=[{'text': 'Open', 'url': 'https://example.com'}])
+    await env.worker.tick()
+    buttons = env.client.send_message.await_args.kwargs['buttons']
+    assert buttons[0].text == 'Open' and buttons[0].type.url == 'https://example.com'

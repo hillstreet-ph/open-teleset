@@ -383,6 +383,9 @@ vm.runInNewContext(fs.readFileSync('static/csv.js', 'utf8'), context);
 for (const script of scripts) vm.runInNewContext(script[1], context);
 const app = options.data();
 for (const [name, fn] of Object.entries(options.methods)) app[name] = fn.bind(app);
+for (const [name, fn] of Object.entries(options.computed || {})) {
+    Object.defineProperty(app, name, {get: fn.bind(app), configurable: true});
+}
 let dashboardLoads = 0;
 app.loadDashboardData = () => { dashboardLoads++; };
 (async () => {

@@ -34,7 +34,11 @@ class JoinClient:
     async def __call__(self, request):
         self.requests.append(request)
         if isinstance(request, functions.channels.GetParticipantRequest):
-            if self.membership_error:
+            if isinstance(self.membership_error, list):
+                outcome = self.membership_error.pop(0) if self.membership_error else None
+                if outcome:
+                    raise outcome
+            elif self.membership_error:
                 raise self.membership_error
             return self.membership
         if self.error:
@@ -300,3 +304,57 @@ async def test_rotation_drops_a_banned_account_and_finishes_on_the_rest(env):
     assert result['restricted_accounts'] == {'a': 'account_banned'}
     assert {row['account_id'] for row in result['results']} == {'b'}
     assert all(row['updated'] > 0 for row in result['results'])
+
+
+@pytest.mark.asyncio
+async def test_verify_joins_rechecks_membership_without_joining_again(env):
+    job = env.submit(['https://t.me/examplechan', 'https://t.me/otherchan'])
+    await run_until(env, job)
+    joins_before = len(env.client.joins())
+    check = env.store.verify_joins(job, 'owner')
+    assert check != job
+    assert env.store.verify_joins(job, 'owner') == check
+    snapshot = env.store.snapshot(check, 'owner')
+    assert snapshot['kind'] == 'auto_join' and snapshot['verify_only'] is True
+    assert snapshot['source_job'] == job
+    assert snapshot['total'] == 2 and snapshot['pending'] == 2
+    await run_until(env, check)
+    result = env.store.snapshot(check, 'owner')
+    assert result['state'] == 'completed' and result['completed'] == 2
+    # Telegram confirmed both memberships, so no second join RPC was sent.
+    assert len(env.client.joins()) == joins_before
+
+
+@pytest.mark.asyncio
+async def test_verify_joins_rejoins_a_link_telegram_says_is_missing(env):
+    job = env.submit(['https://t.me/examplechan'])
+    await run_until(env, job)
+    env.client.membership_error = [errors.UserNotParticipantError(None), None]
+    check = env.store.verify_joins(job, 'owner')
+    await run_until(env, check, limit=4)
+    result = env.store.snapshot(check, 'owner')
+    assert result['state'] == 'completed' and result['completed'] == 1
+    assert len(env.client.joins()) == 2  # the original join, then the repair
+
+
+def test_verify_joins_is_owner_scoped_and_needs_confirmed_links(env):
+    job = env.submit(['https://t.me/examplechan'])
+    with pytest.raises(HTTPException) as error:
+        env.store.verify_joins(job, 'other')
+    assert error.value.status_code == 404
+    with pytest.raises(HTTPException) as error:
+        env.store.verify_joins(job, 'owner')
+    assert error.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_verify_joins_is_rate_limited(env):
+    job = env.submit(['https://t.me/examplechan'])
+    await run_until(env, job)
+    check = env.store.verify_joins(job, 'owner')
+    await run_until(env, check)
+    with pytest.raises(HTTPException) as error:
+        env.store.verify_joins(job, 'owner')
+    assert error.value.status_code == 429
+    env.clock[0] += 600
+    assert env.store.verify_joins(job, 'owner') != check

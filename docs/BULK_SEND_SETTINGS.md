@@ -39,6 +39,15 @@ Uploads outlive the page: the **Saved files** row lists everything the operator
 already uploaded, and one click attaches a file to the current send without
 uploading it again. Deleting a saved file removes the stored bytes.
 
+## Link buttons
+
+Add up to three **link buttons** under the message. Each row needs a label
+(1–64 characters) and an `http://` or `https://` URL; a half-filled row is
+refused before anything is queued. The buttons appear beneath the text and, when
+a file is attached, beneath its caption. The frozen job payload carries them, so
+a running job keeps the same links. Other schemes — `javascript:`, `tg:`,
+scheme-less addresses — are refused by both the dashboard and the API.
+
 With a file attached, Telegram treats the text as a caption: 1,024 characters,
 not 4,096. A message may be empty when a file is attached. The form shows a
 combined preview — the selected files rendered with the caption beneath, as one

@@ -673,6 +673,8 @@
         .send-preview-media img, .send-preview-media video { width: 100%; max-height: 260px; object-fit: contain; border-radius: 8px; background: #000; }
         .send-preview-doc { padding: 10px; border-radius: 8px; background: rgba(0,0,0,0.25); font-size: 12.5px; }
         .send-preview-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.45; }
+        .send-preview-buttons { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+        .send-preview-buttons span { padding: 6px 8px; text-align: center; border-radius: 8px; font-size: 12.5px; color: var(--accent); background: rgba(255,255,255,0.08); border: 1px solid var(--border); overflow-wrap: anywhere; }
         .row-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; align-items: stretch; min-width: 208px; max-width: 232px; margin-left: auto; }
         .row-actions > * { width: 100%; box-sizing: border-box; }
         .row-actions > select, .row-actions .row-action-wide { grid-column: 1 / -1; }
@@ -1443,7 +1445,7 @@
                             </div>
                             <p v-if="outreachJobError" class="notice bad">{{ outreachJobError }}</p>
                             <record-list :items="outreachJobs" :key-of="job => job.id"
-                                         :label="job => (job.kind === 'member_add' ? 'Member add' : (job.kind === 'auto_join' ? 'Auto Join' : 'Message send')) + ' · ' + job.id.slice(0, 8)"
+                                         :label="job => (job.verify_only ? 'Membership check' : (job.kind === 'member_add' ? 'Member add' : (job.kind === 'auto_join' ? 'Auto Join' : 'Message send'))) + ' · ' + job.id.slice(0, 8)"
                                          :state="jobStateLabel" :state-class="jobStateBadge"
                                          :open-when="jobIsActive" :limit="5"
                                          empty="No outreach jobs yet. Start one from Adder, Auto Join or BulkSend.">
@@ -1462,6 +1464,7 @@
                                         <button v-if="['queued','running','waiting'].includes(job.state)" class="btn btn-outline btn-sm" @click="controlOutreachJob(job, 'pause')" :disabled="!!outreachJobBusy">Pause</button>
                                         <button v-if="job.state === 'paused'" class="btn btn-primary btn-sm" @click="controlOutreachJob(job, 'resume')" :disabled="!!outreachJobBusy">Resume</button>
                                         <button v-if="['queued','running','waiting','paused'].includes(job.state)" class="btn btn-outline btn-sm" @click="controlOutreachJob(job, 'recheck')" :disabled="!!outreachJobBusy">Recheck now</button>
+                                        <button v-if="job.kind === 'auto_join' && !job.verify_only && job.completed > 0" class="btn btn-outline btn-sm" @click="verifyJoinMembership(job)" :disabled="!!outreachJobBusy">Check memberships</button>
                                         <button v-if="['queued','running','waiting','paused'].includes(job.state)" class="btn btn-danger btn-sm" @click="controlOutreachJob(job, 'stop')" :disabled="!!outreachJobBusy">Stop</button>
                                     </div>
                                     <job-history :job="job" :account="jobAccountLabel" :result-state="jobResultState"
@@ -4585,6 +4588,21 @@
                         </div>
 
                     </div>
+                    <div class="form-group">
+                        <label>Link buttons (optional)</label>
+                        <div v-for="(button, index) in bulksend.buttons" :key="'btn-' + index"
+                             style="display:flex;gap:8px;align-items:center;margin-bottom:8px;">
+                            <input class="form-control" v-model="button.text" maxlength="64"
+                                   placeholder="Button label" style="flex:1;">
+                            <input class="form-control" v-model="button.url" maxlength="2048"
+                                   placeholder="https://example.com" style="flex:2;">
+                            <button class="btn btn-sm btn-outline" type="button"
+                                    @click="removeBulkButton(index)" :aria-label="'Remove link button ' + (index + 1)">×</button>
+                        </div>
+                        <button v-if="bulksend.buttons.length < 3" id="bulk-add-button" class="btn btn-sm btn-outline"
+                                type="button" @click="addBulkButton">+ Add link button</button>
+                        <small>Up to 3 buttons appear under the message and open the link in the recipient's browser.</small>
+                    </div>
                     <div v-if="bulkPreviewVisible" class="send-preview">
                         <div class="send-preview-head">
                             <strong>Full preview</strong>
@@ -4600,6 +4618,11 @@
                                 </template>
                             </div>
                             <div v-if="previewText" class="send-preview-text">{{ previewText }}</div>
+                            <div v-if="bulkButtons.length" class="send-preview-buttons">
+                                <span v-for="(button, index) in bulkButtons" :key="'preview-btn-' + index">
+                                    {{ button.text || 'Button label' }}
+                                </span>
+                            </div>
                         </div>
                     </div>
                     <button id="gate-bulksend" class="btn btn-primary" @click="runBulkSend" :disabled="bulksend.loading || bulksend.uploading || (bulksend.rotationMode === 'single' ? !bulksend.accountId : !bulksend.accountIds.length) || (!bulksend.message && !Object.keys(bulksend.messages).length && !bulksend.media.length) || !bulksend.targets">
@@ -4694,7 +4717,7 @@
                 <p>Worker: {{ outreachWorker || 'Checking' }}. Jobs continue while this browser is closed and refresh every 2 seconds. Pause or Stop prevents the next operation; an in-flight operation may finish.</p>
                 <p v-if="outreachJobError" role="alert">{{ outreachJobError }}</p>
                 <record-list :items="progressJobs" :key-of="job => job.id"
-                             :label="job => (job.kind === 'auto_join' ? 'Auto Join' : (job.kind === 'member_add' ? 'Member add' : 'Message send')) + ' · ' + job.id.slice(0,8) + ' · ' + (job.completed + job.skipped + job.failed + job.uncertain) + '/' + job.total"
+                             :label="job => (job.verify_only ? 'Membership check' : (job.kind === 'auto_join' ? 'Auto Join' : (job.kind === 'member_add' ? 'Member add' : 'Message send'))) + ' · ' + job.id.slice(0,8) + ' · ' + (job.completed + job.skipped + job.failed + job.uncertain) + '/' + job.total"
                              :state="jobStateLabel" :state-class="jobStateBadge"
                              :open-when="jobIsActive" :limit="5"
                              :empty="'No ' + (tab === 'autojoin' ? 'Auto Join' : (tab === 'adder' ? 'member add' : 'message send')) + ' jobs yet.'">
@@ -4714,6 +4737,7 @@
                             <button v-if="['queued','running','waiting'].includes(job.state)" class="btn btn-outline" @click="controlOutreachJob(job, 'pause')" :disabled="!!outreachJobBusy">Pause</button>
                             <button v-if="job.state === 'paused'" class="btn btn-primary" @click="controlOutreachJob(job, 'resume')" :disabled="!!outreachJobBusy">Resume</button>
                             <button v-if="['queued','running','waiting','paused'].includes(job.state)" class="btn btn-outline" @click="controlOutreachJob(job, 'recheck')" :disabled="!!outreachJobBusy">Recheck now</button>
+                            <button v-if="job.kind === 'auto_join' && !job.verify_only && job.completed > 0" class="btn btn-outline" @click="verifyJoinMembership(job)" :disabled="!!outreachJobBusy">Check memberships</button>
                             <button v-if="['queued','running','waiting','paused'].includes(job.state)" class="btn btn-danger" @click="controlOutreachJob(job, 'stop')" :disabled="!!outreachJobBusy">Stop</button>
                         </div>
                         <p v-if="job.state === 'needs_review'">Delivery is uncertain. Check Telegram before creating another job; automatic retry is disabled.</p>
@@ -6564,6 +6588,7 @@
                         loading: false,
                         media: [],
                         library: [],
+                        buttons: [],
                         uploading: false,
                         dragActive: false,
                         resultMsg: '',
@@ -6617,7 +6642,14 @@
                     return (first || '').trim()
                 },
                 bulkPreviewVisible() {
-                    return Boolean(this.previewText || this.bulksend.media.length)
+                    return Boolean(this.previewText || this.bulksend.media.length || this.bulkButtons.length)
+                },
+                bulkButtons() {
+                    // Empty rows are ignored; a half-filled row is kept so the
+                    // operator can see it and the submit guard can refuse it.
+                    return (this.bulksend.buttons || [])
+                        .map(button => ({ text: (button.text || '').trim(), url: (button.url || '').trim() }))
+                        .filter(button => button.text || button.url)
                 },
                 workflowLinks() {
                     const active = this.workflows.active
@@ -7481,6 +7513,13 @@
                         // Already removed server-side; the chip is gone either way.
                     }
                 },
+                addBulkButton() {
+                    if (this.bulksend.buttons.length >= 3) return;
+                    this.bulksend.buttons.push({ text: '', url: '' });
+                },
+                removeBulkButton(index) {
+                    this.bulksend.buttons.splice(index, 1);
+                },
                 // ---- Automation ----
                 openAutomationTab() {
                     this.go('automation');
@@ -7714,6 +7753,7 @@
                     this.expandedRows[key] = !this.expandedRows[key];
                 },
                 jobCountLabel(job) {
+                    if (job.verify_only) return 'Member';
                     return job.kind === 'auto_join' ? 'Joined' : (job.kind === 'member_add' ? 'Added' : 'Sent');
                 },
                 jobElapsed(job) {
@@ -7729,7 +7769,10 @@
                     return name === 'Telegram account' ? this.shortAccountId(id) : name;
                 },
                 jobResultState(job, state) {
-                    if (state === 'completed') return job.kind === 'auto_join' ? 'Joined' : (job.kind === 'member_add' ? 'Added' : 'Sent');
+                    if (state === 'completed') {
+                        if (job.verify_only) return 'Member';
+                        return job.kind === 'auto_join' ? 'Joined' : (job.kind === 'member_add' ? 'Added' : 'Sent');
+                    }
                     const labels = { pending: 'Pending', sending: 'Sending', skipped: 'Skipped', failed: 'Failed', uncertain: 'Uncertain' };
                     return labels[state] || state;
                 },
@@ -7953,6 +7996,10 @@
                             Object.values(this.bulksend.messages).some(value => value.length > 1024))) {
                             throw new Error('A caption under an attachment is limited to 1024 characters.');
                         }
+                        const buttons = this.bulkButtons;
+                        if (buttons.some(button => !button.text || !button.url)) {
+                            throw new Error('Each link button needs a label and an http(s) link.');
+                        }
                         this.bulksend.requestId ||= crypto.randomUUID();
                         const res = await _api.post('/api/outreach/jobs/personal', {
                             request_id: this.bulksend.requestId,
@@ -7966,6 +8013,7 @@
                             messages: Object.fromEntries(targets.filter(t => Object.hasOwn(this.bulksend.messages, t)).map(t => [t, this.bulksend.messages[t]])),
                             message: this.bulksend.message,
                             media_ids: mediaIds,
+                            buttons: buttons,
                             targets: targets,
                             delay: this.bulksend.delay,
                         });
@@ -8016,6 +8064,21 @@
                     } catch (error) {
                         if (this.accessReady && revision === this.authRevision)
                             this.outreachJobError = error.response?.data?.detail || 'Control request failed. Refresh to verify the job state.';
+                    } finally { this.outreachJobBusy = ''; }
+                },
+                async verifyJoinMembership(job) {
+                    if (this.outreachJobBusy) return;
+                    if (!window.confirm('Ask Telegram to confirm the account is still in each link this run reported as joined? Links it is missing are joined again.')) return;
+                    this.outreachJobBusy = job.id;
+                    const revision = this.authRevision;
+                    try {
+                        await _api.post('/api/outreach/jobs/' + job.id + '/verify-joins');
+                        if (!this.accessReady || revision !== this.authRevision) return;
+                        this.outreachJobError = '';
+                        await this.loadOutreachJobs();
+                    } catch (error) {
+                        if (this.accessReady && revision === this.authRevision)
+                            this.outreachJobError = error.response?.data?.detail || 'Membership check could not be started.';
                     } finally { this.outreachJobBusy = ''; }
                 },
                 // ---- Webhooks ----
@@ -8218,7 +8281,7 @@
                     this.adder.requestId = ''; this.bulksend.requestId = '';
                     this.adder.loading = false; this.bulksend.loading = false;
                     this.adder.resultMsg = ''; this.bulksend.resultMsg = ''; this.bulksend.results = [];
-                    this.bulksend.media = []; this.bulksend.library = [];
+                    this.bulksend.media = []; this.bulksend.library = []; this.bulksend.buttons = [];
 
                     this.accounts = []; this.proxies = []; this.logs = []
                     this.globalProxy = null; this.health = {}; this.stats = {}

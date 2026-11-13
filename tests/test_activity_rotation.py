@@ -391,3 +391,15 @@ async def test_cooldown_from_another_worker_during_rate_wait(policy, monkeypatch
     with pytest.raises(policy_module.OutreachDenied, match="account_cooldown"):
         await policy_module.dispatch_outreach(**kwargs)
     assert send.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_cta_buttons_ride_on_the_sent_message(policy, monkeypatch):
+    client = fake_client()
+    monkeypatch.setattr(ops.account_manager, "get_client", AsyncMock(return_value=client))
+    result = await ops.bulk_send_personal(ops.BulkSendRequest(account_id="account", message="synthetic",
+        targets=["111"], approval_id="personal_send",
+        buttons=[{"text": "Open", "url": "https://example.com"}]))
+    assert result["sent"] == 1
+    buttons = client.send_message.await_args.kwargs["buttons"]
+    assert buttons[0].text == "Open" and buttons[0].type.url == "https://example.com"
