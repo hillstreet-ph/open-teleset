@@ -73,6 +73,28 @@ directly.
   check still queued or running is returned instead of duplicated. A run with
   no confirmed public links returns 409.
 
+## Member transfer
+
+The Adder tab can copy a source group's roster into its recipient list. Enter a
+public source (`https://t.me/group` or `@group`) and press **Load members**. The
+dashboard calls the same `/api/scraper/members` route as the Scraper tab with
+the selected sender account, so no new Telegram surface is involved.
+
+- Loaded members are written as `@username`; a member with no username is
+  carried by its numeric ID. Duplicates are dropped case-insensitively.
+- Loading a list clears the consent checkbox. Reading a roster says nothing
+  about whether those people agreed to join the destination, so the operator
+  must confirm consent again before starting the job.
+- `/api/scraper/members` runs a real scrape: the member cap, bot filter and
+  activity filter apply, and a non-admin source returns recent posters with its
+  notice shown next to the transfer controls instead of silently implying a
+  complete roster.
+- Failure messages come from the server detail (for example a source the
+  account cannot access); the spinner always stops.
+
+Transferring only prefills the existing consent-gated member-add job. Nothing is
+dispatched until Start Member Adder runs with consent checked.
+
 ## Runtime and recovery
 
 `outreach_jobs.py` provides one dispatcher started/stopped by the dashboard
@@ -124,3 +146,9 @@ and `tests/test_verify_joins.mjs` slices the dashboard method out of the page to
 assert the POST, the confirmation, the busy guard and the *Member* labels. The
 headless pass in `ui_verify_joins.mjs` runs the real dashboard against a seeded
 completed run and asserts Telegram's confirmation reaches the tracker.
+
+Member transfer is covered by `tests/test_transfer.mjs` (sliced dashboard method
+plus markup: request shape, numeric-ID fallback, dedupe, consent reset, limited
+notice, failure text and the no-input guard) and by `ui_transfer.mjs`, which
+reads both a normal and a non-admin synthetic roster through the real scraper
+route in a headless browser.

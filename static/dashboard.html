@@ -4415,6 +4415,19 @@
                         <small v-else-if="groups.adder.accountId">Detected {{ groups.adder.list.length }} groups and channels for the selected sender account.</small>
                     </div>
                     <div class="form-group">
+                        <label>Transfer from a source group (optional)</label>
+                        <div style="display:flex;gap:10px;flex-wrap:wrap;">
+                            <input class="form-control" style="flex:2;min-width:220px;" v-model="transfer.source" placeholder="https://t.me/sourcegroup or @sourcegroup">
+                            <input class="form-control" style="flex:1;min-width:130px;" type="number" v-model.number="transfer.limit" min="1" max="1000000" step="50" aria-label="Member limit">
+                            <button id="transfer-load" class="btn btn-outline" type="button" @click="loadTransferMembers" :disabled="transfer.loading || !transfer.source.trim() || (adder.rotationMode === 'single' ? !adder.accountId : !adder.accountIds.length)">
+                                {{ transfer.loading ? 'Reading members…' : 'Load members' }}
+                            </button>
+                        </div>
+                        <small>Reading does not consent. Loaded members fill the recipient list below with the source account; confirm consent again before starting.</small>
+                        <small v-if="transfer.notice" style="color:var(--warning, #f0b429); display:block;">{{ transfer.notice }}</small>
+                        <small v-if="transfer.summary" role="status" aria-live="polite" style="display:block;">{{ transfer.summary }}</small>
+                    </div>
+                    <div class="form-group">
                         <label>Consenting recipients (usernames or IDs, one per line)</label>
                         <textarea class="form-control" v-model="adder.usernames" rows="5" aria-describedby="adder-recipient-summary" placeholder="user1&#10;user2&#10;user3"></textarea>
                         <small id="adder-recipient-summary" role="status" aria-live="polite">
@@ -6543,6 +6556,7 @@
                         form: { name: '', url: '', events: [] },
                     },
                     // Adder
+                    transfer: { source: '', limit: 100, loading: false, summary: '', notice: '' },
                     adder: {
                         consentConfirmed: false,
                         requestId: '',
@@ -7848,6 +7862,51 @@
                         targets.push(target);
                     });
                     return { targets, duplicates, invalidLines };
+                },
+                async loadTransferMembers() {
+                    if (!this.accessReady || this.transfer.loading) return;
+                    const source = (this.transfer.source || '').trim();
+                    const account = this.adder.rotationMode === 'round_robin'
+                        ? (this.adder.accountIds[0] || '')
+                        : this.adder.accountId;
+                    if (!source || !account) return;
+                    const revision = this.authRevision;
+                    this.transfer.loading = true;
+                    this.transfer.summary = '';
+                    this.transfer.notice = '';
+                    try {
+                        const res = await _api.post('/api/scraper/members', {
+                            account_id: account,
+                            target: source,
+                            limit: this.transfer.limit,
+                            filter_bots: this.adder.filterBots !== false,
+                        }, { timeout: 90000 });
+                        if (!this.accessReady || revision !== this.authRevision) return;
+                        const seen = new Set();
+                        const handles = [];
+                        let missing = 0;
+                        (res.data.members || []).forEach((member) => {
+                            const handle = member.username ? '@' + String(member.username).toLowerCase() : String(member.id ?? '');
+                            if (!handle || seen.has(handle)) return;
+                            seen.add(handle);
+                            if (!member.username) missing += 1;
+                            handles.push(handle);
+                        });
+                        this.adder.usernames = handles.join('\n');
+                        // A different source is a different consent basis.
+                        this.adder.consentConfirmed = false;
+                        this.transfer.notice = res.data.limited ? (res.data.notice || 'Non-admins only see recent posters.') : '';
+                        const missingNote = missing ? ` ${missing} ${missing === 1 ? 'has' : 'have'} no username, sent by numeric ID.` : '';
+                        this.transfer.summary = `Loaded ${handles.length} recipient${handles.length === 1 ? '' : 's'}.${missingNote} Confirm consent before starting.`;
+                    } catch (e) {
+                        if (!this.accessReady || revision !== this.authRevision) return;
+                        const detail = e?.response?.data?.detail;
+                        this.transfer.summary = typeof detail === 'string' && detail
+                            ? detail
+                            : 'Could not read the source members.';
+                    } finally {
+                        if (revision === this.authRevision) this.transfer.loading = false;
+                    }
                 },
                 async runAdder() {
                     if (!this.accessReady || this.adder.loading) return;
