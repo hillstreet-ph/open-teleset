@@ -269,6 +269,27 @@ async def test_a_type_error_from_the_join_rpc_fails_only_that_link(env):
 
 
 @pytest.mark.asyncio
+async def test_a_type_error_while_resolving_fails_only_that_link(env):
+    """Telethon can also choke before the join RPC; that still only costs one link."""
+    broken = JoinClient()
+
+    async def unresolvable(value):
+        raise TypeError('Cannot cast to any kind of Peer.')
+
+    broken.get_entity = unresolvable
+    healthy = JoinClient(entity=public_channel('realchan'))
+    env.monkeypatch.setattr(jobs.account_manager, 'get_client',
+                            AsyncMock(side_effect=[broken, healthy, healthy]))
+    job = env.submit(['https://t.me/legacychat', 'https://t.me/realchan'])
+    await run_until(env, job, step=45)
+    result = env.store.snapshot(job, 'owner')
+    assert result['state'] == 'completed'
+    assert result['results'][0]['state'] == 'skipped'
+    assert result['results'][0]['reason'] == 'target_not_joinable'
+    assert result['results'][1]['state'] == 'completed'
+
+
+@pytest.mark.asyncio
 async def test_an_unanswered_membership_probe_is_reported_as_unverified(env):
     env.client.membership_error = errors.RPCError(None, 'probe failed')
     job = env.submit(['https://t.me/maybechan'])

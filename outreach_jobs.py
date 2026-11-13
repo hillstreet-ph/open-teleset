@@ -1259,16 +1259,8 @@ class JobWorker:
                         self.store.outcome(job_id, seq, "completed", delay=delay)
                         self._finish_join_if_done(job_id, operator)
                         return
-                try:
-                    updates = await asyncio.wait_for(
-                        client(functions.channels.JoinChannelRequest(entity)), TELEGRAM_SEND_TIMEOUT)
-                except TypeError:
-                    # Telethon cannot turn this target into an input channel. It
-                    # is a property of the link, so only that link is skipped —
-                    # never the run.
-                    self.store.outcome(job_id, seq, "skipped", "target_not_joinable", delay=delay)
-                    self._finish_join_if_done(job_id, operator)
-                    return
+                updates = await asyncio.wait_for(
+                    client(functions.channels.JoinChannelRequest(entity)), TELEGRAM_SEND_TIMEOUT)
                 channel = joined_channel(entity, updates)
                 confirmed = await confirm_membership(client, channel)
                 record_membership(channel, confirmed)
@@ -1312,6 +1304,13 @@ class JobWorker:
             self.store.waiting(job_id, "telegram_timeout", 30)
         except errors.RPCError as exc:
             self.store.outcome(job_id, seq, "failed", type(exc).__name__, delay=delay)
+        except TypeError:
+            # Telethon raises a bare TypeError when it cannot cast this target
+            # into an input entity, anywhere on the path. That is a property of
+            # the link, so it costs this link only — never the whole run.
+            self.store.outcome(job_id, seq, "skipped", "target_not_joinable", delay=delay)
+            self._finish_join_if_done(job_id, operator)
+            return
         except asyncio.CancelledError:
             self.store.outcome(job_id, seq, "pending", "worker_interrupted")
             raise
