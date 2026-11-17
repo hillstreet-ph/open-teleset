@@ -449,6 +449,8 @@ class AutoForwardWorker:
             try:
                 await self.task
             except asyncio.CancelledError:
+                # Awaiting the cancelled task is what lets it finish unwinding;
+                # the cancellation itself is the intended outcome of stop().
                 pass
             self.task = None
 

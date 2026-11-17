@@ -10,7 +10,6 @@ from telethon import errors, functions, types
 
 import outreach_jobs as jobs
 import outreach_policy as policy
-import telegram_ops as ops
 from open_teleset.crypto.cipher import SessionCipher
 
 
