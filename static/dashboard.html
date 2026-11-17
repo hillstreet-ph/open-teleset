@@ -1590,6 +1590,87 @@
                         </div>
                     </div>
 
+                    <!-- ============ Automations (durable engine) ============ -->
+                    <div v-show="tab === 'automations'" class="view">
+                        <section class="hero" style="padding-top:0;">
+                            <div>
+                                <p class="eyebrow">Automation studio</p>
+                                <h2 style="font-size:24px;">Automations</h2>
+                                <p class="hero-sub">Chain the internal actions — saved workflows, Auto Join, BulkSend, the Adder, Auto Transfer, scraping, AI, MCP tools and webhooks — into one durable run. Trigger it by hand, on a schedule, or when a job finishes. n8n stays optional and lives under Integrations.</p>
+                            </div>
+                            <div class="hero-actions">
+                                <button id="automation-new" class="btn btn-primary" @click="openAutomationBuilder()"><app-icon name="plus" :size="16"></app-icon>New automation</button>
+                                <button class="btn btn-outline" @click="loadAutomations" :disabled="automations.loading"><app-icon name="refresh" :size="16"></app-icon>{{ automations.loading ? 'Loading…' : 'Refresh' }}</button>
+                            </div>
+                        </section>
+
+                        <div v-if="!automations.enabled" class="notice">
+                            <strong>Automations are turned off</strong>
+                            Turn them back on under Integrations → Platform features before anything can run.
+                        </div>
+                        <p v-if="automations.error" class="notice bad" role="alert">{{ automations.error }}</p>
+
+                        <div class="overview-grid">
+                            <section class="panel">
+                                <div class="panel-head"><h3>Your automations</h3><span class="panel-sub">{{ automations.list.length }} saved</span></div>
+                                <p v-if="automations.loading && !automations.list.length" class="muted small">Loading automations…</p>
+                                <p v-else-if="!automations.list.length" class="empty-inline">Nothing saved yet. New automation opens the builder; add at least one step.</p>
+                                <div v-for="item in automations.list" :key="item.id" class="status-row" data-testid="auto-item" style="align-items:flex-start;">
+                                    <span class="status-key" style="display:flex;flex-direction:column;gap:3px;min-width:0;">
+                                        <strong style="font-size:13px;">{{ item.name }}</strong>
+                                        <span class="muted small">{{ automationTriggerLabel(item) }} · {{ (item.steps || []).length }} step{{ (item.steps || []).length === 1 ? '' : 's' }}</span>
+                                        <span class="muted small" style="overflow-wrap:anywhere;">{{ automationStepSummary(item) }}</span>
+                                        <span v-if="item.next_run" class="muted small">Next {{ automationNext(item.next_run) }}</span>
+                                    </span>
+                                    <span class="status-val" style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
+                                        <span class="badge" :class="item.enabled ? 'badge-success' : 'badge-normal'">{{ item.enabled ? 'On' : 'Paused' }}</span>
+                                        <button class="btn btn-outline btn-sm" data-testid="auto-run" @click="runDurableAutomation(item)" :disabled="automations.busy === item.id || !automations.enabled">{{ automations.busy === item.id ? 'Running…' : 'Run now' }}</button>
+                                        <button class="btn btn-outline btn-sm" data-testid="auto-runs" @click="loadAutomationRuns(item)">Runs</button>
+                                        <button class="btn btn-outline btn-sm" data-testid="auto-edit" @click="openAutomationBuilder(item)">Edit</button>
+                                        <button class="btn btn-outline btn-sm" data-testid="auto-toggle" @click="toggleDurableAutomation(item)">{{ item.enabled ? 'Pause' : 'Enable' }}</button>
+                                        <button class="btn btn-outline btn-sm" data-testid="auto-delete" @click="deleteDurableAutomation(item)">Delete</button>
+                                    </span>
+                                </div>
+                            </section>
+
+                            <section class="panel">
+                                <div class="panel-head">
+                                    <h3>Runs</h3>
+                                    <span class="panel-sub">{{ automations.runsFor ? 'This automation · ' + automationRunList().length : automationRunList().length + ' recent' }}</span>
+                                </div>
+                                <div v-if="automations.runsFor" class="panel-foot" style="margin-top:0;padding-top:0;border-top:0;margin-bottom:10px;">
+                                    <button class="btn btn-outline btn-sm" @click="clearAutomationRunsFilter">Show all recent runs</button>
+                                </div>
+                                <p v-if="!automationRunList().length" class="empty-inline">No runs recorded yet. Run an automation, or let a schedule or job event fire it.</p>
+                                <div v-for="run in automationRunList()" :key="run.run_id" class="status-row" data-testid="auto-run-row" style="cursor:pointer;" @click="openAutomationRun(run.run_id)">
+                                    <span class="status-key mono">{{ run.run_id }} · {{ automationWhen(run.started) }}</span>
+                                    <span class="status-val" style="display:flex;gap:6px;align-items:center;">
+                                        <span class="muted small">{{ run.trigger }}</span>
+                                        <span class="badge" :class="automationRunClass(run.status)">{{ run.status }}</span>
+                                    </span>
+                                </div>
+                                <div v-if="automations.run" class="notice" style="margin-top:12px;" data-testid="auto-run-detail">
+                                    <strong>{{ automations.run.run_id }} · {{ automations.run.status }}</strong>
+                                    <span v-if="automations.run.reason" class="muted small"> · {{ automations.run.reason }}</span>
+                                    <div v-for="step in automations.run.steps" :key="step.seq" class="status-row">
+                                        <span class="status-key">{{ step.seq + 1 }} · {{ automationActionLabel(step.action) }}</span>
+                                        <span class="status-val"><span class="badge" :class="automationRunClass(step.status)">{{ step.status }}</span></span>
+                                        <span v-if="step.detail" class="mono small" style="flex-basis:100%;overflow-wrap:anywhere;">{{ automationDetail(step.detail) }}</span>
+                                    </div>
+                                </div>
+                            </section>
+                        </div>
+
+                        <section class="panel">
+                            <div class="panel-head"><h3>What you can chain</h3><span class="panel-sub">Every step runs inside Open Teleset</span></div>
+                            <p class="muted small" style="margin-bottom:10px;">Steps run in order and each one is written to the run ledger before it starts, so a failure is visible per step instead of disappearing inside one long action. Job steps (workflows, Auto Join, BulkSend, Adder, Auto Transfer) hand off to the durable job queue and the run is marked <b>dispatched</b>.</p>
+                            <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                                <span v-for="entry in automations.catalog" :key="entry.id" class="badge badge-normal" style="font-weight:400;">{{ entry.label }}</span>
+                            </div>
+                            <p class="muted small" style="margin-top:12px;">Adding members, BulkSend and Auto Transfer still need the consent confirmation inside the step, and every step stays inside the bounds of its own surface. The n8n account-factory flow is untouched and available as a separate integration.</p>
+                        </section>
+                    </div>
+
                     <!-- ============ Integrations ============ -->
                     <div v-show="tab === 'integrations'" class="view">
                         <section class="hero" style="padding-top:0;">
@@ -5668,6 +5749,122 @@
             </div>
         </div>
 
+        <div v-if="automations.builder.open" class="modal" @click.self="closeAutomationBuilder">
+            <div class="modal-content" style="text-align: left; min-width: 640px; max-width: 860px; max-height: 90vh; overflow-y: auto;">
+                <h2 style="margin-bottom: 6px;">{{ automations.builder.id ? 'Edit automation' : 'Build an automation' }}</h2>
+                <p class="muted small" style="margin-bottom: 18px;">Steps run in the order below. Job steps (workflows, Auto Join, BulkSend, Adder, Auto Transfer) hand off to the durable queue; the rest run inline.</p>
+
+                <div class="form-group">
+                    <label>Name</label>
+                    <input id="auto-name" v-model="automations.builder.name" class="form-control" maxlength="80" placeholder="Nightly channel refresh">
+                </div>
+                <div class="form-group">
+                    <label>Description <span class="muted small">(optional)</span></label>
+                    <input id="auto-description" v-model="automations.builder.description" class="form-control" maxlength="300" placeholder="What this automation is for">
+                </div>
+                <div class="form-group">
+                    <label><input type="checkbox" v-model="automations.builder.enabled"> Enabled</label>
+                </div>
+
+                <div class="form-group">
+                    <label>Trigger</label>
+                    <select id="auto-trigger" v-model="automations.builder.triggerType" class="form-control" style="max-width: 240px;">
+                        <option value="manual">Manual only</option>
+                        <option value="schedule">On a schedule</option>
+                        <option value="event">When a job finishes</option>
+                    </select>
+                </div>
+                <template v-if="automations.builder.triggerType === 'schedule'">
+                    <div class="form-group">
+                        <label>Cron expression</label>
+                        <input id="auto-cron" v-model="automations.builder.cron" class="form-control mono" placeholder="0 9 * * *">
+                        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;">
+                            <button class="btn btn-outline btn-sm" @click="automations.builder.cron = '0 * * * *'">Hourly</button>
+                            <button class="btn btn-outline btn-sm" @click="automations.builder.cron = '0 9 * * *'">Daily 09:00</button>
+                            <button class="btn btn-outline btn-sm" @click="automations.builder.cron = '0 9 * * 1-5'">Weekdays 09:00</button>
+                            <button class="btn btn-outline btn-sm" @click="automations.builder.cron = '0 9 * * 1'">Weekly Monday</button>
+                        </div>
+                    </div>
+                </template>
+                <template v-if="automations.builder.triggerType === 'event'">
+                    <div class="form-group">
+                        <label>Job event</label>
+                        <select id="auto-event" v-model="automations.builder.event" class="form-control" style="max-width: 280px;">
+                            <option value="job.terminal">Any job finishing</option>
+                            <option value="job.completed">Job completed</option>
+                            <option value="job.failed">Job failed</option>
+                            <option value="job.stopped">Job stopped</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Job kind <span class="muted small">(optional filter)</span></label>
+                        <select id="auto-event-kind" v-model="automations.builder.eventKind" class="form-control" style="max-width: 280px;">
+                            <option value="">Any kind</option>
+                            <option value="personal_send">BulkSend</option>
+                            <option value="member_add">Adder</option>
+                            <option value="member_transfer">Auto Transfer</option>
+                            <option value="auto_join">Auto Join</option>
+                        </select>
+                    </div>
+                </template>
+
+                <div class="form-group" style="margin-top:20px;">
+                    <label>Steps</label>
+                    <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                        <button v-for="entry in automations.catalog" :key="entry.id" class="btn btn-outline btn-sm" :data-testid="'auto-add-' + entry.id" @click="addAutomationStep(entry.id)">+ {{ entry.label }}</button>
+                    </div>
+                    <p v-if="!automations.builder.steps.length" class="muted small" style="margin-top:10px;">No steps yet. Add at least one from above.</p>
+                </div>
+
+                <div v-for="(step, index) in automations.builder.steps" :key="step.key" class="panel" data-testid="auto-step" style="margin-bottom:10px;padding:12px;">
+                    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                        <span class="badge badge-normal">{{ index + 1 }}</span>
+                        <select class="form-control" style="max-width:280px;" data-testid="auto-step-action" :value="step.action" @change="changeAutomationStepAction(step, $event.target.value)">
+                            <option v-for="entry in automations.catalog" :key="entry.id" :value="entry.id">{{ entry.label }}</option>
+                        </select>
+                        <span style="flex:1;"></span>
+                        <button class="btn btn-outline btn-sm" @click="removeAutomationStep(step)">Remove</button>
+                    </div>
+                    <div style="margin-top:10px;display:grid;gap:8px;">
+                        <div v-for="field in automationStepFields(step)" :key="field.key" class="form-group" style="margin:0;">
+                            <label>{{ field.label }}</label>
+                            <select v-if="field.kind === 'account'" v-model="step.config.account_id" class="form-control">
+                                <option value="">-- Select an account --</option>
+                                <option v-for="acc in accounts" :key="acc.account_id" :value="acc.account_id">{{ accountLabel(acc) }}</option>
+                            </select>
+                            <select v-else-if="field.kind === 'workflow'" v-model="step.config.workflow_id" class="form-control">
+                                <option value="">-- Select a saved workflow --</option>
+                                <option v-for="wf in workflows.list" :key="wf.id" :value="wf.id">{{ wf.name }}</option>
+                            </select>
+                            <select v-else-if="field.kind === 'integration'" v-model="step.config.integration_id" class="form-control">
+                                <option value="">-- None --</option>
+                                <option v-for="item in integrations.list" :key="item.id" :value="item.id">{{ item.name }}</option>
+                            </select>
+                            <div v-else-if="field.kind === 'accounts'" style="display:flex;gap:8px;flex-wrap:wrap;">
+                                <label v-for="acc in accounts" :key="acc.account_id" style="display:flex;align-items:center;gap:5px;font-weight:400;">
+                                    <input type="checkbox" :checked="(step.config.account_ids || []).includes(acc.account_id)" @change="toggleAutomationStepAccount(step, acc.account_id, field.max)">
+                                    {{ accountLabel(acc) }}
+                                </label>
+                            </div>
+                            <textarea v-else-if="field.kind === 'textarea'" v-model="step.config[field.key]" class="form-control" rows="3"></textarea>
+                            <textarea v-else-if="field.kind === 'lines'" :value="automationLines(step, field.key)" class="form-control" rows="3" placeholder="One per line" @input="setAutomationLines(step, field.key, $event.target.value)"></textarea>
+                            <textarea v-else-if="field.kind === 'json'" :value="automationJson(step, field.key)" class="form-control mono" rows="3" placeholder="{}" @input="setAutomationJson(step, field.key, $event.target.value)"></textarea>
+                            <input v-else-if="field.kind === 'number'" type="number" :min="field.min" :max="field.max" v-model.number="step.config[field.key]" class="form-control">
+                            <label v-else-if="field.kind === 'consent'" style="display:flex;align-items:center;gap:6px;font-weight:400;">
+                                <input type="checkbox" v-model="step.config.consent_confirmed"> {{ field.label }}
+                            </label>
+                            <input v-else v-model="step.config[field.key]" class="form-control">
+                        </div>
+                    </div>
+                </div>
+
+                <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 22px;">
+                    <button class="btn btn-outline" @click="closeAutomationBuilder">Cancel</button>
+                    <button class="btn btn-primary" data-testid="auto-save" @click="saveDurableAutomation" :disabled="automations.builder.saving">{{ automations.builder.saving ? 'Saving…' : (automations.builder.id ? 'Save changes' : 'Create automation') }}</button>
+                </div>
+            </div>
+        </div>
+
         <div v-if="showScheduleModal" class="modal" @click.self="closeScheduleModal">
             <div class="modal-content" style="text-align: left; min-width: 700px; max-width: 900px; max-height: 90vh; overflow-y: auto;">
                 <h2 style="text-align: center; margin-bottom: 20px;">Add schedule</h2>
@@ -6263,6 +6460,7 @@
                             label: 'Automation',
                             items: [
                                 { tab: 'automation', label: 'Automation', icon: 'zap' },
+                                { tab: 'automations', label: 'Automations', icon: 'clock' },
                                 { tab: 'workflows', label: 'Workflows', icon: 'code' },
                                 { tab: 'factory', label: 'Account Factory', icon: 'factory' },
                                 { tab: 'integrations', label: 'Integrations', icon: 'plug' }
@@ -6596,6 +6794,75 @@
                         run: null, activeRunning: false, poll: null,
                         tableList: [], tableDetails: {}, tableFetching: '',
                         scheduleForm: { open: false, repeat: 'weekly', hour: 9, minute: 0, weekday: 0, date: '', busy: '' },
+                    },
+                    automations: {
+                        loading: false, busy: '', error: '', enabled: true,
+                        list: [], catalog: [], recent: [], runsFor: '', runs: [], run: null,
+                        builder: {
+                            open: false, saving: false, id: '', name: '', description: '', enabled: true,
+                            triggerType: 'manual', cron: '0 9 * * *', event: 'job.terminal', eventKind: '',
+                            steps: [],
+                        },
+                    },
+                    automationActionFields: {
+                        run_workflow: [
+                            { key: 'workflow_id', label: 'Saved workflow', kind: 'workflow' },
+                            { key: 'account_ids', label: 'Accounts (1–5)', kind: 'accounts', max: 5 },
+                        ],
+                        auto_join: [
+                            { key: 'urls', label: 'Links or usernames, one per line', kind: 'lines' },
+                            { key: 'delay', label: 'Seconds between joins', kind: 'number', min: 35, max: 3600 },
+                            { key: 'account_id', label: 'Account', kind: 'account' },
+                        ],
+                        bulksend: [
+                            { key: 'targets', label: 'Recipients, one per line', kind: 'lines' },
+                            { key: 'message', label: 'Message', kind: 'textarea' },
+                            { key: 'delay', label: 'Seconds between messages', kind: 'number', min: 0, max: 3600 },
+                            { key: 'account_id', label: 'Account', kind: 'account' },
+                            { key: 'consent_confirmed', label: 'I confirm these recipients asked to hear from me', kind: 'consent' },
+                        ],
+                        member_add: [
+                            { key: 'dest_target', label: 'Destination group', kind: 'text' },
+                            { key: 'usernames', label: 'People to invite (1–10)', kind: 'lines' },
+                            { key: 'delay', label: 'Seconds between invites', kind: 'number', min: 35, max: 3600 },
+                            { key: 'account_id', label: 'Account', kind: 'account' },
+                            { key: 'consent_confirmed', label: 'I confirm the group and recipients consented', kind: 'consent' },
+                        ],
+                        member_transfer: [
+                            { key: 'source_target', label: 'Source group (read only)', kind: 'text' },
+                            { key: 'dest_target', label: 'Destination group', kind: 'text' },
+                            { key: 'limit', label: 'Members to transfer (1–10)', kind: 'number', min: 1, max: 10 },
+                            { key: 'delay', label: 'Seconds between invites', kind: 'number', min: 35, max: 3600 },
+                            { key: 'account_id', label: 'Account', kind: 'account' },
+                            { key: 'consent_confirmed', label: 'I confirm both groups consented to the transfer', kind: 'consent' },
+                        ],
+                        forward: [],
+                        scrape: [
+                            { key: 'target', label: 'Channel or group', kind: 'text' },
+                            { key: 'limit', label: 'Members to read', kind: 'number', min: 1, max: 1000 },
+                            { key: 'account_ids', label: 'Account', kind: 'accounts', max: 1 },
+                        ],
+                        notify: [
+                            { key: 'text', label: 'Notification text', kind: 'textarea' },
+                        ],
+                        webhook: [
+                            { key: 'integration_id', label: 'MCP / HTTP integration (optional)', kind: 'integration' },
+                            { key: 'url', label: 'Webhook URL (if no integration)', kind: 'text' },
+                            { key: 'event', label: 'Event name', kind: 'text' },
+                            { key: 'data', label: 'Extra JSON data', kind: 'json' },
+                        ],
+                        mcp: [
+                            { key: 'integration_id', label: 'MCP integration', kind: 'integration' },
+                            { key: 'tool', label: 'Tool name', kind: 'text' },
+                            { key: 'arguments', label: 'Arguments (JSON)', kind: 'json' },
+                        ],
+                        ai: [
+                            { key: 'prompt', label: 'Prompt', kind: 'textarea' },
+                            { key: 'system', label: 'System instruction (optional)', kind: 'textarea' },
+                        ],
+                        wait: [
+                            { key: 'seconds', label: 'Seconds to wait (0–600)', kind: 'number', min: 0, max: 600 },
+                        ],
                     },
 
                     // Template Modal
@@ -7163,6 +7430,7 @@
                     if (tab === 'notes') this.loadNotes()
                     if (tab === 'tables') this.loadTables()
                     if (tab === 'workflows') this.loadWorkflows()
+                    if (tab === 'automations') this.loadAutomations()
                     if (tab === 'tasks') this.loadOutreachJobs()
                     if (tab === 'integrations') { this.loadWebhooks(); this.loadIntegrations(); this.loadAiSettings(); this.loadFeatures() }
                     if (tab === 'contacts') { if (!this.contacts.accountId && this.accounts.length) this.contacts.accountId = this.accounts[0].account_id; this.loadContacts() }
@@ -7203,6 +7471,7 @@
                     if (this.tab === 'notes') this.loadNotes()
                     if (this.tab === 'tables') this.loadTables()
                     if (this.tab === 'workflows') this.loadWorkflows()
+                    if (this.tab === 'automations') this.loadAutomations()
                     if (this.tab === 'copilot') this.loadCopilotHistory()
                     if (this.tab === 'cloudphone') { this.loadRecovery(); this.loadCloudPhone() }
                     if (this.tab === 'scraper' || this.tab === 'adder') this.loadGroups(this.tab)
@@ -7726,6 +7995,275 @@
                     } finally {
                         this.automation.running = false;
                         this.loadAutomationStatus();
+                    }
+                },
+                // ---- Unified automations ----
+                async loadAutomations() {
+                    this.automations.loading = true
+                    this.automations.error = ''
+                    try {
+                        const { data } = await _api.get('/api/automations')
+                        this.automations.list = data.automations || []
+                        this.automations.catalog = data.catalog || []
+                        this.automations.enabled = data.enabled !== false
+                        this.automations.recent = data.recent_runs || []
+                        if (!this.automations.runsFor) this.automations.runs = []
+                    } catch (e) {
+                        this.automations.error = e.response?.data?.detail || 'Could not load automations.'
+                    } finally {
+                        this.automations.loading = false
+                    }
+                },
+                automationRunList() {
+                    return this.automations.runsFor ? this.automations.runs : this.automations.recent
+                },
+                automationActionLabel(action) {
+                    const entry = (this.automations.catalog || []).find(item => item.id === action)
+                    return entry ? entry.label : action
+                },
+                automationTriggerLabel(item) {
+                    const trigger = item.trigger || { type: 'manual' }
+                    if (trigger.type === 'schedule') return 'Schedule · ' + trigger.cron
+                    if (trigger.type === 'event') return 'When ' + trigger.event + (trigger.kind ? ' · ' + trigger.kind : '')
+                    return 'Manual'
+                },
+                automationStepSummary(item) {
+                    return (item.steps || []).map(step => this.automationActionLabel(step.action)).join(' → ')
+                },
+                automationWhen(value) {
+                    const num = Number(value)
+                    if (!Number.isFinite(num) || num <= 0) return '-'
+                    try { return new Date(num * 1000).toLocaleString() } catch { return '-' }
+                },
+                automationNext(value) {
+                    if (!value) return ''
+                    const parsed = new Date(value)
+                    if (!Number.isFinite(parsed.getTime())) return ''
+                    return parsed.toLocaleString()
+                },
+                automationRunClass(status) {
+                    if (status === 'completed' || status === 'succeeded') return 'badge-success'
+                    if (status === 'dispatched' || status === 'running') return 'badge-info'
+                    if (status === 'failed') return 'badge-danger'
+                    if (status === 'skipped') return 'badge-warning'
+                    return 'badge-normal'
+                },
+                automationDetail(detail) {
+                    if (detail == null) return ''
+                    if (typeof detail === 'string') return detail
+                    try { return JSON.stringify(detail) } catch { return String(detail) }
+                },
+                automationDefaultConfig(action) {
+                    const defaults = {
+                        run_workflow: { workflow_id: '', account_ids: [] },
+                        auto_join: { urls: [], delay: 38, account_id: '' },
+                        bulksend: { targets: [], message: '', delay: 0, account_id: '', consent_confirmed: false },
+                        member_add: { dest_target: '', usernames: [], delay: 35, account_id: '', consent_confirmed: false },
+                        member_transfer: { source_target: '', dest_target: '', limit: 10, delay: 35, account_id: '', consent_confirmed: false },
+                        forward: {},
+                        scrape: { target: '', limit: 100, account_ids: [] },
+                        notify: { text: '' },
+                        webhook: { integration_id: '', url: '', event: 'automation', data: {} },
+                        mcp: { integration_id: '', tool: '', arguments: {} },
+                        ai: { prompt: '', system: '' },
+                        wait: { seconds: 5 },
+                    }
+                    return JSON.parse(JSON.stringify(defaults[action] || {}))
+                },
+                automationStepFields(step) {
+                    return this.automationActionFields[step.action] || []
+                },
+                automationLines(step, key) {
+                    const value = step.config[key]
+                    return Array.isArray(value) ? value.join('\n') : (value || '')
+                },
+                setAutomationLines(step, key, text) {
+                    step.config[key] = String(text || '').split('\n').map(line => line.trim()).filter(Boolean)
+                },
+                automationJson(step, key) {
+                    if (step.draft && Object.prototype.hasOwnProperty.call(step.draft, key)) return step.draft[key]
+                    const value = step.config[key]
+                    if (value == null) return ''
+                    if (typeof value === 'object' && !Object.keys(value).length) return ''
+                    try { return JSON.stringify(value, null, 2) } catch { return '' }
+                },
+                setAutomationJson(step, key, text) {
+                    if (!step.draft) step.draft = {}
+                    step.draft[key] = text
+                    if (!String(text || '').trim()) { step.config[key] = {}; return }
+                    try { step.config[key] = JSON.parse(text) } catch { /* keep the last valid value */ }
+                },
+                toggleAutomationStepAccount(step, accountId, max) {
+                    const ids = Array.isArray(step.config.account_ids) ? step.config.account_ids.slice() : []
+                    const at = ids.indexOf(accountId)
+                    if (at >= 0) ids.splice(at, 1)
+                    else if (ids.length < (max || 5)) ids.push(accountId)
+                    else return
+                    step.config.account_ids = ids
+                },
+                changeAutomationStepAction(step, action) {
+                    if (!action || action === step.action) return
+                    step.action = action
+                    step.config = this.automationDefaultConfig(action)
+                    step.draft = {}
+                },
+                addAutomationStep(action) {
+                    this.automations.builder.steps.push({
+                        key: 'step_' + Math.random().toString(36).slice(2, 9),
+                        action,
+                        config: this.automationDefaultConfig(action),
+                    })
+                },
+                removeAutomationStep(step) {
+                    const steps = this.automations.builder.steps
+                    const at = steps.indexOf(step)
+                    if (at >= 0) steps.splice(at, 1)
+                },
+                openAutomationBuilder(item) {
+                    const b = this.automations.builder
+                    if (item) {
+                        const trigger = item.trigger || { type: 'manual' }
+                        b.id = item.id
+                        b.name = item.name
+                        b.description = item.description || ''
+                        b.enabled = item.enabled !== false
+                        b.triggerType = trigger.type || 'manual'
+                        b.cron = trigger.cron || '0 9 * * *'
+                        b.event = trigger.event || 'job.terminal'
+                        b.eventKind = trigger.kind || ''
+                        b.steps = (item.steps || []).map(step => ({
+                            key: 'step_' + Math.random().toString(36).slice(2, 9),
+                            action: step.action,
+                            config: JSON.parse(JSON.stringify(step.config || {})),
+                        }))
+                    } else {
+                        b.id = ''
+                        b.name = ''
+                        b.description = ''
+                        b.enabled = true
+                        b.triggerType = 'manual'
+                        b.cron = '0 9 * * *'
+                        b.event = 'job.terminal'
+                        b.eventKind = ''
+                        b.steps = []
+                    }
+                    b.saving = false
+                    b.open = true
+                    this.automations.error = ''
+                    if (!this.workflows.list.length) this.loadWorkflows()
+                    if (!this.integrations.list.length) this.loadIntegrations()
+                    if (!this.accounts.length) this.loadAccounts()
+                },
+                closeAutomationBuilder() {
+                    this.automations.builder.open = false
+                },
+                automationBody() {
+                    const b = this.automations.builder
+                    const trigger = b.triggerType === 'schedule'
+                        ? { type: 'schedule', cron: String(b.cron || '').trim() }
+                        : b.triggerType === 'event'
+                            ? { type: 'event', event: b.event, kind: b.eventKind || '' }
+                            : { type: 'manual' }
+                    return {
+                        name: String(b.name || '').trim(),
+                        description: String(b.description || '').trim(),
+                        enabled: !!b.enabled,
+                        trigger,
+                        steps: b.steps.map(step => ({ action: step.action, config: step.config })),
+                    }
+                },
+                async saveDurableAutomation() {
+                    const b = this.automations.builder
+                    if (!b.name.trim()) { this.automations.error = 'Give the automation a name.'; return }
+                    if (!b.steps.length) { this.automations.error = 'Add at least one step.'; return }
+                    b.saving = true
+                    this.automations.error = ''
+                    try {
+                        const body = this.automationBody()
+                        if (b.id) await _api.put(`/api/automations/${b.id}`, body)
+                        else await _api.post('/api/automations', body)
+                        b.open = false
+                        this.showToast(b.id ? 'Automation updated.' : 'Automation created.')
+                        await this.loadAutomations()
+                    } catch (e) {
+                        this.automations.error = e.response?.data?.detail || 'Could not save the automation.'
+                    } finally {
+                        b.saving = false
+                    }
+                },
+                async runDurableAutomation(item) {
+                    if (this.automations.busy === item.id) return
+                    this.automations.busy = item.id
+                    this.automations.error = ''
+                    try {
+                        const { data } = await _api.post(`/api/automations/${item.id}/run`, {}, { timeout: 120000 })
+                        const run = data.run || {}
+                        this.showToast(`Run ${run.run_id || ''} · ${run.status || 'started'}`.trim())
+                        this.automations.runsFor = item.id
+                        await this.loadAutomationRuns(item)
+                        if (run.run_id) await this.openAutomationRun(run.run_id)
+                    } catch (e) {
+                        this.automations.error = e.response?.data?.detail || 'Could not start the automation.'
+                    } finally {
+                        this.automations.busy = ''
+                    }
+                },
+                async toggleDurableAutomation(item) {
+                    this.automations.busy = item.id
+                    this.automations.error = ''
+                    try {
+                        const trigger = item.trigger || { type: 'manual' }
+                        await _api.put(`/api/automations/${item.id}`, {
+                            name: item.name,
+                            description: item.description || '',
+                            enabled: !item.enabled,
+                            trigger,
+                            steps: (item.steps || []).map(step => ({ action: step.action, config: step.config })),
+                        })
+                        await this.loadAutomations()
+                    } catch (e) {
+                        this.automations.error = e.response?.data?.detail || 'Could not change the automation.'
+                    } finally {
+                        this.automations.busy = ''
+                    }
+                },
+                async deleteDurableAutomation(item) {
+                    if (!window.confirm(`Delete "${item.name}"? Its run history is removed with it.`)) return
+                    this.automations.busy = item.id
+                    this.automations.error = ''
+                    try {
+                        await _api.delete(`/api/automations/${item.id}`)
+                        if (this.automations.runsFor === item.id) { this.automations.runsFor = ''; this.automations.runs = []; this.automations.run = null }
+                        this.showToast('Automation deleted.')
+                        await this.loadAutomations()
+                    } catch (e) {
+                        this.automations.error = e.response?.data?.detail || 'Could not delete the automation.'
+                    } finally {
+                        this.automations.busy = ''
+                    }
+                },
+                async loadAutomationRuns(item) {
+                    this.automations.runsFor = item.id
+                    this.automations.error = ''
+                    try {
+                        const { data } = await _api.get(`/api/automations/${item.id}/runs`)
+                        this.automations.runs = data.runs || []
+                    } catch (e) {
+                        this.automations.error = e.response?.data?.detail || 'Could not load the runs.'
+                    }
+                },
+                clearAutomationRunsFilter() {
+                    this.automations.runsFor = ''
+                    this.automations.runs = []
+                    this.automations.run = null
+                    this.loadAutomations()
+                },
+                async openAutomationRun(runId) {
+                    try {
+                        const { data } = await _api.get(`/api/automation-runs/${runId}`)
+                        this.automations.run = data
+                    } catch (e) {
+                        this.automations.error = e.response?.data?.detail || 'Could not load the run.'
                     }
                 },
                 // ---- Detected groups ----

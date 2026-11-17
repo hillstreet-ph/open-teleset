@@ -50,6 +50,7 @@ from telegram_ops import (
     account_manager,
     button_markup,
     chat_type,
+    collect_scrape_members,
     confirm_membership,
     invite_type,
     joined_channel,
@@ -112,6 +113,21 @@ class MemberJobRequest(AddMembersRequest):
         return value
 
     request_id: str = Field(min_length=16, max_length=128, pattern=r"^[a-zA-Z0-9_-]+$")
+
+
+class MemberTransferRequest(MemberJobRequest):
+    """Invite the members of one group into another.
+
+    The invite itself is the same RPC and the same consent gate as member add;
+    only the recipient source differs, so the policy action stays member_add
+    while the job kind records what the operator actually asked for.
+    """
+    source_target: str = Field(min_length=1, max_length=256)
+    limit: int = Field(default=10, ge=1, le=10, strict=True)
+
+
+def policy_kind(kind: str) -> str:
+    return "member_add" if kind == "member_transfer" else kind
 
 
 def owner(request):
@@ -298,12 +314,13 @@ class JobStore:
                     raise HTTPException(400, "A valid message or attachment is required")
             # Resolve only for new jobs and freeze the selected authorization.
             # Idempotent retries above must not reselect or renew authorization.
-            policy_targets = [t for t in targets if re.fullmatch(r"(?:[a-z][a-z0-9_]{3,31}|[1-9][0-9]{0,19})", t)] if kind == "member_add" else targets
-            member_rotation = (kind == "member_add" and len(accounts) > 1
+            member = kind in ("member_add", "member_transfer")
+            policy_targets = [t for t in targets if re.fullmatch(r"(?:[a-z][a-z0-9_]{3,31}|[1-9][0-9]{0,19})", t)] if member else targets
+            member_rotation = (member and len(accounts) > 1
                                and getattr(request, "rotation_mode", "single") == "round_robin")
-            if kind == "member_add" and request.approval_id is not None:
+            if member and request.approval_id is not None:
                 outreach_policy.validate_new_member_approval(request.approval_id)
-            if kind == "member_add" and request.approval_id is None:
+            if member and request.approval_id is None:
                 if request.consent_confirmed:
                     # Record the join consent for the whole selected set so any selected
                     # account may invite; the worker then rotates to an available account
@@ -330,7 +347,7 @@ class JobStore:
                     for i, account in enumerate(accounts):
                         outreach_policy.record_personal_consents(targets[i::len(accounts)], account, operator)
             for account in accounts:
-                _enforce_outreach(kind, policy_targets, account, payload["approval_id"])
+                _enforce_outreach(policy_kind(kind), policy_targets, account, payload["approval_id"])
             job = str(uuid4())
             payload["operator"] = operator
             payload.pop("targets", None)
@@ -340,7 +357,7 @@ class JobStore:
                         self.pack(payload), "queued", time.time()))
             seen = set()
             for seq, target in enumerate(targets):
-                invalid = kind == "member_add" and not re.fullmatch(r"(?:[a-z][a-z0-9_]{3,31}|[1-9][0-9]{0,19})", target)
+                invalid = member and not re.fullmatch(r"(?:[a-z][a-z0-9_]{3,31}|[1-9][0-9]{0,19})", target)
                 duplicate = target in seen
                 seen.add(target)
                 db.execute("INSERT INTO items(job,seq,payload,state,reason) VALUES(?,?,?,?,?)",
@@ -382,7 +399,7 @@ class JobStore:
             try:
                 block = account_block(account, "join") if kind == "auto_join" else None
                 remaining = 0 if block else account_cooldown_remaining(
-                    account, scope if kind == "auto_join" else cooldown_scope(kind))
+                    account, scope if kind == "auto_join" else cooldown_scope(policy_kind(kind)))
             except OutreachDenied:
                 continue
             state = "blocked" if block else "waiting" if remaining > 0 else "ready"
@@ -830,10 +847,18 @@ class JobWorker:
     def _emit_terminal(self, job_id, kind, operator):
         if not operator:
             return
+        snapshot = None
         try:
-            webhooks.emit_job(operator, kind, self.store.snapshot(job_id, operator))
+            snapshot = self.store.snapshot(job_id, operator)
+            webhooks.emit_job(operator, kind, snapshot)
         except Exception:
             log.exception("Webhook notification failed for job %s", job_id)
+        if snapshot is not None:
+            try:
+                import automation_engine
+                automation_engine.handle_job_terminal(operator, kind, snapshot)
+            except Exception:
+                log.exception("Automation event fan-out failed for job %s", job_id)
 
     async def process(self, job):
         job_id = job["id"]
@@ -862,7 +887,7 @@ class JobWorker:
             # account's timed cooldown must not stall the whole job; wait only when
             # every selected account is cooling down.
             senders = list(config.get("sender_identities") or {})
-            scope = cooldown_scope(job["kind"])
+            scope = cooldown_scope(policy_kind(job["kind"]))
             ready, soonest, soonest_reason = set(), None, "telegram_cooldown"
             try:
                 for sender in senders:
@@ -917,7 +942,7 @@ class JobWorker:
             # The creating operator must still have administrator access after
             # a browser closes, a restart, or a long cooldown.
             await _load_profile(config["operator"])
-            remaining = account_cooldown_remaining(account, cooldown_scope(job["kind"]))
+            remaining = account_cooldown_remaining(account, cooldown_scope(policy_kind(job["kind"])))
             if remaining:
                 self.store.waiting(job_id, "telegram_cooldown", remaining)
                 return
@@ -928,7 +953,7 @@ class JobWorker:
             client = await asyncio.wait_for(account_manager.get_client(account), TELEGRAM_READ_TIMEOUT)
             if not client:
                 self.store.waiting(job_id, "account_unavailable", max(30, account_cooldown_remaining(
-                    account, cooldown_scope(job["kind"]))))
+                    account, cooldown_scope(policy_kind(job["kind"])))))
                 return
             async def check_sender():
                 expected = config.get("sender_identities", {}).get(account)
@@ -986,7 +1011,7 @@ class JobWorker:
                 if not decision.allowed:
                     raise OutreachDenied(decision.reason)
                 outreach_policy.bind_personal_peer(target, peer, account, config["operator"])
-            if job["kind"] == "member_add" and config.get("member_form_grant") and "peer_id" not in recipient:
+            if job["kind"] in ("member_add", "member_transfer") and config.get("member_form_grant") and "peer_id" not in recipient:
                 outreach_policy.bind_member_peer(target, peer, account, config["approval_id"])
             recipient["peer_id"] = peer
             access_hash = getattr(entity, "access_hash", None)
@@ -998,7 +1023,7 @@ class JobWorker:
                            (self.store.pack(recipient), peer_hash, job_id, seq))
             # Resolve destination and check existing membership before attempting an add.
             destination = None
-            if job["kind"] == "member_add":
+            if job["kind"] in ("member_add", "member_transfer"):
                 destination = await asyncio.wait_for(
                     _resolve_target_entity(client, config["dest_target"]), TELEGRAM_READ_TIMEOUT)
                 try:
@@ -1017,7 +1042,7 @@ class JobWorker:
                 if before_send:
                     await _load_profile(config["operator"])
                     await check_sender()
-                    if job["kind"] == "member_add" and config.get("member_form_grant"):
+                    if job["kind"] in ("member_add", "member_transfer") and config.get("member_form_grant"):
                         decision = outreach_policy.authorize(action="member_add", subject=target,
                             account_id=account, approval_id=config["approval_id"])
                         if not decision.allowed:
@@ -1027,7 +1052,7 @@ class JobWorker:
 
             token = dispatch_guard.set(fence)
             async def deliver():
-                if job["kind"] == "member_add":
+                if job["kind"] in ("member_add", "member_transfer"):
                     result = await asyncio.wait_for(
                         client(functions.channels.InviteToChannelRequest(destination, [entity])), TELEGRAM_SEND_TIMEOUT)
                     if getattr(result, "missing_invitees", None):
@@ -1080,7 +1105,7 @@ class JobWorker:
             self.store.outcome(job_id, seq, "pending", reason, 86400, "paused")
         except OutreachDenied as exc:
             reason = str(exc)
-            if job["kind"] == "member_add" and reason == "invitation_not_completed":
+            if job["kind"] in ("member_add", "member_transfer") and reason == "invitation_not_completed":
                 self.store.outcome(job_id, seq, "skipped", "invitation_not_completed", delay=config["delay"])
             elif reason == "account_cooldown":
                 # A concurrent worker cooled this account between selection and send;
@@ -1409,6 +1434,77 @@ async def submit(kind, operator, body, targets, accounts):
         raise HTTPException(503, "Encrypted job storage unavailable") from None
 
 
+async def enqueue(kind, operator, body, targets, accounts):
+    """Admission point for the automation engine: same queue, same snapshot."""
+    require_worker()
+    return await submit(kind, operator, body, targets, accounts)
+
+
+async def enqueue_transfer(operator, config):
+    """Resolve the source roster, then queue one durable invite job.
+
+    The roster is read once with the first selected account so the job holds
+    an explicit recipient list; consent and pacing remain the member-add
+    gate's business.
+    """
+    require_worker()
+    if not config.get("consent_confirmed"):
+        raise HTTPException(400, "Confirm recipient consent to transfer members")
+    source = str(config.get("source_target") or "").strip()
+    dest = str(config.get("dest_target") or "").strip()
+    if not source or not dest:
+        raise HTTPException(400, "Source and destination groups are required")
+    if source.lstrip("@").lower() == dest.lstrip("@").lower():
+        raise HTTPException(400, "Choose a destination different from the source")
+    limit = min(max(int(config.get("limit") or 10), 1), 10)
+    rotation = config.get("rotation_mode", "single")
+    accounts = list(config.get("account_ids") or []) if rotation == "round_robin" else [
+        config.get("account_id") or ""]
+    accounts = [account for account in accounts if account and account in account_manager.accounts]
+    if not accounts:
+        raise HTTPException(400, "Choose at least one signed-in account")
+    client = await account_manager.get_client(accounts[0])
+    if not client:
+        raise HTTPException(400, "The selected account is unavailable")
+    try:
+        entity = await _resolve_target_entity(client, source)
+    except (ValueError, KeyError):
+        raise HTTPException(400, "Could not resolve the source group with that account") from None
+    participants, _, _ = await collect_scrape_members(client, entity, limit)
+    me = await client.get_me()
+    targets, seen = [], set()
+    for participant in participants:
+        username = (participant.username or "").lower()
+        identifier = username or str(participant.id)
+        if participant.bot or participant.id == getattr(me, "id", None) or identifier in seen:
+            continue
+        seen.add(identifier)
+        targets.append(identifier)
+        if len(targets) >= limit:
+            break
+    if not targets:
+        raise HTTPException(400, "No eligible member was found in the source group")
+    body = MemberTransferRequest(
+        request_id=config["request_id"],
+        source_target=source,
+        dest_target=dest,
+        usernames=targets,
+        filter_bots=True,
+        limit=len(targets),
+        delay=config.get("delay", 35),
+        rotation_mode=rotation,
+        account_ids=config.get("account_ids", []) if rotation == "round_robin" else [],
+        account_id=config.get("account_id", "") if rotation != "round_robin" else "",
+        consent_confirmed=True,
+    )
+    return await submit("member_transfer", operator, body, targets, body.selected_accounts())
+
+
+@router.post("/api/jobs/transfer", status_code=202)
+async def submit_transfer(body: MemberTransferRequest, request: Request):
+    return await enqueue_transfer(owner(request), body.model_dump())
+
+
 @router.post("/api/join/jobs", status_code=202)
 async def submit_join(body: AutoJoinJobRequest, request: Request):
     """Queue an Auto Join run; progress is durable and polled by the dashboard."""
@@ -1417,7 +1513,7 @@ async def submit_join(body: AutoJoinJobRequest, request: Request):
 
 
 @router.get("/api/outreach/jobs")
-async def list_jobs(request: Request, kind: Optional[Literal["personal_send", "member_add", "auto_join"]] = None):
+async def list_jobs(request: Request, kind: Optional[Literal["personal_send", "member_add", "member_transfer", "auto_join"]] = None):
     return {"jobs": store.listing(owner(request), kind),
             "worker": "ready" if worker.ensure_running() else "unavailable"}
 

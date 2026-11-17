@@ -65,6 +65,10 @@ def join_plan(schedule):
 
 def schedule_requirements(schedule):
     action = schedule.get("action")
+    if action == "run_automation":
+        if not re.fullmatch(r"auto_[A-Za-z0-9]{6,32}", str(schedule.get("automation_id") or "")):
+            raise ValueError("invalid_automation_schedule")
+        return None, [], 0
     if action == "run_workflow":
         if not re.fullmatch(r"wf_[A-Za-z0-9]{6,32}", str(schedule.get("workflow_id") or "")):
             raise ValueError("invalid_workflow_schedule")
@@ -197,6 +201,7 @@ class TaskScheduler:
                 "join_urls": kwargs.get("join_urls", []),
                 "join_delay": kwargs.get("join_delay", JOIN_MIN_DELAY),
                 "workflow_id": kwargs.get("workflow_id"),
+                "automation_id": kwargs.get("automation_id"),
                 "account_ids": accounts_list,
             })
         except ValueError:
@@ -250,6 +255,7 @@ class TaskScheduler:
             "join_urls": list(kwargs.get("join_urls") or []),
             "join_delay": kwargs.get("join_delay", JOIN_MIN_DELAY),
             "workflow_id": kwargs.get("workflow_id"),
+            "automation_id": kwargs.get("automation_id"),
             "operator_id": kwargs.get("operator_id"),
         }
 
@@ -325,6 +331,8 @@ class TaskScheduler:
         """
         try:
             action = schedule["action"]
+            if action == "run_automation":
+                return await self._run_automation_schedule(schedule)
             message = schedule.get("message", "")
             
             # 获取发送目标
@@ -727,6 +735,30 @@ class TaskScheduler:
         except Exception as e:
             log_manager.add_log("定时任务", "system", f"执行任务 {schedule['name']} 失败: {type(e).__name__}", "error")
             return False
+
+    async def _run_automation_schedule(self, schedule: Dict) -> bool:
+        """Hand a scheduled automation to the engine; the engine owns its run ledger."""
+        import automation_engine
+
+        operator = schedule.get("operator_id") or ""
+        now_iso = datetime.now().isoformat()
+        schedule["last_run"] = now_iso
+        schedule["lastRun"] = now_iso
+        schedule["run_count"] = schedule.get("run_count", 0) + 1
+        schedule["next_run"] = self._get_next_run(schedule["cron"])
+        try:
+            await automation_engine.run_automation(
+                operator, schedule["automation_id"], trigger="schedule")
+            schedule["last_error"] = ""
+            success = True
+        except Exception as exc:
+            schedule["fail_count"] = schedule.get("fail_count", 0) + 1
+            schedule["last_error"] = f"automation_failed:{type(exc).__name__}"[:120]
+            log_manager.add_log("定时任务", schedule.get("automation_id") or "automation",
+                                f"Automation failed ({type(exc).__name__})", "error")
+            success = False
+        self._save_schedules()
+        return success
 
     async def start(self):
         """启动调度器"""

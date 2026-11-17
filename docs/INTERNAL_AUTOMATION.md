@@ -2,6 +2,8 @@
 
 The Automation tab can create recurring cycles that run **inside your own workspace with your own account**. Two of them are schedulable; the rest keep their consent surfaces.
 
+To chain these actions together with workflows, BulkSend, the Adder, Auto Transfer, AI, MCP and webhooks, see [AUTOMATIONS.md](AUTOMATIONS.md). That engine reuses the same actions and bounds and does not involve n8n.
+
 ## What can be scheduled
 
 | Cycle | What it does | Bounds |
