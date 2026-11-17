@@ -211,3 +211,65 @@ async def test_zero_limit_joins_every_link(monkeypatch):
 def test_request_rejects_a_negative_cap():
     with pytest.raises(Exception):
         ops.JoinChannelsRequest(account_id="acct", urls=["@chanone"], limit=-1)
+
+
+def test_group_type_accepts_only_the_documented_values():
+    with pytest.raises(Exception):
+        ops.JoinChannelsRequest(account_id="acct", urls=["@chanone"], group_type="megagroup")
+
+
+@pytest.mark.asyncio
+async def test_group_type_skips_a_public_channel_when_groups_are_requested(monkeypatch):
+    client = join_client()
+    monkeypatch.setattr(ops.account_manager, "get_client", AsyncMock(return_value=client))
+    res = await ops.join_channels(ops.JoinChannelsRequest(
+        account_id="acct", urls=["https://t.me/examplechan"], delay=30, group_type="group"))
+    assert res["joined"] == 0 and res["skipped"] == 1 and res["failed"] == 0
+    assert res["results"][0]["skipped"] == "target_type_mismatch"
+    assert not client.called  # no join RPC was sent for the wrong kind
+
+
+@pytest.mark.asyncio
+async def test_group_type_joins_a_megagroup(monkeypatch):
+    group = types.Channel(id=1, title="Synthetic group", photo=types.ChatPhotoEmpty(),
+                          date=None, username="syntheticgroup", megagroup=True, broadcast=False)
+
+    async def respond(request):
+        if isinstance(request, functions.channels.GetParticipantRequest):
+            return SimpleNamespace(participant=types.ChannelParticipantCreator(
+                user_id=1, admin_rights=types.ChatAdminRights()))
+        return SimpleNamespace(chats=[group], updates=[])
+
+    client = AsyncMock(side_effect=respond)
+    client.get_entity = AsyncMock(return_value=group)
+    monkeypatch.setattr(ops.account_manager, "get_client", AsyncMock(return_value=client))
+    res = await ops.join_channels(ops.JoinChannelsRequest(
+        account_id="acct", urls=["https://t.me/syntheticgroup"], delay=30, group_type="group"))
+    assert res["joined"] == 1 and res["skipped"] == 0
+
+
+@pytest.mark.asyncio
+async def test_group_type_checks_an_invite_before_importing_it(monkeypatch):
+    async def respond(request):
+        if isinstance(request, functions.messages.CheckChatInviteRequest):
+            return SimpleNamespace(broadcast=False, megagroup=True)
+        raise AssertionError("an invite of the wrong kind must not be imported")
+
+    client = AsyncMock(side_effect=respond)
+    monkeypatch.setattr(ops.account_manager, "get_client", AsyncMock(return_value=client))
+    res = await ops.join_channels(ops.JoinChannelsRequest(
+        account_id="acct", urls=["https://t.me/+InviteHash12"], delay=30, group_type="channel"))
+    assert res["joined"] == 0 and res["skipped"] == 1
+    assert res["results"][0]["skipped"] == "target_type_mismatch"
+    assert client.call_count == 1
+    assert isinstance(client.call_args.args[0], functions.messages.CheckChatInviteRequest)
+
+
+@pytest.mark.asyncio
+async def test_no_type_filter_adds_no_invite_lookup(monkeypatch):
+    client = join_client()
+    monkeypatch.setattr(ops.account_manager, "get_client", AsyncMock(return_value=client))
+    await ops.join_channels(ops.JoinChannelsRequest(
+        account_id="acct", urls=["https://t.me/+InviteHash12"], delay=30))
+    for call in client.call_args_list:
+        assert not isinstance(call.args[0], functions.messages.CheckChatInviteRequest)

@@ -1741,6 +1741,10 @@
                                 <div><strong style="font-size:13px;">Auto Reply</strong><p class="muted small" style="margin-top:2px;">Answers private chats that messaged an account first. Off until you switch it on and name the accounts.</p></div>
                                 <button class="toggle" :class="{ on: features.auto_reply_enabled }" role="switch" :aria-checked="features.auto_reply_enabled ? 'true' : 'false'" :disabled="features.saving === 'auto_reply_enabled'" @click="saveFeature('auto_reply_enabled', !features.auto_reply_enabled)"></button>
                             </div>
+                            <div class="toggle-row">
+                                <div><strong style="font-size:13px;">Auto Forwarder</strong><p class="muted small" style="margin-top:2px;">Copies new messages from a source chat into a destination on the same account. Off until you switch it on and add a rule.</p></div>
+                                <button class="toggle" :class="{ on: features.auto_forward_enabled }" role="switch" :aria-checked="features.auto_forward_enabled ? 'true' : 'false'" :disabled="features.saving === 'auto_forward_enabled'" @click="saveFeature('auto_forward_enabled', !features.auto_forward_enabled)"></button>
+                            </div>
                             <div class="toggle-row" style="border-bottom:0;">
                                 <div><strong style="font-size:13px;">Inbox</strong><p class="muted small" style="margin-top:2px;">Shows the chats on the accounts you opt in and the messages they receive. Nothing is ever answered unless you type it.</p></div>
                                 <button class="toggle" :class="{ on: features.inbox_enabled }" role="switch" :aria-checked="features.inbox_enabled ? 'true' : 'false'" :disabled="features.saving === 'inbox_enabled'" @click="saveFeature('inbox_enabled', !features.inbox_enabled)"></button>
@@ -3189,6 +3193,127 @@
                             </tr>
                             <tr v-if="autoReply.config.activity.length > 8">
                                 <td colspan="3"><button type="button" class="btn btn-sm btn-outline record-more" @click="toggleRows('arActivity')">{{ expandedRows.arActivity ? 'Show fewer' : 'Show all (' + autoReply.config.activity.length + ')' }}</button></td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Auto Forwarder: copies new messages between the operator's own chats -->
+            <div v-show="tab === 'forward'">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>Auto Forwarder</h3>
+                        <div style="display:flex;gap:8px;align-items:center;">
+                            <span v-if="autoForward.config" class="badge" :class="autoForward.config.enabled ? 'badge-success' : 'badge-normal'">{{ autoForward.config.enabled ? 'Running' : 'Paused' }}</span>
+                            <span v-if="autoForward.config" class="badge badge-info">{{ autoForward.config.rules.length }} rule{{ autoForward.config.rules.length === 1 ? '' : 's' }}</span>
+                        </div>
+                    </div>
+                    <p class="muted small" style="margin-bottom:16px;">Copies messages from a chat this account can read into a chat you own. Each pass forwards only messages it has not forwarded before, so a restart never duplicates history. Telegram flood waits pause that account only.</p>
+                    <p v-if="autoForward.loading" class="muted small">Loading Auto Forwarder…</p>
+                    <template v-else-if="autoForward.off">
+                        <p class="notice">Auto Forwarder is switched off. Turn it on under Integrations → Platform switches, then come back.</p>
+                        <button class="btn btn-outline" style="margin-top:10px;" @click="go('integrations')">Open Integrations</button>
+                    </template>
+                    <template v-else-if="!autoForward.config">
+                        <p role="alert" style="color:var(--danger);">{{ autoForward.error || 'Could not load Auto Forwarder.' }}</p>
+                        <button class="btn btn-outline" style="margin-top:10px;" @click="loadAutoForward">Retry</button>
+                    </template>
+                    <div v-else>
+                        <div class="toggle-row">
+                            <div><strong style="font-size:13px;">Forward automatically</strong><p class="muted small" style="margin-top:2px;">The background listener only runs while this is on and at least one rule is enabled.</p></div>
+                            <button class="toggle" :class="{ on: autoForward.config.enabled }" role="switch" :aria-checked="autoForward.config.enabled ? 'true' : 'false'" :disabled="autoForward.saving" @click="saveAutoForwardEnabled(!autoForward.config.enabled)"></button>
+                        </div>
+                        <div class="form-row" style="margin-top:16px;">
+                            <div class="form-group">
+                                <label for="forward-poll">Check every (seconds)</label>
+                                <input id="forward-poll" class="form-control" type="number" min="30" max="900" step="30" v-model.number="autoForward.config.poll_seconds">
+                            </div>
+                        </div>
+                        <small class="muted">Between 30 and 900 seconds. A shorter interval means more Telegram reads per account.</small>
+                        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px;">
+                            <button id="gate-forward" class="btn btn-primary" @click="saveAutoForwardPoll" :disabled="autoForward.saving">{{ autoForward.saving ? 'Saving…' : 'Save interval' }}</button>
+                            <button id="gate-forward-run" class="btn btn-outline" @click="runAutoForwardNow" :disabled="!!autoForward.busy || !autoForward.config.enabled">Run one pass now</button>
+                        </div>
+                        <p v-if="autoForward.message" class="muted small" style="margin-top:12px;">{{ autoForward.message }}</p>
+                        <p v-if="autoForward.error" role="alert" style="color:var(--danger);margin-top:12px;">{{ autoForward.error }}</p>
+                        <div style="margin-top:18px;">
+                            <div class="status-row"><span class="status-key">Background listener</span><span class="status-val">{{ autoForward.config.worker?.running ? 'Running' : 'Not running in this worker' }}</span></div>
+                            <div class="status-row"><span class="status-key">Last pass</span><span class="status-val mono">{{ autoForward.config.worker?.last_tick ? jobStamp(autoForward.config.worker.last_tick) : '—' }}</span></div>
+                            <div class="status-row"><span class="status-key">Last error</span><span class="status-val">{{ autoForward.config.worker?.error || 'None' }}</span></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div v-if="autoForward.config?.feature" class="card">
+                    <div class="card-header">
+                        <h3>Add a rule</h3>
+                        <span class="muted small">Up to 10 rules</span>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="forward-rule-account">Account</label>
+                            <select id="forward-rule-account" class="form-control" v-model="autoForward.ruleForm.account">
+                                <option value="">Choose an account</option>
+                                <option v-for="acc in accounts" :key="acc.account_id" :value="acc.account_id">{{ accountDisplayName(acc) }} · {{ shortAccountId(acc.account_id) }}</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="forward-rule-name">Name (optional)</label>
+                            <input id="forward-rule-name" class="form-control" v-model="autoForward.ruleForm.name" maxlength="60" placeholder="News relay">
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="forward-rule-source">Forward from</label>
+                            <input id="forward-rule-source" class="form-control" v-model="autoForward.ruleForm.source" placeholder="@sourcechat, t.me/sourcechat or a chat id" maxlength="200">
+                        </div>
+                        <div class="form-group">
+                            <label for="forward-rule-target">Forward to</label>
+                            <input id="forward-rule-target" class="form-control" v-model="autoForward.ruleForm.target" placeholder="@mydestination or a chat id" maxlength="200">
+                        </div>
+                    </div>
+                    <small class="muted">A private invite link is not a valid source; join the chat first and use its @username or numeric id. The source and destination must be different chats.</small>
+                    <label style="display:flex;align-items:center;gap:8px;margin-top:14px;font-size:13px;">
+                        <input type="checkbox" v-model="autoForward.ruleForm.enabled">
+                        Rule enabled
+                    </label>
+                    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px;">
+                        <button id="gate-forward-save" class="btn btn-primary" @click="saveAutoForwardRule" :disabled="!!autoForward.busy">{{ autoForward.busy === 'save' ? 'Saving…' : 'Save rule' }}</button>
+                    </div>
+                </div>
+
+                <div v-if="autoForward.config?.feature" class="card">
+                    <div class="card-header"><h3>Rules</h3></div>
+                    <div v-if="!autoForward.config.rules.length" class="empty-state"><p>No rules yet. Add one above.</p></div>
+                    <table v-else class="table">
+                        <thead><tr><th>Name</th><th>Account</th><th>From → To</th><th>Forwarded</th><th>Last forward</th><th>Status</th><th></th></tr></thead>
+                        <tbody>
+                            <tr v-for="rule in autoForward.config.rules" :key="rule.id">
+                                <td>{{ rule.name }}<p v-if="!rule.enabled" class="muted small">Paused</p></td>
+                                <td class="mono small">{{ shortAccountId(rule.account) }}</td>
+                                <td class="mono small" style="overflow-wrap:anywhere;">{{ rule.source }} → {{ rule.target }}</td>
+                                <td>{{ rule.forwarded }}</td>
+                                <td class="small">{{ rule.last_forward_at ? jobStamp(rule.last_forward_at) : '—' }}</td>
+                                <td class="small" :style="rule.error ? 'color:var(--danger);' : ''">{{ rule.error ? forwardError(rule.error) : 'OK' }}</td>
+                                <td><button class="btn btn-danger btn-sm" @click="deleteAutoForwardRule(rule)" :disabled="!!autoForward.busy">Delete</button></td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <div v-if="autoForward.config?.feature" class="card">
+                    <div class="card-header"><h3>Recent activity</h3><span class="muted small">Newest first</span></div>
+                    <div v-if="!autoForward.config.activity.length" class="empty-state"><p>Nothing forwarded yet.</p></div>
+                    <table v-else class="table">
+                        <thead><tr><th>Time</th><th>Rule</th><th>Account</th><th>Forwarded</th><th>Result</th></tr></thead>
+                        <tbody>
+                            <tr v-for="(entry, index) in autoForward.config.activity" :key="index">
+                                <td class="small">{{ jobStamp(entry.at) }}</td>
+                                <td>{{ entry.rule }}</td>
+                                <td class="mono small">{{ shortAccountId(entry.account) }}</td>
+                                <td>{{ entry.forwarded }}</td>
+                                <td class="small" :style="entry.error ? 'color:var(--danger);' : ''">{{ entry.error ? forwardError(entry.error) : 'Forwarded' }}</td>
                             </tr>
                         </tbody>
                     </table>
@@ -4696,13 +4821,22 @@
                         <label>Channel/group links (one per line)</label>
                         <textarea class="form-control" v-model="autojoin.urls" rows="6" aria-describedby="autojoin-summary" placeholder="https://t.me/examplechannel&#10;@examplegroup&#10;https://t.me/+AbCdEf123456"></textarea>
                         <small id="autojoin-summary" role="status" aria-live="polite">
-                            {{ autojoinValidLinks.length }} valid {{ autojoinValidLinks.length === 1 ? 'link' : 'links' }}{{ autojoin.limit ? ' (up to ' + autojoin.limit + ' joined this run)' : '' }}{{ autojoinLinks.length > autojoinValidLinks.length ? ' — ' + (autojoinLinks.length - autojoinValidLinks.length) + (autojoinLinks.length - autojoinValidLinks.length === 1 ? ' line has' : ' lines have') + ' unrecognised format and will be skipped' : '' }}. Blank lines ignored.
+                            {{ autojoinValidLinks.length }} valid {{ autojoinValidLinks.length === 1 ? 'link' : 'links' }}{{ autojoin.groupType === 'all' ? '' : ' (only ' + (autojoin.groupType === 'channel' ? 'channels' : 'groups') + ' will be joined)' }}{{ autojoin.limit ? ' (up to ' + autojoin.limit + ' joined this run)' : '' }}{{ autojoinLinks.length > autojoinValidLinks.length ? ' — ' + (autojoinLinks.length - autojoinValidLinks.length) + (autojoinLinks.length - autojoinValidLinks.length === 1 ? ' line has' : ' lines have') + ' unrecognised format and will be skipped' : '' }}. Blank lines ignored.
                         </small>
                     </div>
                     <div class="form-group">
                         <label>Import links from CSV</label>
                         <input type="file" accept=".csv,text/csv" @change="importJoinCSV($event)" :disabled="autojoin.loading">
                         <small>Use a url, link or recipient header (or a single column of links). Maximum file size: 2 MB.</small>
+                    </div>
+                    <div class="form-group">
+                        <label>Join only</label>
+                        <select class="form-control" id="autojoin-group-type" v-model="autojoin.groupType" :disabled="autojoin.loading">
+                            <option value="all">All — channels and groups</option>
+                            <option value="channel">Channels only</option>
+                            <option value="group">Groups only</option>
+                        </select>
+                        <small>Links of the other kind are skipped before anything is joined; a private invite is checked read-only first, so a skipped link never consumes an invite.</small>
                     </div>
                     <div style="display: flex; gap: 15px;">
                         <div class="form-group" style="flex:1;">
@@ -5884,6 +6018,7 @@
             cloud: '<path d="M18 18H7a5 5 0 1 1 1.2-9.86A6 6 0 0 1 19.7 10.4 4 4 0 0 1 18 18z"/><path d="M12 12v6M9.5 15.5L12 18l2.5-2.5"/>',
             sparkles: '<path d="M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z"/><path d="M19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9z"/>',
             reply: '<path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 6 6v4"/>',
+            forward: '<path d="M15 14l5-5-5-5"/><path d="M20 9H10a6 6 0 0 0-6 6v4"/>',
             inbox: '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
             book: '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>',
             note: '<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h8l6-6V5a2 2 0 0 0-2-2z"/><path d="M14 3v6h6"/><path d="M8 13h6M8 17h4"/>',
@@ -6087,7 +6222,7 @@
                         form: { name: '', url: '', transport: 'http', token: '', auth_mode: 'token', client_id: '', client_secret: '', scopes: '' },
                     },
                     pendingOAuthReturn: null,
-                    features: { loading: false, automation_enabled: true, factory_enabled: true, cloud_browser_enabled: false, cloud_phone_enabled: false, auto_reply_enabled: false, inbox_enabled: false, saving: '' },
+                    features: { loading: false, automation_enabled: true, factory_enabled: true, cloud_browser_enabled: false, cloud_phone_enabled: false, auto_reply_enabled: false, auto_forward_enabled: false, inbox_enabled: false, saving: '' },
                     cloudBrowser: {
                         config: { configured: false, host: '', has_token: false, updated_at: '', enabled: false, encryption_ready: false, keys: [], profiles: [], active: '', max_profiles: 12 },
                         endpoint: '', token: '', name: '', product: '', revision: '',
@@ -6141,7 +6276,8 @@
                                 { tab: 'adder', label: 'Adder', icon: 'user-plus' },
                                 { tab: 'autojoin', label: 'Auto Join', icon: 'link' },
                                 { tab: 'bulksend', label: 'BulkSend', icon: 'send' },
-                                { tab: 'autoreply', label: 'Auto Reply', icon: 'reply' }
+                                { tab: 'autoreply', label: 'Auto Reply', icon: 'reply' },
+                                { tab: 'forward', label: 'Auto Forwarder', icon: 'forward' }
                             ]
                         },
                         {
@@ -6413,6 +6549,13 @@
                         editingRule: '', test: { text: '', name: '', result: null, busy: false },
                     },
 
+                    // Auto Forwarder (mirrors new messages between the operator's own chats)
+                    autoForward: {
+                        loading: false, saving: false, busy: '', error: '', message: '', off: false,
+                        config: null,
+                        ruleForm: { name: '', account: '', source: '', target: '', enabled: true },
+                    },
+
                     // Inbox (the wall of Telegram chats; `mailbox` because notifications own `inbox`)
                     mailbox: {
                         config: { enabled: false, accounts: [], limit: 8, state: {}, watched: [], chats: 0, subscribers: 0, skipped_unknown: 0, labels: {}, buckets: [] },
@@ -6579,6 +6722,7 @@
                         accountId: '',
                         accountIds: [],
                         urls: '',
+                        groupType: 'all',
                         delay: 38,
                         limit: 0,
                         loading: false,
@@ -6744,6 +6888,7 @@
                         templates: ['Templates', 'Reusable messages for outreach and scheduling.'],
                         knowledge: ['Knowledge', 'Notes, imported files and settings the Copilot may read.'],
                         autoreply: ['Auto Reply', 'Approve replies to inbound messages before anything is sent.'],
+                        forward: ['Auto Forwarder', 'Mirror new messages from a source chat into a destination you own.'],
                         automation: ['Automation', 'Internal workflows and the n8n orchestration layer.'],
                         factory: ['Account Factory', 'Buy a number, register, import and record the account.'],
                         integrations: ['Integrations', 'n8n, MCP and the credentials that connect them.'],
@@ -7013,6 +7158,7 @@
                     }
                     if (tab === 'copilot') { this.loadCopilot(); this.loadCopilotHistory(); this.loadCopilotSuggestions(); this.loadCopilotAttachments() }
                     if (tab === 'autoreply') this.loadAutoReply()
+                    if (tab === 'forward') this.loadAutoForward()
                     if (tab === 'knowledge') { this.loadKnowledge(); this.loadPatterns() }
                     if (tab === 'notes') this.loadNotes()
                     if (tab === 'tables') this.loadTables()
@@ -7051,6 +7197,7 @@
                     if (this.tab === 'integrations') { this.loadWebhooks(); this.loadIntegrations(); this.loadAiSettings(); this.loadFeatures() }
                     if (this.tab === 'contacts') this.loadContacts()
                     if (this.tab === 'autoreply') this.loadAutoReply()
+                    if (this.tab === 'forward') this.loadAutoForward()
                     if (this.tab === 'inbox') this.loadMailbox()
                     if (this.tab === 'knowledge') { this.loadKnowledge(); this.loadPatterns() }
                     if (this.tab === 'notes') this.loadNotes()
@@ -7833,6 +7980,8 @@
                         duplicate_link: 'Duplicate link in this list — skipped',
                         target_unresolvable: 'Link could not be opened by Telegram — skipped',
                         target_not_joinable: 'This link is not a group or channel the account can join — skipped',
+                        target_type_mismatch: 'This link is the other kind of chat than "Join only" allows — skipped',
+                        target_type_unknown: 'Telegram did not say whether this link is a channel or a group — skipped',
                         join_request_pending: 'Join request sent — an admin must approve it',
                         join_not_confirmed: 'Telegram accepted the request but shows the account as not joined — check the account before retrying',
                         join_unverified: 'Telegram did not confirm membership — run this link again',
@@ -8004,6 +8153,7 @@
                             rotation_mode: this.autojoin.rotationMode,
                             ...(rotating ? { account_ids: this.autojoin.accountIds } : { account_id: this.autojoin.accountId }),
                             urls,
+                            group_type: this.autojoin.groupType,
                             delay: this.autojoin.delay,
                             limit: this.autojoin.limit,
                         };
@@ -11083,6 +11233,7 @@
                         this.features.cloud_browser_enabled = !!data.cloud_browser_enabled
                         this.features.cloud_phone_enabled = !!data.cloud_phone_enabled
                         this.features.auto_reply_enabled = !!data.auto_reply_enabled
+                        this.features.auto_forward_enabled = !!data.auto_forward_enabled
                         this.features.inbox_enabled = !!data.inbox_enabled
                     } catch (e) {
                         this.showToast(e.response?.data?.detail || 'Could not load platform settings.', true)
@@ -11954,6 +12105,110 @@
                 },
 
                 // ---- Auto Reply ----
+                // ---- Auto Forwarder ----
+                async loadAutoForward() {
+                    this.autoForward.loading = true
+                    try {
+                        const { data } = await _api.get('/api/auto-forward/config')
+                        this.autoForward.config = data
+                        this.autoForward.off = false
+                        this.features.auto_forward_enabled = !!data.feature
+                        if (!this.autoForward.ruleForm.account && this.accounts.length) {
+                            this.autoForward.ruleForm.account = this.accounts[0].account_id
+                        }
+                        this.autoForward.error = ''
+                    } catch (e) {
+                        this.autoForward.config = null
+                        // The route answers 403 only while the platform switch is off;
+                        // that is a setup step, not a failure the operator can retry.
+                        this.autoForward.off = e.response?.status === 403
+                        this.autoForward.error = e.response?.data?.detail || 'Could not load Auto Forwarder.'
+                    } finally {
+                        this.autoForward.loading = false
+                    }
+                },
+                async putAutoForwardConfig(body, message) {
+                    if (this.autoForward.saving) return
+                    this.autoForward.saving = true
+                    try {
+                        const { data } = await _api.put('/api/auto-forward/config', body)
+                        this.autoForward.config = data.config
+                        this.autoForward.message = message
+                        this.autoForward.error = ''
+                    } catch (e) {
+                        this.autoForward.error = e.response?.data?.detail || 'Could not save those settings.'
+                        await this.loadAutoForward()
+                    } finally {
+                        this.autoForward.saving = false
+                    }
+                },
+                saveAutoForwardEnabled(value) {
+                    return this.putAutoForwardConfig({ enabled: value },
+                        value ? 'Auto Forwarder is on.' : 'Auto Forwarder is paused.')
+                },
+                saveAutoForwardPoll() {
+                    const seconds = Math.min(900, Math.max(30, Number(this.autoForward.config.poll_seconds) || 60))
+                    return this.putAutoForwardConfig(
+                        { enabled: !!this.autoForward.config.enabled, poll_seconds: seconds },
+                        'Interval saved.')
+                },
+                async saveAutoForwardRule() {
+                    if (this.autoForward.busy) return
+                    this.autoForward.busy = 'save'
+                    try {
+                        const { data } = await _api.post('/api/auto-forward/rules', this.autoForward.ruleForm)
+                        this.autoForward.config = data.config
+                        this.autoForward.ruleForm = {
+                            name: '', account: this.accounts.length ? this.accounts[0].account_id : '',
+                            source: '', target: '', enabled: true }
+                        this.autoForward.message = 'Rule saved.'
+                        this.autoForward.error = ''
+                    } catch (e) {
+                        this.autoForward.error = e.response?.data?.detail || 'Could not save that rule.'
+                    } finally {
+                        this.autoForward.busy = ''
+                    }
+                },
+                async deleteAutoForwardRule(rule) {
+                    if (this.autoForward.busy) return
+                    this.autoForward.busy = 'delete'
+                    try {
+                        const { data } = await _api.delete(`/api/auto-forward/rules/${encodeURIComponent(rule.id)}`)
+                        this.autoForward.config = data.config
+                        this.autoForward.message = 'Rule deleted.'
+                        this.autoForward.error = ''
+                    } catch (e) {
+                        this.autoForward.error = e.response?.data?.detail || 'Could not delete that rule.'
+                    } finally {
+                        this.autoForward.busy = ''
+                    }
+                },
+                async runAutoForwardNow() {
+                    if (this.autoForward.busy) return
+                    this.autoForward.busy = 'run'
+                    try {
+                        const { data } = await _api.post('/api/auto-forward/run-now', {})
+                        this.autoForward.config = data.config
+                        const result = data.result || {}
+                        this.autoForward.message = `Forwarded ${result.forwarded || 0} message(s) across ${result.rules || 0} rule(s)`
+                            + (result.errors ? ` · ${result.errors} error(s)` : '')
+                            + (result.reason ? ` · ${String(result.reason).replace(/_/g, ' ')}` : '') + '.'
+                        this.autoForward.error = ''
+                    } catch (e) {
+                        this.autoForward.error = e.response?.data?.detail || 'Could not run a pass.'
+                    } finally {
+                        this.autoForward.busy = ''
+                    }
+                },
+                forwardError(code) {
+                    const labels = {
+                        chat_not_found: 'Chat not found for this account',
+                        account_unavailable: 'Account is not connected',
+                        flood_wait: 'Waiting on a Telegram flood limit',
+                        forward_failed: 'Telegram refused the forward',
+                    }
+                    return labels[code] || String(code || '').replace(/_/g, ' ')
+                },
                 async loadAutoReply() {
                     this.autoReply.loading = true
                     try {

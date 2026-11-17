@@ -39,6 +39,99 @@ async def no_lyzem(session, keyword, want, proxy=None, group_type="all"):
     return []
 
 
+@pytest.mark.asyncio
+async def test_stale_directory_rows_do_not_prevent_other_sources(monkeypatch):
+    async def lyzem(*args, **kwargs):
+        return [{"username": "stale_casino", "title": "Casino Philippines",
+                 "about": "Philippines", "type": "channel", "members": 200}]
+
+    async def source(*args, **kwargs):
+        return ["active_casino"]
+
+    async def preview(session, username, proxy=None):
+        return (ops._TME_DEAD if username == "stale_casino" else
+                hit(username, title="Casino Philippines", members=300))
+
+    monkeypatch.setattr(ops.aiohttp, "ClientSession", FakeSession)
+    monkeypatch.setattr(ops, "_lyzem_rows", lyzem)
+    monkeypatch.setattr(ops, "_SEARCH_SOURCES", (("source", source),))
+    monkeypatch.setattr(ops, "_tme_preview", preview)
+    result = await ops._scrape_channels_web(ops.ChannelScrapeRequest(
+        keywords=["casino"], country="Philippines", min_members=100))
+    assert [row["username"] for row in result["results"]] == ["active_casino"]
+    assert result["diagnostics"]["filtered"]["dead"] == 1
+
+
+@pytest.mark.asyncio
+async def test_mixed_rejections_do_not_blame_only_keywords(monkeypatch):
+    async def lyzem(*args, **kwargs):
+        return [
+            {"username": f"old_casino_{n}", "title": "Casino Philippines",
+             "about": "Philippines", "type": "channel"} for n in range(4)
+        ] + [{"username": "casino_india", "title": "Casino India",
+              "about": "India", "type": "channel"}]
+
+    async def tse(*args, **kwargs):
+        return [{"username": "unrelated_news", "title": "News",
+                 "about": "casino advert", "type": "channel"}]
+
+    async def preview(*args, **kwargs):
+        return ops._TME_DEAD
+
+    monkeypatch.setattr(ops.aiohttp, "ClientSession", FakeSession)
+    monkeypatch.setattr(ops, "_lyzem_rows", lyzem)
+    monkeypatch.setattr(ops, "_tse_rows", tse)
+    monkeypatch.setattr(ops, "_SEARCH_SOURCES", ())
+    monkeypatch.setattr(ops, "_tme_preview", preview)
+    result = await ops._scrape_channels_web(ops.ChannelScrapeRequest(
+        keywords=["casino"], country="Philippines", min_members=100))
+    assert result["total"] == 0
+    reason = result["diagnostics"]["reason"].lower()
+    assert "4 dead" in reason and "1 off-country" in reason and "1 off-keyword" in reason
+    assert "none of them matched" not in reason
+    assert "removed all" not in reason
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("title,reason", [
+    ("Casino India", "country"), ("Philippines Cooking", "keyword"),
+])
+async def test_live_preview_rechecks_directory_metadata(monkeypatch, title, reason):
+    async def lyzem(*args, **kwargs):
+        return [{"username": "public_room", "title": "Casino Philippines",
+                 "about": "", "type": "group", "members": 200}]
+
+    async def preview(*args, **kwargs):
+        return hit("public_room", kind="group", title=title, members=300)
+
+    monkeypatch.setattr(ops.aiohttp, "ClientSession", FakeSession)
+    monkeypatch.setattr(ops, "_lyzem_rows", lyzem)
+    monkeypatch.setattr(ops, "_SEARCH_SOURCES", ())
+    monkeypatch.setattr(ops, "_tme_preview", preview)
+    result = await ops._scrape_channels_web(ops.ChannelScrapeRequest(
+        keywords=["casino"], country="Philippines"))
+    assert result["results"] == []
+    assert result["diagnostics"]["filtered"][reason] == 1
+
+
+@pytest.mark.asyncio
+async def test_generic_search_does_not_invent_a_keyword_match(monkeypatch):
+    async def source(*args, **kwargs):
+        return ["cooking_room"]
+
+    async def preview(*args, **kwargs):
+        return hit("cooking_room", title="Philippines Cooking", members=300)
+
+    monkeypatch.setattr(ops.aiohttp, "ClientSession", FakeSession)
+    monkeypatch.setattr(ops, "_lyzem_rows", no_lyzem)
+    monkeypatch.setattr(ops, "_SEARCH_SOURCES", (("source", source),))
+    monkeypatch.setattr(ops, "_tme_preview", preview)
+    result = await ops._scrape_channels_web(ops.ChannelScrapeRequest(
+        keywords=["casino"], country="Philippines"))
+    assert result["results"] == []
+    assert result["diagnostics"]["filtered"]["keyword"] == 1
+
+
 # ---------- country / language resolution ----------
 
 
@@ -275,7 +368,7 @@ async def test_web_search_uses_the_first_source_that_answers(monkeypatch):
         return ["found_channel"]
 
     async def preview(session, username, proxy=None):
-        return hit(username, title="Found Channel")
+        return hit(username, title="Found Casino Channel")
 
     monkeypatch.setattr(ops, "_SEARCH_SOURCES", (("slow", slow), ("fast", fast)))
     monkeypatch.setattr(ops, "_lyzem_rows", no_lyzem)

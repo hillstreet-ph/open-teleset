@@ -49,6 +49,23 @@ Successful queue messages contribute exactly once to the Stats tab through a
 transactional completion ledger. Invalid recipients fail individually so later
 recipients can continue. Template retries reuse the originally frozen content.
 
+## Join type filter
+
+**Join only** on the Auto Join card limits a run to channels, to groups, or to
+both (the default, which is the old behaviour). The value travels as
+`group_type` on `POST /api/join/jobs` and is frozen in the job payload.
+
+- A public link is resolved first, then classified: a `Chat` is a group, a
+  `Channel` is a group only when it is a megagroup or gigagroup, otherwise a
+  channel.
+- An invite hash says nothing about the kind, and importing it cannot be undone.
+  With a filter on, the worker answers it with the read-only
+  `CheckChatInviteRequest` first and only imports when the kind matches.
+- A mismatch is recorded per link as `skipped` / `target_type_mismatch` and the
+  next link proceeds; when Telegram cannot classify the link it is
+  `target_type_unknown`. Neither consumes an invite or waits out a cooldown.
+- With **All** selected no extra RPC is made at all.
+
 ## Membership check
 
 A recorded "joined" means the join call returned without error. Telegram can

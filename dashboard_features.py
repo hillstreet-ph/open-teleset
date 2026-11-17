@@ -557,6 +557,7 @@ class FeatureUpdate(BaseModel):
     cloud_browser_enabled: Optional[bool] = None
     cloud_phone_enabled: Optional[bool] = None
     auto_reply_enabled: Optional[bool] = None
+    auto_forward_enabled: Optional[bool] = None
     inbox_enabled: Optional[bool] = None
 
 

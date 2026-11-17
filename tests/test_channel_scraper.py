@@ -93,7 +93,7 @@ async def test_web_fallback_drops_previews_that_miss_the_budget(monkeypatch):
 
     async def preview(session, username, proxy=None):
         await asyncio.sleep(0.2 if username == "slow_channel" else 0)
-        return hit(username)
+        return {**hit(username), "title": f"Alpha {username}"}
 
     monkeypatch.setattr(ops, "_SEARCH_SOURCES", (("fake", discover),))
     monkeypatch.setattr(ops, "_tme_preview", preview)
