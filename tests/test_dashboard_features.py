@@ -33,19 +33,21 @@ def test_feature_toggles_default_on_and_persist():
     assert operator_store.get_features() == {
         "automation_enabled": True, "factory_enabled": True, "cloud_browser_enabled": False,
         "cloud_phone_enabled": False,
-        "auto_reply_enabled": False, "inbox_enabled": False,
+        "auto_reply_enabled": False, "auto_forward_enabled": False, "inbox_enabled": False,
     }
     updated = operator_store.set_features({"factory_enabled": False, "cloud_browser_enabled": True,
                                            "cloud_phone_enabled": True,
-                                           "auto_reply_enabled": True, "inbox_enabled": True})
+                                           "auto_reply_enabled": True, "auto_forward_enabled": True,
+                                           "inbox_enabled": True})
     assert updated == {"automation_enabled": True, "factory_enabled": False, "cloud_browser_enabled": True,
                        "cloud_phone_enabled": True,
-                       "auto_reply_enabled": True, "inbox_enabled": True}
+                       "auto_reply_enabled": True, "auto_forward_enabled": True, "inbox_enabled": True}
     assert operator_store.feature_enabled("factory") is False
     assert operator_store.feature_enabled("automation") is True
     assert operator_store.feature_enabled("cloud_browser") is True
     assert operator_store.feature_enabled("cloud_phone") is True
     assert operator_store.feature_enabled("auto_reply") is True
+    assert operator_store.feature_enabled("auto_forward") is True
     assert operator_store.feature_enabled("inbox") is True
 
 
@@ -83,6 +85,16 @@ async def test_the_features_endpoint_carries_the_inbox_switch():
     restored = await features.update_platform_features(features.FeatureUpdate(inbox_enabled=False))
     assert restored["inbox_enabled"] is False
     assert operator_store.feature_enabled("inbox") is False
+
+
+@pytest.mark.asyncio
+async def test_the_features_endpoint_carries_the_auto_forward_switch():
+    """The Integrations toggle posts this name; an undeclared field leaves it off."""
+    assert operator_store.get_features()["auto_forward_enabled"] is False
+
+    saved = await features.update_platform_features(features.FeatureUpdate(auto_forward_enabled=True))
+    assert saved["auto_forward_enabled"] is True
+    assert operator_store.feature_enabled("auto_forward") is True
 
 
 @pytest.mark.asyncio

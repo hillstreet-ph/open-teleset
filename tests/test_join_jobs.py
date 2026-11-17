@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
+from pydantic import ValidationError
 from telethon import errors, functions, types
 
 import outreach_jobs as jobs
@@ -379,3 +380,75 @@ async def test_verify_joins_is_rate_limited(env):
     assert error.value.status_code == 429
     env.clock[0] += 600
     assert env.store.verify_joins(job, 'owner') != check
+
+
+class InviteJoinClient(JoinClient):
+    """Answers the invite lookup with a canned ChatInvite answer."""
+
+    def __init__(self, invite, **kwargs):
+        super().__init__(**kwargs)
+        self.invite = invite
+        self.checks = []
+
+    async def __call__(self, request):
+        if isinstance(request, functions.messages.CheckChatInviteRequest):
+            self.checks.append(request)
+            return self.invite
+        return await super().__call__(request)
+
+
+@pytest.mark.asyncio
+async def test_group_type_filter_skips_a_channel_when_groups_are_requested(env):
+    job = env.submit(['https://t.me/examplechan'], group_type='group')
+    await run_until(env, job)
+    result = env.store.snapshot(job, 'owner')
+    assert result['state'] == 'completed'
+    assert result['skipped'] == 1 and result['completed'] == 0
+    assert result['results'][0]['reason'] == 'target_type_mismatch'
+    assert env.client.joins() == []
+
+
+@pytest.mark.asyncio
+async def test_group_type_filter_joins_a_megagroup(env):
+    group = public_channel('examplegroup', megagroup=True, broadcast=False)
+    env.client.entity = group
+    job = env.submit(['https://t.me/examplegroup'], group_type='group')
+    await run_until(env, job)
+    result = env.store.snapshot(job, 'owner')
+    assert result['state'] == 'completed' and result['completed'] == 1
+    assert isinstance(env.client.joins()[0], functions.channels.JoinChannelRequest)
+
+
+@pytest.mark.asyncio
+async def test_group_type_filter_checks_an_invite_before_importing_it(env):
+    client = InviteJoinClient(SimpleNamespace(broadcast=False, megagroup=True))
+    env.monkeypatch.setattr(jobs.account_manager, 'get_client', AsyncMock(return_value=client))
+    job = env.submit(['https://t.me/+InviteHash12'], group_type='channel')
+    await run_until(env, job)
+    result = env.store.snapshot(job, 'owner')
+    assert result['state'] == 'completed' and result['skipped'] == 1
+    assert result['results'][0]['reason'] == 'target_type_mismatch'
+    assert len(client.checks) == 1
+    assert client.joins() == []
+
+
+@pytest.mark.asyncio
+async def test_no_group_type_filter_adds_no_invite_lookup(env):
+    client = InviteJoinClient(SimpleNamespace(broadcast=False, megagroup=True))
+    env.monkeypatch.setattr(jobs.account_manager, 'get_client', AsyncMock(return_value=client))
+    job = env.submit(['https://t.me/+InviteHash12'])
+    await run_until(env, job)
+    result = env.store.snapshot(job, 'owner')
+    assert result['state'] == 'completed' and result['completed'] == 1
+    assert client.checks == []
+
+
+def test_group_type_is_persisted_with_the_job_and_validated(env):
+    with pytest.raises(ValidationError):
+        jobs.AutoJoinJobRequest(request_id='join_submission_key_1234',
+                                urls=['https://t.me/examplechan'], account_id='a',
+                                group_type='megagroup')
+    job = env.submit(['https://t.me/examplechan'], group_type='channel')
+    with env.store.db() as db:
+        config = env.store.unpack(db.execute('SELECT payload FROM jobs WHERE id=?', (job,)).fetchone()[0])
+    assert config['group_type'] == 'channel'

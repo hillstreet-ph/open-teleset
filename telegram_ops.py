@@ -294,6 +294,41 @@ def _parse_join_target(raw: str):
     return None
 
 
+def chat_type(entity) -> str:
+    """Return "channel", "group" or "" for a resolved Telegram chat entity."""
+    if isinstance(entity, types.Chat):
+        return "group"
+    if isinstance(entity, types.Channel):
+        return ("group" if (getattr(entity, "megagroup", False)
+                            or getattr(entity, "gigagroup", False)) else "channel")
+    return ""
+
+
+def invite_type(invite) -> str:
+    """Return "channel", "group" or "" for a CheckChatInvite answer.
+
+    ChatInviteAlready and ChatInvitePeek carry the chat itself; a plain
+    ChatInvite only carries the broadcast/megagroup flags, and a legacy basic
+    group invite sets neither.
+    """
+    chat = getattr(invite, "chat", None)
+    if chat is not None:
+        return chat_type(chat)
+    if getattr(invite, "broadcast", False):
+        return "channel"
+    if getattr(invite, "megagroup", False):
+        return "group"
+    return "group" if getattr(invite, "participants_count", None) is not None else ""
+
+
+class JoinTypeMismatch(Exception):
+    """The link is the other kind of chat than the filter allows."""
+
+    def __init__(self, actual: str):
+        super().__init__(actual)
+        self.actual = actual
+
+
 class JoinChannelsRequest(BaseModel):
     """Auto Join: an account joins each provided channel/group link itself.
 
@@ -307,6 +342,9 @@ class JoinChannelsRequest(BaseModel):
     limit: int = Field(default=0, ge=0, strict=True)  # 0 joins every link provided
     rotation_mode: Literal["single", "round_robin"] = "single"
     account_ids: List[str] = Field(default_factory=list)
+    # "all" joins whatever the link points at; "channel" and "group" skip the
+    # other kind before any join RPC is sent.
+    group_type: Literal["all", "channel", "group"] = "all"
 
     @model_validator(mode="after")
     def _validate_join(self):
@@ -2144,8 +2182,12 @@ async def _scrape_channels_web(request: ChannelScrapeRequest, picker=None):
                 remember(row["username"], keyword, row)
                 if len(seen) >= candidate_cap:
                     break
-            if rows or extra:
+            if len(rows) + len(extra) >= want_per_keyword:
                 return
+            # A directory answer is a candidate list, not a verdict: its rows can
+            # still die at the preview or fail a filter. Only stop here once the
+            # directory has supplied a full page; otherwise the generic sources
+            # get their turn rather than leaving a stale row as the only result.
             query = f"{keyword} {country_hint}".strip() if country_hint else keyword
             names = await _first_source_candidates(
                 session, query, want_per_keyword, proxy, stats,
@@ -2268,8 +2310,9 @@ async def _scrape_channels_web(request: ChannelScrapeRequest, picker=None):
             entry["title"] = info["title"] or entry["title"]
             if info.get("about"):
                 entry["about"] = info["about"]
-        # The preview is the authoritative metadata, so the category and
-        # relevance decisions are made again with it in place.
+        # The preview is the authoritative metadata, so every decision is made
+        # again with it in place. A directory row that described itself in stale
+        # or promotional terms must not survive a live page that says otherwise.
         if request.category != "all" and not _category_matches(
                 entry["title"], entry["username"], entry["about"], request.category):
             filtered["category"] += 1
@@ -2277,6 +2320,22 @@ async def _scrape_channels_web(request: ChannelScrapeRequest, picker=None):
         if request.group_type != "all" and entry["type"] != request.group_type:
             filtered["type"] += 1
             continue
+        haystack = (f"{entry['title']} {entry['username']} "
+                    f"{entry['about']}").lower()
+        if (country_tokens or iso_country) and country_conflict(
+                haystack, country_tokens, iso_country):
+            filtered["country"] += 1
+            continue
+        if language_code and _script_conflict(haystack, language_code):
+            filtered["language"] += 1
+            continue
+        matched, fields = _match_fields(
+            entry["title"], entry["username"], entry["about"], index)
+        if not matched:
+            filtered["keyword"] += 1
+            continue
+        entry["matched_keywords"] = matched
+        entry["matched_in"] = fields
         if request.min_members and (entry["members"] is None
                                     or entry["members"] <= request.min_members):
             filtered["members"] += 1
@@ -2329,7 +2388,10 @@ async def _scrape_channels_web(request: ChannelScrapeRequest, picker=None):
         matched, fields = _match_fields(
             info["title"], info["username"], info.get("about", ""), index)
         if not matched:
-            matched = [keyword]
+            # A search engine hitting the keyword is not evidence that the page
+            # is about it; only the page's own words are.
+            filtered["keyword"] += 1
+            continue
         results.append({
             "id": info["username"],
             "title": info["title"],
@@ -2359,24 +2421,40 @@ async def _scrape_channels_web(request: ChannelScrapeRequest, picker=None):
         elif not seen:
             reason = ("Public search returned no t.me links for these keywords. Try broader "
                       "keywords or set TGSTAT_TOKEN for directory search.")
-        elif filtered["keyword"]:
-            reason = ("Candidates were found but none of them matched the keywords. "
-                      "Use the words the channel or group itself would use.")
-        elif filtered["country"]:
-            reason = ("Candidates were found but the country filter removed all of them. "
-                      "Clear the country filter to see them.")
-        elif filtered["language"]:
-            reason = ("Candidates were found but the language filter removed all of them. "
-                      "Clear the language filter to see them.")
-        elif filtered["category"]:
-            reason = ("Candidates were found but the category filter removed all of them. "
-                      "Choose All categories to see them.")
-        elif filtered["members"]:
-            reason = ("Candidates were found but the member filter removed all of them. "
-                      "Lower the member threshold or set it to 0 to see them.")
-        elif filtered["type"]:
-            reason = ("Candidates were found but the type filter removed all of them. "
-                      "Choose All to see them.")
+        elif any(filtered.values()):
+            # Name every reason that removed candidates. Reporting only the
+            # first one sent the operator chasing keywords while most of the
+            # loss was dead links or a different filter.
+            dropped = []
+            advice = []
+            for key, label in (
+                ("dead", "dead"),
+                ("country", "off-country"),
+                ("language", "off-language"),
+                ("keyword", "off-keyword"),
+                ("category", "off-category"),
+                ("members", "below the member threshold"),
+                ("type", "off-type"),
+            ):
+                if filtered[key]:
+                    dropped.append(f"{filtered[key]} {label}")
+            if filtered["dead"]:
+                advice.append("Dead links are gone from Telegram.")
+            if filtered["country"]:
+                advice.append("Clear the country filter to see the rest.")
+            if filtered["language"]:
+                advice.append("Clear the language filter to see the rest.")
+            if filtered["keyword"]:
+                advice.append("Use the words the channel or group itself would use; "
+                              "rows whose live page never matched the keywords were dropped.")
+            if filtered["category"]:
+                advice.append("Choose All categories to keep rows the category filter dropped.")
+            if filtered["members"]:
+                advice.append("Lower the member threshold or set it to 0.")
+            if filtered["type"]:
+                advice.append("Choose All to keep both channels and groups.")
+            reason = ("Candidates were found but each one was dropped: "
+                      + ", ".join(dropped) + ". " + " ".join(advice))
         elif preview_stats["requests"] and preview_stats["ok"] == 0:
             reason = "Candidate links were found but the t.me previews failed. Retry in a moment."
         else:
@@ -2959,13 +3037,25 @@ async def join_channels(request: JoinChannelsRequest):
 
         async def _attempt(client, kind, value):
             """Join one link and return what Telegram says about membership."""
+            wanted = request.group_type
             if kind == "invite":
+                if wanted != "all":
+                    # The hash alone says nothing about the kind, and the join
+                    # RPC cannot be undone. A read-only lookup decides first.
+                    actual = invite_type(
+                        await client(functions.messages.CheckChatInviteRequest(value)))
+                    if actual != wanted:
+                        raise JoinTypeMismatch(actual)
                 updates = await client(functions.messages.ImportChatInviteRequest(value))
                 channel = joined_channel(None, updates)
                 confirmed = (await confirm_membership(client, channel)
                              if channel is not None else True)
                 return channel, confirmed
             entity = await client.get_entity(value)
+            if wanted != "all":
+                actual = chat_type(entity)
+                if actual != wanted:
+                    raise JoinTypeMismatch(actual)
             updates = await client(functions.channels.JoinChannelRequest(entity))
             channel = joined_channel(entity, updates)
             return channel, await confirm_membership(client, channel)
@@ -3034,6 +3124,10 @@ async def join_channels(request: JoinChannelsRequest):
                 except errors.InviteRequestSentError:
                     # Telegram accepted the request; an admin must approve it.
                     outcome = ("skipped", "join_request_pending", account_id)
+                    break
+                except JoinTypeMismatch as exc:
+                    outcome = ("skipped", ("target_type_mismatch" if exc.actual
+                                           else "target_type_unknown"), account_id)
                     break
                 except invalid_link_errors as exc:
                     outcome = ("failed", type(exc).__name__, account_id)

@@ -41,6 +41,7 @@ from dashboard_features import router as dashboard_features_router
 from cloud_browser import router as cloud_browser_router
 from cloud_phone import router as cloud_phone_router
 from auto_reply import router as auto_reply_router, worker as auto_reply_worker
+from auto_forward import router as auto_forward_router, worker as auto_forward_worker
 from inbox import detach_all as inbox_detach_all, router as inbox_router
 from knowledge import router as knowledge_router
 from notes import router as notes_router
@@ -90,12 +91,15 @@ async def lifespan(app: FastAPI):
     outreach_worker.start()
     # Inbound watcher: does nothing until the feature switch and an account are on.
     auto_reply_worker.start()
+    # Outbound mirror: also idle until the switch and at least one rule are on.
+    auto_forward_worker.start()
     try:
         async with remote_mcp.session_manager.run():
             yield
     finally:
         await outreach_worker.stop()
         await auto_reply_worker.stop()
+        await auto_forward_worker.stop()
         # The inbox holds live update handlers on open clients; drop them before the clients go.
         inbox_detach_all()
 
@@ -145,6 +149,7 @@ app.include_router(dashboard_features_router)
 app.include_router(cloud_browser_router)
 app.include_router(cloud_phone_router)
 app.include_router(auto_reply_router)
+app.include_router(auto_forward_router)
 app.include_router(inbox_router)
 app.include_router(knowledge_router)
 app.include_router(notes_router)

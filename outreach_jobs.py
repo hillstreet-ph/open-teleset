@@ -49,7 +49,9 @@ from telegram_ops import (
     _resolve_target_entity,
     account_manager,
     button_markup,
+    chat_type,
     confirm_membership,
+    invite_type,
     joined_channel,
     matches_activity,
     outreach_policy,
@@ -606,6 +608,7 @@ class JobStore:
                             "account_id": config.get("account_id", ""),
                             "account_ids": config.get("account_ids") or [],
                             "rotation_mode": config.get("rotation_mode", "single"),
+                            "group_type": config.get("group_type", "all"),
                             "delay": config.get("delay", 45),
                             "sender_identities": config.get("sender_identities") or {},
                             "verify_only": True, "source_job": job}
@@ -1161,6 +1164,7 @@ class JobWorker:
         join_scope = cooldown_scope(join_action)
         rotation = (config.get("rotation_mode") == "round_robin"
                     and len(config.get("account_ids") or []) > 1)
+        wanted_type = config.get("group_type", "all")
         accounts = [a for a in (config.get("account_ids") if rotation else [config.get("account_id")]) if a]
         restricted = set(config.get("restricted_accounts") or {})
         ordered = [accounts[(seq + offset) % len(accounts)] for offset in range(len(accounts))]
@@ -1234,6 +1238,20 @@ class JobWorker:
                 self.store.waiting(job_id, "account_unavailable", 30)
                 return
             if kind == "invite":
+                if wanted_type != "all":
+                    # The hash alone says nothing about the kind, and an import
+                    # cannot be undone. A read-only lookup decides first.
+                    invite = await asyncio.wait_for(
+                        client(functions.messages.CheckChatInviteRequest(value)),
+                        TELEGRAM_READ_TIMEOUT)
+                    actual = invite_type(invite)
+                    if actual != wanted_type:
+                        self.store.outcome(
+                            job_id, seq, "skipped",
+                            "target_type_mismatch" if actual else "target_type_unknown",
+                            delay=0)
+                        self._finish_join_if_done(job_id, operator)
+                        return
                 updates = await asyncio.wait_for(
                     client(functions.messages.ImportChatInviteRequest(value)), TELEGRAM_SEND_TIMEOUT)
                 channel = joined_channel(None, updates)
@@ -1252,6 +1270,15 @@ class JobWorker:
                     self.store.outcome(job_id, seq, "skipped", "target_not_joinable", delay=delay)
                     self._finish_join_if_done(job_id, operator)
                     return
+                if wanted_type != "all":
+                    actual = chat_type(entity)
+                    if actual != wanted_type:
+                        self.store.outcome(
+                            job_id, seq, "skipped",
+                            "target_type_mismatch" if actual else "target_type_unknown",
+                            delay=0)
+                        self._finish_join_if_done(job_id, operator)
+                        return
                 if config.get("verify_only"):
                     # Only Telegram's probe counts. A missing membership falls
                     # through to a real join; that RPC is idempotent.

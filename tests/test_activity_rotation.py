@@ -170,7 +170,7 @@ async def test_public_channel_scraper_enriches_dedupes_filters_limits(monkeypatc
     previews = {
         "phcasino": {"username": "phcasino", "title": "PH Casino", "type": "channel", "members": 1200},
         "usadeals": {"username": "usadeals", "title": "USA Deals", "type": "channel", "members": 5},
-        "phgroup": {"username": "phgroup", "title": "PH Group", "type": "group", "members": 30},
+        "phgroup": {"username": "phgroup", "title": "PH Casino Group", "type": "group", "members": 30},
     }
     async def fake_preview(session, username, proxy=None):
         info = previews.get(username)
@@ -194,10 +194,10 @@ async def test_public_channel_scraper_enriches_dedupes_filters_limits(monkeypatc
     assert {r["username"] for r in country["results"]} == {"phcasino", "phgroup"}
     assert all(r["url"] == f"https://t.me/{r['username']}" for r in country["results"])
 
-    groups = await ops.scrape_channels(ops.ChannelScrapeRequest(keywords=["x"], group_type="group"))
+    groups = await ops.scrape_channels(ops.ChannelScrapeRequest(keywords=["casino"], group_type="group"))
     assert [r["username"] for r in groups["results"]] == ["phgroup"]
 
-    capped = await ops.scrape_channels(ops.ChannelScrapeRequest(keywords=["x"], limit=1))
+    capped = await ops.scrape_channels(ops.ChannelScrapeRequest(keywords=["casino"], limit=1))
     assert capped["total"] == 1
 
 
